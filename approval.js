@@ -1,19 +1,84 @@
 (function(){
   const key='ik_approval_routes';
-  const routes=JSON.parse(localStorage.getItem(key)||'{}');
-  const approvers=['Departman yöneticisi','İK yöneticisi','Finans yöneticisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi'];
-  const esc=s=>String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
-  const selectOptions=value=>approvers.map(x=>`<option ${x===value?'selected':''}>${x}</option>`).join('');
-  const getRoute=dept=>{if(!Array.isArray(routes[dept])||!routes[dept].filter(Boolean).length)routes[dept]=['Departman yöneticisi','İK yöneticisi'];else routes[dept]=routes[dept].filter(Boolean);return routes[dept]};
-  function approvalCard(){
-    if(!['Sistem yöneticisi','İK yöneticisi'].includes(window.__ikCurrentUser?.()?.role))return;
-    const departments=[...new Set((state.employees||[]).map(e=>e.department).filter(Boolean))];
-    const rows=departments.map(dept=>{const route=getRoute(dept);return `<div class="approval-row" data-dept="${esc(dept)}"><strong>${esc(dept)}</strong><div class="approval-steps">${route.map((x,i)=>`<span class="approval-step-wrap"><select class="select approval-step" data-dept="${esc(dept)}" data-step="${i}">${selectOptions(x)}</select>${i>0?'<button type="button" class="approval-remove" title="Adımı kaldır" data-remove-step="1">×</button>':''}</span>`).join('<span class="approval-arrow">→</span>')}</div><button type="button" class="btn ghost approval-add" data-add-step="1">+ İzin akışı ekle</button></div>`}).join('');
-    const box=document.createElement('div');box.className='card approval-card';box.innerHTML=`<div class="card-head"><div><h2>İzin onay akışı</h2><span class="muted">Departmana göre sınırsız sıralı onaycı ekleyin</span></div><button class="btn" id="save-approval">Akışları kaydet</button></div>${rows||'<div class="empty">Onay akışı tanımlamak için önce çalışan ekleyin.</div>'}<div class="formula" style="margin-top:14px">Yeni izin talepleri seçilen sıraya göre ilerler. Her adım bir önceki onaydan sonra açılır.</div>`;$('#app').appendChild(box);
-    box.addEventListener('click',e=>{const add=e.target.closest('[data-add-step]');if(add){const row=add.closest('.approval-row'),dept=row.dataset.dept,route=getRoute(dept);route.push('İK yöneticisi');localStorage.setItem(key,JSON.stringify(routes));leave();return}const remove=e.target.closest('[data-remove-step]');if(remove){const row=remove.closest('.approval-row'),dept=row.dataset.dept,idx=[...row.querySelectorAll('.approval-step')].indexOf(remove.parentElement.querySelector('select'));getRoute(dept).splice(idx,1);if(!getRoute(dept).length)getRoute(dept).push('Departman yöneticisi');localStorage.setItem(key,JSON.stringify(routes));leave()}});
-    $('#save-approval').onclick=()=>{document.querySelectorAll('.approval-row').forEach(row=>{routes[row.dataset.dept]=[...row.querySelectorAll('.approval-step')].map(s=>s.value)});localStorage.setItem(key,JSON.stringify(routes));toast('İzin onay akışları kaydedildi')};
+  const processInfo={
+    leave:{label:'İzin',defaults:['Departman yöneticisi','İK yöneticisi']},
+    expense:{label:'Masraf',defaults:['Departman yöneticisi','Mali İşler']},
+    advance:{label:'Avans',defaults:['Departman yöneticisi','İK yöneticisi','Mali İşler']}
+  };
+  const approvers=['Departman yöneticisi','İK yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi'];
+  const stored=JSON.parse(localStorage.getItem(key)||'{}');
+  const routes={leave:{},expense:{},advance:{}};
+  Object.keys(processInfo).forEach(type=>{
+    if(stored[type]&&typeof stored[type]==='object'&&!Array.isArray(stored[type]))routes[type]={...stored[type]};
+  });
+  Object.entries(stored).forEach(([department,value])=>{
+    if(!processInfo[department]&&Array.isArray(value)&&!routes.leave[department])routes.leave[department]=value;
+  });
+  let activeType='leave';
+  const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const departments=()=>[...new Set((state.employees||[]).map(employee=>employee.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+  const getRoute=(type,department)=>{
+    const configured=routes[type]?.[department];
+    return Array.isArray(configured)&&configured.filter(Boolean).length?configured.filter(Boolean):[...processInfo[type].defaults];
+  };
+  const selectOptions=value=>approvers.map(role=>`<option ${role===value?'selected':''}>${esc(role)}</option>`).join('');
+
+  function matrixRows(type){
+    return departments().map(department=>{
+      const route=getRoute(type,department);
+      return `<div class="approval-row" data-dept="${esc(department)}">
+        <strong>${esc(department)}</strong>
+        <div class="approval-steps">${route.map((role,index)=>`<span class="approval-step-wrap"><select class="select approval-step" data-step="${index}">${selectOptions(role)}</select>${index>0?'<button type="button" class="approval-remove" title="Onay adımını kaldır" data-remove-step="1">×</button>':''}</span>`).join('<span class="approval-arrow">→</span>')}</div>
+        <button type="button" class="btn ghost approval-add" data-add-step="1">+ Onay adımı</button>
+      </div>`;
+    }).join('');
   }
-  const baseLeave=leave;leave=function(){baseLeave();approvalCard()};
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.querySelector('.modal')&&window.closeModal)window.closeModal()});
-  document.addEventListener('click',e=>{if(e.target.classList.contains('modal'))window.closeModal&&window.closeModal()});
+
+  function renderMatrix(){
+    if(state.view!=='users'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
+    document.querySelector('#approval-matrix')?.remove();
+    const box=document.createElement('div');
+    box.id='approval-matrix';
+    box.className='card approval-card';
+    box.innerHTML=`<div class="card-head"><div><h2>Onay Yetki Matrisi</h2><span class="muted">İzin, masraf ve avans taleplerinin departman bazlı sıralı onay akışını yönetin</span></div><div class="toolbar" style="margin:0"><select class="select" id="approval-process">${Object.entries(processInfo).map(([type,info])=>`<option value="${type}" ${type===activeType?'selected':''}>${info.label} yönetimi</option>`).join('')}</select><button class="btn" id="save-approval">Matrisi kaydet</button></div></div>
+      <div class="formula"><strong>${processInfo[activeType].label} onay sırası:</strong> Bir adım tamamlanmadan sonraki onaycı talebi göremez. Yapılan değişiklikler yalnızca yeni oluşturulan taleplere uygulanır.</div>
+      ${matrixRows(activeType)||'<div class="empty">Matris oluşturmak için önce çalışanlara departman tanımlayın.</div>'}`;
+    document.querySelector('#app').appendChild(box);
+    box.querySelector('#approval-process').onchange=event=>{activeType=event.target.value;renderMatrix()};
+    box.addEventListener('click',event=>{
+      const row=event.target.closest('.approval-row');
+      if(!row)return;
+      const department=row.dataset.dept;
+      const current=[...row.querySelectorAll('.approval-step')].map(select=>select.value);
+      if(event.target.closest('[data-add-step]')){
+        routes[activeType][department]=[...current,processInfo[activeType].defaults[Math.min(current.length,processInfo[activeType].defaults.length-1)]||'İK yöneticisi'];
+        renderMatrix();
+      }
+      if(event.target.closest('[data-remove-step]')){
+        const wrapper=event.target.closest('.approval-step-wrap');
+        const index=[...row.querySelectorAll('.approval-step-wrap')].indexOf(wrapper);
+        current.splice(index,1);
+        routes[activeType][department]=current.length?current:[processInfo[activeType].defaults[0]];
+        renderMatrix();
+      }
+    });
+    box.querySelector('#save-approval').onclick=async()=>{
+      routes[activeType]={};
+      box.querySelectorAll('.approval-row').forEach(row=>{
+        routes[activeType][row.dataset.dept]=[...row.querySelectorAll('.approval-step')].map(select=>select.value);
+      });
+      const button=box.querySelector('#save-approval');
+      button.disabled=true;
+      try{
+        const response=await fetch('/api/shared-data/'+encodeURIComponent(key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:routes})});
+        const data=await response.json().catch(()=>({}));
+        if(!response.ok)throw new Error(data.error||'Yetki matrisi kaydedilemedi');
+        localStorage.setItem(key,JSON.stringify(routes));
+        toast(processInfo[activeType].label+' onay matrisi sunucuya kaydedildi');
+      }catch(error){toast(error.message)}
+      finally{button.disabled=false}
+    };
+  }
+
+  window.__ikRenderApprovalMatrix=renderMatrix;
 })();

@@ -320,6 +320,24 @@ app.use("/api", (req, res, next) => {
 
 
 const accountRoles = new Set(['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi','Personel','Sadece görüntüleme']);
+const approvalMatrixTypes = new Set(['leave','expense','advance']);
+const approvalMatrixRoles = new Set(['Departman yöneticisi','İK yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi']);
+function normalizeApprovalMatrix(value) {
+  const normalized = {};
+  for (const type of approvalMatrixTypes) {
+    const departmentRoutes = value?.[type];
+    if (!departmentRoutes || typeof departmentRoutes !== 'object' || Array.isArray(departmentRoutes)) throw new Error(type + ' onay matrisi eksik');
+    normalized[type] = {};
+    for (const [department, route] of Object.entries(departmentRoutes)) {
+      const departmentName = clean(department);
+      if (!departmentName || !Array.isArray(route) || !route.length) throw new Error('Departman ve en az bir onay adımı zorunludur');
+      const roles = route.map(clean);
+      if (roles.some(role => !approvalMatrixRoles.has(role))) throw new Error('Onay matrisinde geçersiz kullanıcı rolü var');
+      normalized[type][departmentName] = roles;
+    }
+  }
+  return normalized;
+}
 const requireSystemAdmin = (req, res) => {
   if (req.user?.role !== 'Sistem yöneticisi') {
     res.status(403).json({ error: 'Bu işlem için sistem yöneticisi yetkisi gerekiyor' });
@@ -405,8 +423,12 @@ app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
   const key = clean(req.params.key);
   if (!sharedDataKeys.has(key)) return res.status(404).json({ error: 'Geçersiz ortak veri alanı' });
   if (key === 'ik_approval_routes' && !['Sistem yöneticisi','İK yöneticisi'].includes(req.user?.role)) return res.status(403).json({ error: 'Onay akışını yalnızca sistem yöneticisi veya İK yöneticisi değiştirebilir' });
-  const value = req.body?.value;
+  let value = req.body?.value;
   if (value == null || typeof value !== 'object') return res.status(400).json({ error: 'Geçerli JSON verisi zorunludur' });
+  if (key === 'ik_approval_routes') {
+    try { value = normalizeApprovalMatrix(value); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
+  }
   const result = await pool.query(`
     insert into shared_app_data(data_key,value) values($1,$2::jsonb)
     on conflict(data_key) do update set value=excluded.value,updated_at=now()
@@ -831,7 +853,7 @@ function approvalRoleMatches(user, role, department) {
   if (user.role === 'Sistem yöneticisi') return true;
   if (role === 'Departman yöneticisi') return user.role === role && clean(user.department) === clean(department);
   if (role === 'İK yöneticisi') return user.role === role || clean(user.department) === 'İnsan Kaynakları';
-  if (['Mali İşler', 'Finans yöneticisi'].includes(role)) return ['Mali İşler', 'Bordro yetkilisi'].includes(user.role);
+  if (['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(role)) return ['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(user.role);
   return user.role === role;
 }
 
@@ -852,7 +874,7 @@ function decorateApproval(row, user, pendingStatus) {
     ...row,
     can_approve: approvalCanAct(row, user, pendingStatus),
     can_delete: (user.role === 'Sistem yöneticisi' || approvalOwnedBy(row, user)) && row.status === pendingStatus && Number(row.approval_step || 0) === 0,
-    can_mark_paid: row.status === 'Onaylandı' && (user.role === 'Sistem yöneticisi' || ['Mali İşler', 'Bordro yetkilisi'].includes(user.role))
+    can_mark_paid: row.status === 'Onaylandı' && (user.role === 'Sistem yöneticisi' || ['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(user.role))
   };
 }
 
@@ -992,7 +1014,7 @@ app.patch('/api/expenses/:id/decision', asyncRoute(async (req, res) => {
 
 app.patch('/api/expenses/:id/status', asyncRoute(async (req, res) => {
   if (clean(req.body?.status) !== 'Ödendi') return res.status(400).json({ error: 'Yalnızca ödeme durumu güncellenebilir' });
-  if (req.user.role !== 'Sistem yöneticisi' && !['Mali İşler', 'Bordro yetkilisi'].includes(req.user.role)) return res.status(403).json({ error: 'Ödeme işareti için mali yetki gerekiyor' });
+  if (req.user.role !== 'Sistem yöneticisi' && !['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(req.user.role)) return res.status(403).json({ error: 'Ödeme işareti için mali yetki gerekiyor' });
   const result = await pool.query("update expenses set status='Ödendi',updated_at=now() where id=$1 and status='Onaylandı' returning *", [req.params.id]);
   if (!result.rowCount) return res.status(409).json({ error: 'Yalnızca tamamen onaylanmış masraf ödenebilir' });
   res.json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
