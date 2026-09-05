@@ -105,6 +105,21 @@ create table if not exists attendance_entries(
 );
 create index if not exists attendance_entries_date_idx on attendance_entries(work_date);
 create index if not exists attendance_entries_employee_idx on attendance_entries(employee_id, work_date);
+alter table attendance_entries add column if not exists source text not null default 'manual';
+
+create table if not exists shift_plans(
+  id bigserial primary key,
+  employee_id integer not null references employees(id) on delete cascade,
+  work_date date not null,
+  shift_type text not null,
+  updated_by text,
+  transferred_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(employee_id, work_date)
+);
+create index if not exists shift_plans_date_idx on shift_plans(work_date);
+create index if not exists shift_plans_employee_idx on shift_plans(employee_id, work_date);
 
 create table if not exists shared_app_data(
   data_key text primary key,

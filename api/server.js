@@ -34,6 +34,53 @@ const istanbulDate = () => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 const dateDistance = (later, earlier) => Math.floor((Date.parse(`${later}T00:00:00Z`) - Date.parse(`${earlier}T00:00:00Z`)) / 86400000);
+const istanbulClock = () => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date());
+  const part = type => Number(parts.find(item => item.type === type)?.value || 0);
+  return { date: istanbulDate(), hour: part('hour'), minute: part('minute') };
+};
+
+async function transferShiftPlansForDate(workDate = istanbulDate()) {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const transferred = await client.query(`
+      insert into attendance_entries(employee_id,work_date,work_type,value,updated_by,source)
+      select employee_id,work_date,'normal',shift_type,coalesce(updated_by,'Otomatik vardiya aktarımı'),'shift'
+      from shift_plans
+      where work_date=$1
+      on conflict(employee_id,work_date,work_type) do update set
+        value=excluded.value,
+        updated_by=excluded.updated_by,
+        source='shift',
+        updated_at=now()
+      where attendance_entries.source='shift'
+      returning id`, [workDate]);
+    await client.query('update shift_plans set transferred_at=now() where work_date=$1', [workDate]);
+    await client.query('commit');
+    return transferred.rowCount;
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+let lastShiftTransferDate = '';
+async function runShiftTransferIfDue() {
+  const clock = istanbulClock();
+  if (clock.hour < 17 || lastShiftTransferDate === clock.date) return;
+  try {
+    const count = await transferShiftPlansForDate(clock.date);
+    lastShiftTransferDate = clock.date;
+    console.log(`Vardiya aktarımı tamamlandı: ${clock.date}, ${count} puantaj kaydı`);
+  } catch (error) {
+    console.error('Günlük vardiya aktarımı başarısız', error);
+  }
+}
 
 async function forceSignatureMerges(buffer, signatureRow) {
   const zip = await JSZip.loadAsync(buffer);
@@ -409,10 +456,10 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
     return res.status(204).end();
   }
   const result = await pool.query(`
-    insert into attendance_entries(employee_id,work_date,work_type,value,updated_by)
-    values($1,$2,$3,$4,$5)
+    insert into attendance_entries(employee_id,work_date,work_type,value,updated_by,source)
+    values($1,$2,$3,$4,$5,'manual')
     on conflict(employee_id,work_date,work_type) do update set
-      value=excluded.value, updated_by=excluded.updated_by, updated_at=now()
+      value=excluded.value, updated_by=excluded.updated_by, source='manual', updated_at=now()
     returning employee_id,to_char(work_date,'YYYY-MM-DD') as work_date,work_type,value,updated_at`,
   [employeeId, workDate, workType, value, clean(body.actor_name) || actorRole || null]);
   res.json(result.rows[0]);
@@ -426,11 +473,11 @@ app.get('/api/shifts', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'Geçerli vardiya tarih aralığı zorunludur' });
   }
   const result = await pool.query(`
-    select a.employee_id, e.name as employee, to_char(a.work_date,'YYYY-MM-DD') as date, a.value as type
-    from attendance_entries a
-    join employees e on e.id=a.employee_id
-    where a.work_type='normal' and a.work_date between $1 and $2
-    order by e.name,a.work_date`, [start, end]);
+    select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type
+    from shift_plans s
+    join employees e on e.id=s.employee_id
+    where s.work_date between $1 and $2
+    order by e.name,s.work_date`, [start, end]);
   res.json(result.rows);
 }));
 
@@ -448,16 +495,22 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   const employee = await pool.query('select id from employees where id=$1', [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   if (!shiftType) {
-    await pool.query("delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type='normal'", [employeeId, workDate]);
+    await pool.query('delete from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
+    const clock = istanbulClock();
+    if (workDate === clock.date && clock.hour >= 17) {
+      await pool.query("delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type='normal' and source='shift'", [employeeId, workDate]);
+    }
     return res.status(204).end();
   }
   const result = await pool.query(`
-    insert into attendance_entries(employee_id,work_date,work_type,value,updated_by)
-    values($1,$2,'normal',$3,$4)
-    on conflict(employee_id,work_date,work_type) do update set
-      value=excluded.value,updated_by=excluded.updated_by,updated_at=now()
-    returning employee_id,to_char(work_date,'YYYY-MM-DD') as date,value as type,updated_at`,
+    insert into shift_plans(employee_id,work_date,shift_type,updated_by)
+    values($1,$2,$3,$4)
+    on conflict(employee_id,work_date) do update set
+      shift_type=excluded.shift_type,updated_by=excluded.updated_by,transferred_at=null,updated_at=now()
+    returning employee_id,to_char(work_date,'YYYY-MM-DD') as date,shift_type as type,updated_at`,
   [employeeId, workDate, shiftType, clean(body.actor_name) || null]);
+  const clock = istanbulClock();
+  if (workDate === clock.date && clock.hour >= 17) await transferShiftPlansForDate(workDate);
   res.json(result.rows[0]);
 }));
 
@@ -860,4 +913,8 @@ app.use((error, _req, res, _next) => {
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });
 });
 
-app.listen(3000);
+app.listen(3000, () => {
+  runShiftTransferIfDue();
+  const shiftTransferTimer = setInterval(runShiftTransferIfDue, 60000);
+  shiftTransferTimer.unref();
+});
