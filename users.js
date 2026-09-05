@@ -1,6 +1,6 @@
 (function(){
   let users=[],loaded=false,loading=false;
-  const roles=['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Bordro yetkilisi','Personel','Sadece görüntüleme'];
+  const roles=['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi','Personel','Sadece görüntüleme'];
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const departments=()=>[...new Set((state.employees||[]).map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
   const api=async(path,options)=>{

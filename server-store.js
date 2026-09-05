@@ -1,5 +1,5 @@
 (function(){
-  const sharedKeys=new Set(['ik_leaves','ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
+  const sharedKeys=new Set(['ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
   const rawGet=Storage.prototype.getItem,rawSet=Storage.prototype.setItem;
   const meaningful=raw=>{
     if(raw==null)return false;

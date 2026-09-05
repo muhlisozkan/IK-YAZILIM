@@ -7,8 +7,12 @@
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
     'Departman yöneticisi': { views: ['dashboard','employees','departments','leave','expenses','advances','reports','attendance','shifts','notifications','performance','training'], create: true, approve: false },
     'Mali İşler': { views: ['dashboard','advances','expenses','reports','notifications'], create: false, approve: true },
+    'Finans yöneticisi': { views: ['dashboard','advances','expenses','reports','notifications'], create: false, approve: true },
+    'Genel müdür': { views: ['dashboard','leave','expenses','advances','reports','notifications'], create: false, approve: true },
+    'Genel müdür yardımcısı': { views: ['dashboard','leave','expenses','advances','reports','notifications'], create: false, approve: true },
+    'Bölge yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','notifications'], create: false, approve: true },
     'Bordro yetkilisi': { views: ['dashboard','payroll','expenses','advances','reports','attendance','notifications'], create: true, approve: true },
-    'Personel': { views: ['dashboard','advances','notifications','documents'], create: true, approve: false },
+    'Personel': { views: ['dashboard','leave','expenses','advances','notifications','documents'], create: true, approve: false },
     'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users'), create: false, approve: false }
   };
 

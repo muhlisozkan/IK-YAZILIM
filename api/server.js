@@ -25,7 +25,7 @@ const amount = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Nu
 const dateOnly = value => /^\d{4}-\d{2}-\d{2}$/.test(clean(value)) ? clean(value) : null;
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const attendanceTypes = new Set(['normal', 'fazla']);
-const sharedDataKeys = new Set(['ik_leaves','ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
+const sharedDataKeys = new Set(['ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
 const attendanceNormalValues = new Set(['A','B','C','D','E','F','M','AB','G','Y','O','Ü','Ö','ÇRT','ÇRT.','RT','RT.','ÇHT','DV','UZ','R.','R']);
 const attendanceOvertimeValues = new Set(['0.5','1','1.5','2','2.5','3']);
 const istanbulDate = () => {
@@ -319,7 +319,7 @@ app.use("/api", (req, res, next) => {
 });
 
 
-const accountRoles = new Set(['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Bordro yetkilisi','Personel','Sadece görüntüleme']);
+const accountRoles = new Set(['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi','Personel','Sadece görüntüleme']);
 const requireSystemAdmin = (req, res) => {
   if (req.user?.role !== 'Sistem yöneticisi') {
     res.status(403).json({ error: 'Bu işlem için sistem yöneticisi yetkisi gerekiyor' });
@@ -404,6 +404,7 @@ app.get('/api/shared-data', asyncRoute(async (_req, res) => {
 app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
   const key = clean(req.params.key);
   if (!sharedDataKeys.has(key)) return res.status(404).json({ error: 'Geçersiz ortak veri alanı' });
+  if (key === 'ik_approval_routes' && !['Sistem yöneticisi','İK yöneticisi'].includes(req.user?.role)) return res.status(403).json({ error: 'Onay akışını yalnızca sistem yöneticisi veya İK yöneticisi değiştirebilir' });
   const value = req.body?.value;
   if (value == null || typeof value !== 'object') return res.status(400).json({ error: 'Geçerli JSON verisi zorunludur' });
   const result = await pool.query(`
@@ -804,107 +805,262 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
   res.json({ ok: true, payroll_year: period.payroll_year, payroll_month: period.payroll_month, employees: valid.length, departments: new Set(valid.map(row => `${clean(row.department) || clean(row.unit) || 'Atanmamış'}|${clean(row.workplace)}|${clean(row.unit)}`)).size, leave_seniority_exempt: exemptions.rows[0].count });
 }));
 
-app.get('/api/expenses', asyncRoute(async (_req, res) => res.json((await pool.query('select * from expenses order by expense_date desc, id desc')).rows)));
-app.post('/api/expenses', asyncRoute(async (req, res) => {
-  const body = req.body;
-  if (!clean(body.employee_name) || !amount(body.amount) || !dateOnly(body.expense_date) || !clean(body.category)) return res.status(400).json({ error: 'Çalışan, kategori, tarih ve pozitif tutar zorunludur' });
-  const result = await pool.query(`insert into expenses(employee_id,employee_name,category,expense_date,amount,currency,description,receipt_no,status,current_approver)
-    values($1,$2,$3,$4,$5,$6,$7,$8,'Bekliyor',$9) returning *`, [body.employee_id || null, clean(body.employee_name), clean(body.category), dateOnly(body.expense_date), amount(body.amount), clean(body.currency) || 'TRY', clean(body.description), clean(body.receipt_no), clean(body.current_approver) || 'Finans yöneticisi']);
-  res.status(201).json(result.rows[0]);
-}));
-app.patch('/api/expenses/:id/status', asyncRoute(async (req, res) => {
-  const status = clean(req.body.status);
-  if (!expenseStatuses.has(status)) return res.status(400).json({ error: 'Geçersiz durum' });
-  const result = await pool.query('update expenses set status=$1,current_approver=$2,updated_at=now() where id=$3 returning *', [status, clean(req.body.current_approver) || null, req.params.id]);
-  if (!result.rowCount) return res.status(404).json({ error: 'Masraf bulunamadı' });
-  res.json(result.rows[0]);
-}));
-app.delete('/api/expenses/:id', asyncRoute(async (req, res) => {
-  const result = await pool.query("delete from expenses where id=$1 and status='Bekliyor'", [req.params.id]);
-  if (!result.rowCount) return res.status(409).json({ error: 'Yalnızca bekleyen masraf silinebilir' });
-  res.status(204).end();
-}));
+const approvalDefaults = {
+  leave: ['Departman yöneticisi', 'İK yöneticisi'],
+  advance: ['Departman yöneticisi', 'İK yöneticisi', 'Mali İşler'],
+  expense: ['Departman yöneticisi', 'Mali İşler']
+};
 
-app.get('/api/advances', asyncRoute(async (_req, res) => res.json((await pool.query('select * from advances order by requested_date desc, id desc')).rows)));
-app.post('/api/advances', asyncRoute(async (req, res) => {
-  const body = req.body;
-  if (!body.employee_id || !amount(body.amount) || !dateOnly(body.requested_date)) return res.status(400).json({ error: 'Çalışan, tarih ve pozitif tutar zorunludur' });
-  const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [body.employee_id, 'Aktif']);
-  if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
-  const person = employee.rows[0];
-  const result = await pool.query(`insert into advances(
-      employee_id,employee_name,department,requester_user_id,requester_user_name,requested_date,amount,currency,deduction_month,reason,status,approval_stage,current_approver)
-    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Onay Sürecinde','department','Departman Müdürü') returning *`,
-  [person.id, person.name, person.department, clean(body.requester_user_id) || null, clean(body.requester_user_name) || person.name,
-    dateOnly(body.requested_date), amount(body.amount), clean(body.currency) || 'TRY', dateOnly(body.deduction_month), clean(body.reason)]);
-  res.status(201).json(result.rows[0]);
-}));
-app.patch('/api/advances/:id/decision', asyncRoute(async (req, res) => {
-  const decision = clean(req.body.decision).toLowerCase();
-  const actorRole = clean(req.body.actor_role);
-  const actorName = clean(req.body.actor_name) || actorRole;
-  const actorDepartment = clean(req.body.actor_department);
-  if (!['approve', 'reject'].includes(decision)) return res.status(400).json({ error: 'Geçersiz karar' });
+const approvalStageKey = role => role === 'Departman yöneticisi' ? 'department'
+  : role === 'İK yöneticisi' ? 'hr'
+    : ['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(role) ? 'finance'
+      : 'custom';
+
+async function approvalRouteFor(type, department) {
+  const result = await pool.query("select value from shared_app_data where data_key='ik_approval_routes'");
+  const settings = result.rows[0]?.value || {};
+  const configured = Array.isArray(settings?.[type]?.[department])
+    ? settings[type][department]
+    : type === 'leave' && Array.isArray(settings?.[department]) ? settings[department] : null;
+  const route = (configured || approvalDefaults[type] || []).map(clean).filter(Boolean);
+  return route.length ? route : approvalDefaults[type];
+}
+
+function approvalRoleMatches(user, role, department) {
+  if (!user || !role) return false;
+  if (user.role === 'Sistem yöneticisi') return true;
+  if (role === 'Departman yöneticisi') return user.role === role && clean(user.department) === clean(department);
+  if (role === 'İK yöneticisi') return user.role === role || clean(user.department) === 'İnsan Kaynakları';
+  if (['Mali İşler', 'Finans yöneticisi'].includes(role)) return ['Mali İşler', 'Bordro yetkilisi'].includes(user.role);
+  return user.role === role;
+}
+
+const approvalHistory = row => Array.isArray(row.approval_history) ? row.approval_history : [];
+const approvalRoute = row => Array.isArray(row.approval_route) ? row.approval_route : [];
+const approvalOwnedBy = (row, user) => String(row.requester_user_id || '') === String(user.id)
+  || (user.employee_id && String(row.employee_id || '') === String(user.employee_id));
+const approvalPreviouslyHandledBy = (row, user) => approvalHistory(row).some(entry => String(entry.user_id) === String(user.id));
+const approvalCanAct = (row, user, pendingStatus) => row.status === pendingStatus
+  && approvalRoleMatches(user, row.current_approver, row.department);
+const approvalCanSee = (row, user, pendingStatus) => user.role === 'Sistem yöneticisi'
+  || approvalOwnedBy(row, user)
+  || approvalPreviouslyHandledBy(row, user)
+  || approvalCanAct(row, user, pendingStatus);
+
+function decorateApproval(row, user, pendingStatus) {
+  return {
+    ...row,
+    can_approve: approvalCanAct(row, user, pendingStatus),
+    can_delete: (user.role === 'Sistem yöneticisi' || approvalOwnedBy(row, user)) && row.status === pendingStatus && Number(row.approval_step || 0) === 0,
+    can_mark_paid: row.status === 'Onaylandı' && (user.role === 'Sistem yöneticisi' || ['Mali İşler', 'Bordro yetkilisi'].includes(user.role))
+  };
+}
+
+async function decideApproval(table, id, user, decision, reason, pendingStatus) {
+  if (!['leave_requests', 'expenses', 'advances'].includes(table)) throw new Error('Geçersiz onay türü');
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const found = await client.query('select * from advances where id=$1 for update', [req.params.id]);
-    if (!found.rowCount) { await client.query('rollback'); return res.status(404).json({ error: 'Avans bulunamadı' }); }
-    const advance = found.rows[0];
-    if (advance.status !== 'Onay Sürecinde') { await client.query('rollback'); return res.status(409).json({ error: 'Bu talep artık onay sürecinde değil' }); }
-    const isAdmin = actorRole === 'Sistem yöneticisi';
-    const allowed = advance.approval_stage === 'department'
-      ? isAdmin || (actorRole === 'Departman yöneticisi' && actorDepartment === advance.department)
-      : advance.approval_stage === 'hr'
-        ? isAdmin || actorRole === 'İK yöneticisi'
-        : advance.approval_stage === 'finance'
-          ? isAdmin || ['Mali İşler', 'Bordro yetkilisi'].includes(actorRole)
-          : false;
-    if (!allowed) { await client.query('rollback'); return res.status(403).json({ error: 'Bu onay adımı için yetkiniz yok' }); }
+    const found = await client.query(`select * from ${table} where id=$1 for update`, [id]);
+    if (!found.rowCount) {
+      const error = new Error('Talep bulunamadı'); error.status = 404; throw error;
+    }
+    const row = found.rows[0];
+    if (row.status !== pendingStatus) {
+      const error = new Error('Bu talep artık onay beklemiyor'); error.status = 409; throw error;
+    }
+    if (!approvalCanAct(row, user, pendingStatus)) {
+      const error = new Error('Bu onay adımı size atanmadı'); error.status = 403; throw error;
+    }
+    const route = approvalRoute(row);
+    const step = Number(row.approval_step || 0);
+    const history = approvalHistory(row);
+    history.push({
+      step: step + 1,
+      approver: row.current_approver,
+      user_id: String(user.id),
+      user_name: user.name,
+      role: user.role,
+      decision,
+      reason: clean(reason),
+      decided_at: new Date().toISOString()
+    });
     let result;
     if (decision === 'reject') {
-      result = await client.query(`update advances set status='Reddedildi',approval_stage='rejected',current_approver=null,
-        rejected_by=$1,rejected_at=now(),rejection_reason=$2,updated_at=now() where id=$3 returning *`,
-      [actorName, clean(req.body.reason), req.params.id]);
-    } else if (advance.approval_stage === 'department') {
-      result = await client.query(`update advances set approval_stage='hr',current_approver='İnsan Kaynakları',
-        department_approved_by=$1,department_approved_at=now(),updated_at=now() where id=$2 returning *`, [actorName, req.params.id]);
-    } else if (advance.approval_stage === 'hr') {
-      result = await client.query(`update advances set approval_stage='finance',current_approver='Mali İşler',
-        hr_approved_by=$1,hr_approved_at=now(),updated_at=now() where id=$2 returning *`, [actorName, req.params.id]);
+      result = await client.query(`update ${table} set status='Reddedildi',current_approver=null,
+        approval_history=$1::jsonb,rejected_by=$2,rejected_at=now(),rejection_reason=$3,updated_at=now()
+        where id=$4 returning *`, [JSON.stringify(history), user.name, clean(reason), id]);
     } else {
-      result = await client.query(`update advances set status='Onaylandı',approval_stage='approved',current_approver=null,
-        finance_approved_by=$1,finance_approved_at=now(),updated_at=now() where id=$2 returning *`, [actorName, req.params.id]);
+      const nextStep = step + 1;
+      const completed = nextStep >= route.length;
+      const nextApprover = completed ? null : route[nextStep];
+      const approvedStatus = 'Onaylandı';
+      result = await client.query(`update ${table} set status=$1,current_approver=$2,approval_step=$3,
+        approval_history=$4::jsonb,updated_at=now() where id=$5 returning *`,
+      [completed ? approvedStatus : pendingStatus, nextApprover, nextStep, JSON.stringify(history), id]);
+    }
+    if (table === 'advances') {
+      const updated = result.rows[0];
+      await client.query('update advances set approval_stage=$1 where id=$2',
+        [updated.status === 'Onaylandı' ? 'approved' : updated.status === 'Reddedildi' ? 'rejected' : approvalStageKey(updated.current_approver), id]);
+      result = await client.query('select * from advances where id=$1', [id]);
     }
     await client.query('commit');
-    res.json(result.rows[0]);
+    return result.rows[0];
   } catch (error) {
     await client.query('rollback');
     throw error;
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
+}
+
+app.get('/api/leaves', asyncRoute(async (req, res) => {
+  const rows = (await pool.query('select * from leave_requests order by start_date desc,id desc')).rows;
+  res.json(rows.filter(row => approvalCanSee(row, req.user, 'Bekliyor')).map(row => decorateApproval(row, req.user, 'Bekliyor')));
 }));
+
+app.post('/api/leaves', asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const employeeId = Number(body.employee_id);
+  if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date || !Number.isInteger(Number(body.days)) || Number(body.days) <= 0) {
+    return res.status(400).json({ error: 'Çalışan, geçerli tarih aralığı ve izin süresi zorunludur' });
+  }
+  const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
+  if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
+  if (req.user.role !== 'Sistem yöneticisi' && (!req.user.employee_id || String(req.user.employee_id) !== String(employeeId))) {
+    return res.status(403).json({ error: 'Yalnızca kendi adınıza izin talebi oluşturabilirsiniz' });
+  }
+  const person = employee.rows[0];
+  const route = await approvalRouteFor('leave', person.department);
+  const result = await pool.query(`insert into leave_requests(employee_id,employee_name,department,requester_user_id,requester_user_name,
+    leave_type,start_date,end_date,days,status,approval_route,approval_step,current_approver)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,'Bekliyor',$10::jsonb,0,$11) returning *`,
+  [person.id, person.name, person.department, req.user.id, req.user.name, clean(body.leave_type) || 'Yıllık izin', body.start_date, body.end_date, Number(body.days), JSON.stringify(route), route[0]]);
+  res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
+}));
+
+app.patch('/api/leaves/:id/decision', asyncRoute(async (req, res) => {
+  const decision = clean(req.body?.decision).toLowerCase();
+  const reason = clean(req.body?.reason);
+  if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
+  const row = await decideApproval('leave_requests', req.params.id, req.user, decision, reason, 'Bekliyor');
+  res.json(decorateApproval(row, req.user, 'Bekliyor'));
+}));
+
+app.delete('/api/leaves/:id', asyncRoute(async (req, res) => {
+  const found = await pool.query('select * from leave_requests where id=$1', [req.params.id]);
+  if (!found.rowCount) return res.status(404).json({ error: 'İzin talebi bulunamadı' });
+  const row = found.rows[0];
+  if (req.user.role !== 'Sistem yöneticisi' && !(approvalOwnedBy(row, req.user) && row.status === 'Bekliyor' && Number(row.approval_step || 0) === 0)) {
+    return res.status(403).json({ error: 'Yalnızca ilk onayı bekleyen kendi talebinizi silebilirsiniz' });
+  }
+  await pool.query('delete from leave_requests where id=$1', [req.params.id]);
+  res.status(204).end();
+}));
+
+app.get('/api/expenses', asyncRoute(async (req, res) => {
+  const rows = (await pool.query('select * from expenses order by expense_date desc,id desc')).rows;
+  res.json(rows.filter(row => approvalCanSee(row, req.user, 'Bekliyor')).map(row => decorateApproval(row, req.user, 'Bekliyor')));
+}));
+
+app.post('/api/expenses', asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const employeeId = Number(body.employee_id);
+  if (!Number.isInteger(employeeId) || !amount(body.amount) || !dateOnly(body.expense_date) || !clean(body.category)) return res.status(400).json({ error: 'Çalışan, kategori, tarih ve pozitif tutar zorunludur' });
+  const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
+  if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
+  if (req.user.role !== 'Sistem yöneticisi' && (!req.user.employee_id || String(req.user.employee_id) !== String(employeeId))) {
+    return res.status(403).json({ error: 'Yalnızca kendi adınıza masraf talebi oluşturabilirsiniz' });
+  }
+  const person = employee.rows[0];
+  const route = await approvalRouteFor('expense', person.department);
+  const result = await pool.query(`insert into expenses(employee_id,employee_name,department,requester_user_id,requester_user_name,category,
+    expense_date,amount,currency,description,receipt_no,status,current_approver,approval_route,approval_step)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Bekliyor',$12,$13::jsonb,0) returning *`,
+  [person.id, person.name, person.department, req.user.id, req.user.name, clean(body.category), body.expense_date, amount(body.amount), clean(body.currency) || 'TRY', clean(body.description), clean(body.receipt_no), route[0], JSON.stringify(route)]);
+  res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
+}));
+
+app.patch('/api/expenses/:id/decision', asyncRoute(async (req, res) => {
+  const decision = clean(req.body?.decision).toLowerCase();
+  const reason = clean(req.body?.reason);
+  if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
+  const row = await decideApproval('expenses', req.params.id, req.user, decision, reason, 'Bekliyor');
+  res.json(decorateApproval(row, req.user, 'Bekliyor'));
+}));
+
+app.patch('/api/expenses/:id/status', asyncRoute(async (req, res) => {
+  if (clean(req.body?.status) !== 'Ödendi') return res.status(400).json({ error: 'Yalnızca ödeme durumu güncellenebilir' });
+  if (req.user.role !== 'Sistem yöneticisi' && !['Mali İşler', 'Bordro yetkilisi'].includes(req.user.role)) return res.status(403).json({ error: 'Ödeme işareti için mali yetki gerekiyor' });
+  const result = await pool.query("update expenses set status='Ödendi',updated_at=now() where id=$1 and status='Onaylandı' returning *", [req.params.id]);
+  if (!result.rowCount) return res.status(409).json({ error: 'Yalnızca tamamen onaylanmış masraf ödenebilir' });
+  res.json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
+}));
+
+app.delete('/api/expenses/:id', asyncRoute(async (req, res) => {
+  const found = await pool.query('select * from expenses where id=$1', [req.params.id]);
+  if (!found.rowCount) return res.status(404).json({ error: 'Masraf bulunamadı' });
+  const row = found.rows[0];
+  if (req.user.role !== 'Sistem yöneticisi' && !(approvalOwnedBy(row, req.user) && row.status === 'Bekliyor' && Number(row.approval_step || 0) === 0)) return res.status(403).json({ error: 'Yalnızca ilk onayı bekleyen kendi talebinizi silebilirsiniz' });
+  await pool.query('delete from expenses where id=$1', [req.params.id]);
+  res.status(204).end();
+}));
+
+app.get('/api/advances', asyncRoute(async (req, res) => {
+  const rows = (await pool.query('select * from advances order by requested_date desc,id desc')).rows;
+  res.json(rows.filter(row => approvalCanSee(row, req.user, 'Onay Sürecinde')).map(row => decorateApproval(row, req.user, 'Onay Sürecinde')));
+}));
+
+app.post('/api/advances', asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const employeeId = Number(body.employee_id);
+  if (!Number.isInteger(employeeId) || !amount(body.amount) || !dateOnly(body.requested_date)) return res.status(400).json({ error: 'Çalışan, tarih ve pozitif tutar zorunludur' });
+  const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
+  if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
+  if (req.user.role !== 'Sistem yöneticisi' && (!req.user.employee_id || String(req.user.employee_id) !== String(employeeId))) return res.status(403).json({ error: 'Yalnızca kendi adınıza avans talebi oluşturabilirsiniz' });
+  const person = employee.rows[0];
+  const route = await approvalRouteFor('advance', person.department);
+  const result = await pool.query(`insert into advances(employee_id,employee_name,department,requester_user_id,requester_user_name,requested_date,
+    amount,currency,deduction_month,reason,status,approval_stage,current_approver,approval_route,approval_step)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Onay Sürecinde',$11,$12,$13::jsonb,0) returning *`,
+  [person.id, person.name, person.department, req.user.id, req.user.name, body.requested_date, amount(body.amount), clean(body.currency) || 'TRY', dateOnly(body.deduction_month), clean(body.reason), approvalStageKey(route[0]), route[0], JSON.stringify(route)]);
+  res.status(201).json(decorateApproval(result.rows[0], req.user, 'Onay Sürecinde'));
+}));
+
+app.patch('/api/advances/:id/decision', asyncRoute(async (req, res) => {
+  const decision = clean(req.body?.decision).toLowerCase();
+  const reason = clean(req.body?.reason);
+  if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
+  const row = await decideApproval('advances', req.params.id, req.user, decision, reason, 'Onay Sürecinde');
+  res.json(decorateApproval(row, req.user, 'Onay Sürecinde'));
+}));
+
 app.get('/api/advances/:id/form', asyncRoute(async (req, res) => {
   const result = await pool.query('select * from advances where id=$1', [req.params.id]);
   if (!result.rowCount) return res.status(404).send('Avans bulunamadı');
   const advance = result.rows[0];
+  if (!approvalCanSee(advance, req.user, 'Onay Sürecinde')) return res.status(403).send('Bu avans kaydını görüntüleme yetkiniz yok');
   if (advance.status !== 'Onaylandı') return res.status(409).send('Avans formu yalnızca tüm onaylar tamamlandıktan sonra alınabilir');
   const html = value => clean(value).replace(/[&<>"']/g, character => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[character]));
   const formatDate = value => value ? new Date(value).toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul' }) : '-';
+  const approvals = approvalHistory(advance).filter(item => item.decision === 'approve').map(item => `<div class="sign"><strong>${html(item.approver)}</strong>${html(item.user_name)}<br>${formatDate(item.decided_at)}</div>`).join('');
   res.type('html').send(`<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>Onaylı Avans Formu #${advance.id}</title><style>
-    body{font-family:Arial,sans-serif;color:#17233b;margin:32px}.form{max-width:850px;margin:auto;border:2px solid #17233b;padding:28px}h1{text-align:center;font-size:22px;margin:0 0 24px}.approved{text-align:center;color:#14845d;font-weight:700;margin-bottom:22px}.grid{display:grid;grid-template-columns:1fr 1fr;border:1px solid #8992a3}.cell{padding:12px;border-right:1px solid #8992a3;border-bottom:1px solid #8992a3}.cell:nth-child(even){border-right:0}.wide{grid-column:1/-1;border-right:0}.label{font-size:11px;color:#667085;display:block;margin-bottom:5px}.approvals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}.sign{border:1px solid #8992a3;min-height:105px;padding:12px}.sign strong{display:block;margin-bottom:12px}.actions{text-align:center;margin-top:22px}@media print{.actions{display:none}body{margin:0}.form{border:1px solid #000}}
+    body{font-family:Arial,sans-serif;color:#17233b;margin:32px}.form{max-width:850px;margin:auto;border:2px solid #17233b;padding:28px}h1{text-align:center;font-size:22px;margin:0 0 24px}.approved{text-align:center;color:#14845d;font-weight:700;margin-bottom:22px}.grid{display:grid;grid-template-columns:1fr 1fr;border:1px solid #8992a3}.cell{padding:12px;border-right:1px solid #8992a3;border-bottom:1px solid #8992a3}.cell:nth-child(even){border-right:0}.wide{grid-column:1/-1;border-right:0}.label{font-size:11px;color:#667085;display:block;margin-bottom:5px}.approvals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}.sign{border:1px solid #8992a3;min-height:80px;padding:12px}.sign strong{display:block;margin-bottom:12px}.actions{text-align:center;margin-top:22px}@media print{.actions{display:none}body{margin:0}.form{border:1px solid #000}}
   </style></head><body><div class="form"><h1>ONAYLI PERSONEL AVANS FORMU</h1><div class="approved">✓ ONAYLANDI</div><div class="grid">
     <div class="cell"><span class="label">Form No</span>${advance.id}</div><div class="cell"><span class="label">Talep Tarihi</span>${formatDate(advance.requested_date)}</div>
     <div class="cell"><span class="label">Personel</span>${html(advance.employee_name)}</div><div class="cell"><span class="label">Departman</span>${html(advance.department)}</div>
     <div class="cell"><span class="label">Avans Tutarı</span>${Number(advance.amount).toLocaleString('tr-TR',{style:'currency',currency:advance.currency||'TRY'})}</div><div class="cell"><span class="label">Mahsup Ayı</span>${formatDate(advance.deduction_month)}</div>
     <div class="cell wide"><span class="label">Talep Nedeni</span>${html(advance.reason) || '-'}</div></div>
-    <div class="approvals"><div class="sign"><strong>Departman Müdürü</strong>${html(advance.department_approved_by)}<br>${formatDate(advance.department_approved_at)}</div>
-    <div class="sign"><strong>İnsan Kaynakları</strong>${html(advance.hr_approved_by)}<br>${formatDate(advance.hr_approved_at)}</div>
-    <div class="sign"><strong>Mali İşler</strong>${html(advance.finance_approved_by)}<br>${formatDate(advance.finance_approved_at)}</div></div>
-    <div class="actions"><button onclick="window.print()">Yazdır / PDF</button></div></div></body></html>`);
+    <div class="approvals">${approvals}</div><div class="actions"><button onclick="window.print()">Yazdır / PDF</button></div></div></body></html>`);
 }));
+
 app.delete('/api/advances/:id', asyncRoute(async (req, res) => {
-  const result = await pool.query("delete from advances where id=$1 and status='Onay Sürecinde' and approval_stage='department'", [req.params.id]);
-  if (!result.rowCount) return res.status(409).json({ error: 'Yalnızca ilk onaya gönderilmiş talep silinebilir' });
+  const found = await pool.query('select * from advances where id=$1', [req.params.id]);
+  if (!found.rowCount) return res.status(404).json({ error: 'Avans bulunamadı' });
+  const row = found.rows[0];
+  if (req.user.role !== 'Sistem yöneticisi' && !(approvalOwnedBy(row, req.user) && row.status === 'Onay Sürecinde' && Number(row.approval_step || 0) === 0)) return res.status(403).json({ error: 'Yalnızca ilk onayı bekleyen kendi talebinizi silebilirsiniz' });
+  await pool.query('delete from advances where id=$1', [req.params.id]);
   res.status(204).end();
 }));
 

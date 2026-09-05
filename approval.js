@@ -6,6 +6,7 @@
   const selectOptions=value=>approvers.map(x=>`<option ${x===value?'selected':''}>${x}</option>`).join('');
   const getRoute=dept=>{if(!Array.isArray(routes[dept])||!routes[dept].filter(Boolean).length)routes[dept]=['Departman yöneticisi','İK yöneticisi'];else routes[dept]=routes[dept].filter(Boolean);return routes[dept]};
   function approvalCard(){
+    if(!['Sistem yöneticisi','İK yöneticisi'].includes(window.__ikCurrentUser?.()?.role))return;
     const departments=[...new Set((state.employees||[]).map(e=>e.department).filter(Boolean))];
     const rows=departments.map(dept=>{const route=getRoute(dept);return `<div class="approval-row" data-dept="${esc(dept)}"><strong>${esc(dept)}</strong><div class="approval-steps">${route.map((x,i)=>`<span class="approval-step-wrap"><select class="select approval-step" data-dept="${esc(dept)}" data-step="${i}">${selectOptions(x)}</select>${i>0?'<button type="button" class="approval-remove" title="Adımı kaldır" data-remove-step="1">×</button>':''}</span>`).join('<span class="approval-arrow">→</span>')}</div><button type="button" class="btn ghost approval-add" data-add-step="1">+ İzin akışı ekle</button></div>`}).join('');
     const box=document.createElement('div');box.className='card approval-card';box.innerHTML=`<div class="card-head"><div><h2>İzin onay akışı</h2><span class="muted">Departmana göre sınırsız sıralı onaycı ekleyin</span></div><button class="btn" id="save-approval">Akışları kaydet</button></div>${rows||'<div class="empty">Onay akışı tanımlamak için önce çalışan ekleyin.</div>'}<div class="formula" style="margin-top:14px">Yeni izin talepleri seçilen sıraya göre ilerler. Her adım bir önceki onaydan sonra açılır.</div>`;$('#app').appendChild(box);
@@ -13,7 +14,6 @@
     $('#save-approval').onclick=()=>{document.querySelectorAll('.approval-row').forEach(row=>{routes[row.dataset.dept]=[...row.querySelectorAll('.approval-step')].map(s=>s.value)});localStorage.setItem(key,JSON.stringify(routes));toast('İzin onay akışları kaydedildi')};
   }
   const baseLeave=leave;leave=function(){baseLeave();approvalCard()};
-  const baseLeaveModal=leaveModal;leaveModal=function(){const before=state.leaves.length;baseLeaveModal();const modalEl=document.querySelector('.modal'),close=window.closeModal;if(!modalEl)return;modalEl.querySelectorAll('.close,.close-action').forEach(b=>b.onclick=()=>close&&close());const submit=modalEl.querySelector('.submit'),original=submit&&submit.onclick;if(submit)submit.onclick=()=>{original&&original();if(state.leaves.length<=before)return;const item=state.leaves[state.leaves.length-1],employee=state.employees.find(e=>e.name===item.employee),route=(routes[employee?.department]||['Departman yöneticisi','İK yöneticisi']).filter(Boolean);item.approvalRoute=route;item.currentApprover=route[0]||null;save()};};
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.querySelector('.modal')&&window.closeModal)window.closeModal()});
   document.addEventListener('click',e=>{if(e.target.classList.contains('modal'))window.closeModal&&window.closeModal()});
 })();
