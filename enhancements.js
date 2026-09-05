@@ -1,16 +1,26 @@
 // Çalışan modülünün ikinci seviye özellikleri.
 function isLeaveSeniorityExempt(employee) { return Boolean(employee && typeof employee === 'object' && employee.leave_seniority_exempt); }
-function yearsOfService(employeeOrStart) {
-  if (isLeaveSeniorityExempt(employeeOrStart)) return 0;
-  const start = employeeOrStart && typeof employeeOrStart === 'object' ? (employeeOrStart.seniority_start_date || employeeOrStart.start) : employeeOrStart;
+function completedServiceYears(start) {
   const d = new Date(start), now = new Date();
   let years = now.getFullYear() - d.getFullYear();
   if (now < new Date(now.getFullYear(), d.getMonth(), d.getDate())) years--;
   return Math.max(0, years);
 }
+function yearsOfService(employeeOrStart) {
+  if (isLeaveSeniorityExempt(employeeOrStart)) return 0;
+  const start = employeeOrStart && typeof employeeOrStart === 'object' ? (employeeOrStart.seniority_start_date || employeeOrStart.start) : employeeOrStart;
+  return completedServiceYears(start);
+}
+function leaveYearsOfService(employeeOrStart) {
+  if (isLeaveSeniorityExempt(employeeOrStart)) return 0;
+  const start = employeeOrStart && typeof employeeOrStart === 'object'
+    ? (employeeOrStart.leave_entitlement_start_date || employeeOrStart.seniority_start_date || employeeOrStart.start)
+    : employeeOrStart;
+  return completedServiceYears(start);
+}
 function annualEntitlement(employeeOrStart) {
   if (isLeaveSeniorityExempt(employeeOrStart)) return 0;
-  const y = yearsOfService(employeeOrStart);
+  const y = leaveYearsOfService(employeeOrStart);
   return y < 1 ? 0 : y < 5 ? 14 : y < 15 ? 20 : 26;
 }
 function usedLeave(name) { return state.leaves.filter(l => l.employee === name && l.status === 'Onaylandı' && l.type === 'Yıllık izin').reduce((s,l) => s + Number(l.days || 0), 0); }
@@ -18,8 +28,9 @@ function employeeDetails(e) {
   const exempt = isLeaveSeniorityExempt(e), entitlement = annualEntitlement(e), used = usedLeave(e.name);
   const seniority = exempt ? 'Muaf' : `${yearsOfService(e)} yıl`;
   const seniorityStart = e.seniority_start_date ? new Date(e.seniority_start_date).toLocaleDateString('tr-TR') : new Date(e.start).toLocaleDateString('tr-TR');
+  const leaveEntitlementStart = e.leave_entitlement_start_date ? new Date(e.leave_entitlement_start_date).toLocaleDateString('tr-TR') : seniorityStart;
   const exemptionNote = exempt ? `<div class="formula" style="margin:14px 0"><strong>Sezonluk personel</strong><br>Önceki çıkış ile yeniden giriş arasında ${e.employment_gap_days ?? 10} gün bulunduğu için yıllık izin ve kıdem hesabından muaftır.</div>` : '';
-  modal('Çalışan detayı', `<div class="person" style="margin-bottom:18px"><span class="person-avatar">${initials(e.name)}</span><div><strong style="font-size:17px">${e.name}</strong><small class="muted" style="display:block">${e.title || 'Pozisyon belirtilmemiş'}</small></div></div>${exemptionNote}<div class="form-grid"><div class="formula"><strong>İletişim</strong><br>${e.email || 'E-posta belirtilmemiş'}<br>${e.phone || 'Telefon belirtilmemiş'}</div><div class="formula"><strong>İş bilgileri</strong><br>${e.department}<br>Son işe giriş: ${new Date(e.start).toLocaleDateString('tr-TR')}<br>Kıdem başlangıcı: ${seniorityStart}<br>Kıdem: ${seniority}</div></div><div class="result"><span>Yıllık izin bakiyesi</span><strong>${Math.max(0, entitlement-used)} gün</strong><small>${exempt ? 'Sezonluk personel · izin ve kıdemden muaf' : `${entitlement} gün hak − ${used} gün onaylı kullanım`}</small></div>`, () => closeModal());
+  modal('Çalışan detayı', `<div class="person" style="margin-bottom:18px"><span class="person-avatar">${initials(e.name)}</span><div><strong style="font-size:17px">${e.name}</strong><small class="muted" style="display:block">${e.title || 'Pozisyon belirtilmemiş'}</small></div></div>${exemptionNote}<div class="form-grid"><div class="formula"><strong>İletişim</strong><br>${e.email || 'E-posta belirtilmemiş'}<br>${e.phone || 'Telefon belirtilmemiş'}</div><div class="formula"><strong>İş bilgileri</strong><br>${e.department}<br>Son işe giriş: ${new Date(e.start).toLocaleDateString('tr-TR')}<br>Kıdem başlangıcı: ${seniorityStart}<br>İzin hakediş başlangıcı: ${leaveEntitlementStart}<br>Kıdem: ${seniority}</div></div><div class="result"><span>Yıllık izin bakiyesi</span><strong>${Math.max(0, entitlement-used)} gün</strong><small>${exempt ? 'Sezonluk personel · izin ve kıdemden muaf' : `${entitlement} gün hak − ${used} gün onaylı kullanım`}</small></div>`, () => closeModal());
   const submit = document.querySelector('.modal .submit'); if (submit) { submit.textContent = 'Kapat'; submit.onclick = closeModal; }
 }
 function editEmployee(id) {

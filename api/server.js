@@ -761,9 +761,8 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
     // Eksik/henüz oluşmakta olan Bordro döneminde görünmeyen personeli pasife
     // çekme. Pasiflik yalnızca kaynak satırındaki açık çalışma durumu ve çıkış
     // bilgisi üzerinden güncellenir.
-    // Yeni sicil verilmiş olsa da 0-9 günlük aralar kıdemi kesmez. Önce her
-    // personelin son yeniden girişinden önceki çıkışını bul, sonra kesintisiz
-    // dönem zincirini geriye doğru takip ederek gerçek kıdem başlangıcını yaz.
+    // Son yeniden girişten önceki çıkışı bul. 0-9 günlük aralarda yıllık izin
+    // hakediş geçmişi korunur; kıdem başlangıcı ise son işe giriş tarihi olur.
     await client.query(`
       with previous_period as (
         select e.id, p.termination_date,
@@ -806,15 +805,20 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
           order by ep.termination_date desc
           limit 1
         ) p on (c.chain_start - p.termination_date) between 0 and 9
-      ), seniority as (
-        select id, min(chain_start) as seniority_start_date
+      ), leave_seniority as (
+        select id, min(chain_start) as leave_entitlement_start_date
         from continuous_service
         group by id
       )
       update employees e
-      set seniority_start_date=s.seniority_start_date
-      from seniority s
+      set leave_entitlement_start_date=s.leave_entitlement_start_date
+      from leave_seniority s
       where e.id=s.id`);
+    await client.query(`
+      update employees
+      set seniority_start_date=start_date
+      where source='Bordro'
+        and (seniority_start_date is null or employment_gap_days between 0 and 9)`);
     await client.query('commit');
   } catch (error) {
     await client.query('rollback');
