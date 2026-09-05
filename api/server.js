@@ -819,6 +819,21 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
       set seniority_start_date=start_date
       where source='Bordro'
         and (seniority_start_date is null or employment_gap_days between 0 and 9)`);
+    await client.query(`
+      with first_employment as (
+        select e.id, coalesce((
+          select min(ep.start_date)
+          from employee_employment_periods ep
+          where coalesce(ep.employee_identity, 'sicil:' || ep.payroll_sicil) =
+                coalesce(nullif(e.payroll_details->>'TC KİMLİK',''), 'sicil:' || e.payroll_sicil)
+        ), e.start_date) as first_start
+        from employees e
+        where e.source='Bordro'
+      )
+      update employees e
+      set first_employment_start_date=f.first_start
+      from first_employment f
+      where e.id=f.id`);
     await client.query('commit');
   } catch (error) {
     await client.query('rollback');

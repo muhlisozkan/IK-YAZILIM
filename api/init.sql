@@ -22,8 +22,10 @@ alter table employees add column if not exists employment_gap_days integer;
 alter table employees add column if not exists previous_termination_date date;
 alter table employees add column if not exists seniority_start_date date;
 alter table employees add column if not exists leave_entitlement_start_date date;
+alter table employees add column if not exists first_employment_start_date date;
 update employees set seniority_start_date=coalesce(seniority_start_date,start_date);
 update employees set leave_entitlement_start_date=coalesce(leave_entitlement_start_date,seniority_start_date,start_date);
+update employees set first_employment_start_date=coalesce(first_employment_start_date,start_date);
 create unique index if not exists employees_payroll_sicil_unique on employees(payroll_sicil) where payroll_sicil is not null;
 
 create table if not exists employee_employment_periods(
