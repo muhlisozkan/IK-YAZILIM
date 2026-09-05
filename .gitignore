@@ -1,0 +1,14 @@
+.bordro.env
+*.env
+!*.env.example
+
+# Sunucuya ve yerel sisteme özel dosyalar
+.env
+.env.*
+!*.env.example
+backups/
+._*
+.DS_Store
+node_modules/
+api/node_modules/
+*.log

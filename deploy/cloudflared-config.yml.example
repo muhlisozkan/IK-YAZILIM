@@ -1,0 +1,8 @@
+# /etc/cloudflared/config.yml
+tunnel: TUNNEL_UUID_BURAYA
+credentials-file: /etc/cloudflared/TUNNEL_UUID_BURAYA.json
+
+ingress:
+  - hostname: ik.ornekalanadiniz.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404

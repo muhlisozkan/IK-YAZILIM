@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>İK Merkezi</title>
+  <link rel="stylesheet" href="styles.css?v=8" />
+</head>
+<body>
+  <div class="auth-overlay" id="login-overlay">
+    <div class="login-card">
+      <div class="login-brand"><span class="brand-mark">İK</span><div><strong>İK Merkezi</strong><small>Güvenli yönetim paneli</small></div></div>
+      <h1>Oturum açın</h1>
+      <p>İK yönetim paneline devam etmek için kullanıcı bilgilerinizle giriş yapın.</p>
+      <form id="login-form">
+        <div class="field"><label for="login-username">Kullanıcı adı</label><input class="input" id="login-username" name="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label for="login-password">Şifre</label><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+        <div class="login-error" id="login-error" role="alert"></div>
+        <button class="btn login-submit" type="submit">Giriş yap</button>
+      </form>
+    </div>
+  </div>
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">İK</span><div><strong>İK Merkezi</strong><small>İnsan kaynakları</small></div></div>
+    <nav>
+      <button class="nav-item active" data-view="dashboard" onclick="window.__ikNavigate('dashboard')">▦ <span>Genel Bakış</span></button>
+      <button class="nav-item" data-view="employees" onclick="window.__ikNavigate('employees')">♙ <span>Çalışanlar</span></button>
+      <button class="nav-item" data-view="departments" onclick="window.__ikNavigate('departments')">▤ <span>Departmanlar</span></button>
+      <button class="nav-item" data-view="leave" onclick="window.__ikNavigate('leave')">◷ <span>İzin Yönetimi</span></button>
+      <button class="nav-item" data-view="payroll" onclick="window.__ikNavigate('payroll')">₺ <span>Ücret Hesaplama</span></button>
+      <button class="nav-item" data-view="expenses" onclick="window.__ikNavigate('expenses')">◈ <span>Masraf Yönetimi</span></button>
+      <button class="nav-item" data-view="advances" onclick="window.__ikNavigate('advances')">↗ <span>Avans Yönetimi</span></button>
+      <button class="nav-item" data-view="reports" onclick="window.__ikNavigate('reports')">▥ <span>Raporlar</span></button>
+      <button class="nav-item" data-view="attendance" onclick="window.__ikNavigate('attendance')">◫ <span>Puantaj ve Devam</span></button>
+      <button class="nav-item" data-view="users" onclick="window.__ikNavigate('users')">♙ <span>Kullanıcı ve Yetkiler</span></button>
+      <button class="nav-item" data-view="shifts" onclick="window.__ikNavigate('shifts')">◷ <span>Vardiya Planı</span></button>
+      <button class="nav-item" data-view="notifications" onclick="window.__ikNavigate('notifications')">● <span>Bildirimler</span></button>
+      <button class="nav-item" data-view="documents" onclick="window.__ikNavigate('documents')">▤ <span>Özlük Dosyaları</span></button>
+      <button class="nav-item" data-view="recruitment" onclick="window.__ikNavigate('recruitment')">♧ <span>İşe Alım</span></button>
+      <button class="nav-item" data-view="performance" onclick="window.__ikNavigate('performance')">★ <span>Performans</span></button>
+      <button class="nav-item" data-view="training" onclick="window.__ikNavigate('training')">◆ <span>Eğitim ve Gelişim</span></button>
+    </nav>
+    <div class="sidebar-foot"><small>Sunucu sürümü</small><span>● Sistem çalışıyor</span></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div><p class="eyebrow">İK YÖNETİM PANELİ</p><h1 id="page-title">Genel Bakış</h1></div><div class="top-actions"><span id="today"></span><button class="avatar">AY</button></div></header>
+    <section id="app" class="content"></section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="auth.js?v=2"></script>
+  <script src="server-store.js?v=6"></script>
+  <script src="app.js?v=9"></script>
+  <script src="enhancements.js?v=8"></script>
+  <script src="navigation-fix.js"></script>
+  <script src="leave-enhancements.js?v=2"></script>
+  <script src="attendance.js?v=5"></script>
+  <script src="approval.js?v=3"></script>
+  <script src="payroll-enhancements.js?v=1"></script>
+  <script src="users.js?v=3"></script>
+  <script src="permissions.js?v=3"></script>
+  <script src="departments.js?v=2"></script>
+  <script src="expense-advance.js?v=3"></script>
+  <script src="shifts.js?v=4"></script>
+  <script src="reports-enhancements.js?v=1"></script>
+  <script src="notifications.js?v=1"></script>
+  <script src="documents.js?v=1"></script>
+  <script src="recruitment.js?v=1"></script>
+  <script src="recruitment-dept.js?v=1"></script>
+  <script src="performance.js?v=1"></script>
+  <script src="training.js?v=1"></script>
+  <script src="training-dept.js?v=1"></script>
+  <script src="employee-details.js?v=3"></script>
+  <script src="attendance-paged.js?v=7"></script>
+  <script src="attendance-controls.js?v=3"></script>
+  <script src="dashboard.js?v=2"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ik-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ik
+      POSTGRES_USER: ik
+      POSTGRES_PASSWORD: ik
+    volumes:
+      - ik-db-data:/var/lib/postgresql/data
+      - ./api/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  ik-api:
+    build: ./api
+    container_name: ik-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://ik:ik@db:5432/ik
+    env_file:
+      - ${BORDRO_ENV_FILE:-/dev/null}
+    depends_on: [db]
+  ik-web:
+    build: .
+    container_name: ik-web
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8080:80"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  ik-db-data:
