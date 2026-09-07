@@ -16,6 +16,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://ik:ik@db:5432/ik
+      SMTP_SETTINGS_KEY: ${SMTP_SETTINGS_KEY}
     env_file:
       - ${BORDRO_ENV_FILE:-/dev/null}
     depends_on: [db]

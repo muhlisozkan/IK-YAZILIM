@@ -3,6 +3,7 @@ import sql from 'mssql';
 import pg from 'pg';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import nodemailer from 'nodemailer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,31 @@ const advanceStatuses = new Set(['Bekliyor', 'Onaylandı', 'Reddedildi', 'Ödend
 const clean = value => String(value ?? '').trim();
 const amount = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
 const dateOnly = value => /^\d{4}-\d{2}-\d{2}$/.test(clean(value)) ? clean(value) : null;
+const emailAddress = value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean(value));
+const smtpSecretKey = () => {
+  const material = clean(process.env.SMTP_SETTINGS_KEY);
+  if (material.length < 32) {
+    const error = new Error('SMTP şifreleme anahtarı sunucuda tanımlı değil');
+    error.status = 503;
+    throw error;
+  }
+  return crypto.createHash('sha256').update(material).digest();
+};
+const encryptSmtpSecret = value => {
+  if (!value) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', smtpSecretKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(value),'utf8'),cipher.final()]);
+  return ['v1',iv.toString('base64'),cipher.getAuthTag().toString('base64'),encrypted.toString('base64')].join(':');
+};
+const decryptSmtpSecret = value => {
+  if (!value) return '';
+  const [version,iv,tag,encrypted] = String(value).split(':');
+  if (version !== 'v1' || !iv || !tag || !encrypted) throw new Error('SMTP gizli bilgisi okunamadı');
+  const decipher = crypto.createDecipheriv('aes-256-gcm',smtpSecretKey(),Buffer.from(iv,'base64'));
+  decipher.setAuthTag(Buffer.from(tag,'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(encrypted,'base64')),decipher.final()]).toString('utf8');
+};
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const attendanceTypes = new Set(['normal', 'fazla']);
 const sharedDataKeys = new Set(['ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
@@ -407,6 +433,98 @@ app.delete('/api/users/:id', asyncRoute(async (req, res) => {
   const result = await pool.query('delete from app_users where id=$1', [id]);
   if (!result.rowCount) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
   res.status(204).end();
+}));
+
+async function readSmtpSettings() {
+  const result = await pool.query('select * from smtp_settings where id=1');
+  return result.rows[0] || null;
+}
+
+async function smtpAccessToken(settings) {
+  const params = new URLSearchParams({
+    client_id: settings.client_id,
+    client_secret: decryptSmtpSecret(settings.client_secret_encrypted),
+    scope: 'https://outlook.office365.com/.default',
+    grant_type: 'client_credentials'
+  });
+  const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(settings.tenant_id)}/oauth2/v2.0/token`,{
+    method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:params
+  });
+  const data = await response.json().catch(()=>({}));
+  if (!response.ok || !data.access_token) {
+    const error = new Error('Microsoft 365 OAuth2 erişim anahtarı alınamadı');
+    error.status = 502;
+    throw error;
+  }
+  return data.access_token;
+}
+
+async function smtpTransport(settings) {
+  const auth = settings.auth_mode === 'oauth2'
+    ? {type:'OAuth2',user:settings.username,accessToken:await smtpAccessToken(settings)}
+    : {user:settings.username,pass:decryptSmtpSecret(settings.password_encrypted)};
+  return nodemailer.createTransport({
+    host:settings.host,port:Number(settings.port),secure:Boolean(settings.secure),requireTLS:!settings.secure,auth,
+    tls:{minVersion:'TLSv1.2'},connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000
+  });
+}
+
+app.get('/api/smtp-settings', asyncRoute(async (req,res)=>{
+  if (!requireSystemAdmin(req,res)) return;
+  const settings=await readSmtpSettings();
+  if (!settings) return res.json({configured:false,enabled:false,host:'smtp.office365.com',port:587,secure:false,auth_mode:'oauth2',username:'',from_email:'',from_name:'İK Merkezi',tenant_id:'',client_id:'',password_saved:false,client_secret_saved:false});
+  res.json({configured:true,enabled:settings.enabled,host:settings.host,port:settings.port,secure:settings.secure,
+    auth_mode:settings.auth_mode,username:settings.username,from_email:settings.from_email,from_name:settings.from_name,
+    tenant_id:settings.tenant_id,client_id:settings.client_id,password_saved:Boolean(settings.password_encrypted),
+    client_secret_saved:Boolean(settings.client_secret_encrypted),updated_at:settings.updated_at});
+}));
+
+app.put('/api/smtp-settings', asyncRoute(async (req,res)=>{
+  if (!requireSystemAdmin(req,res)) return;
+  const body=req.body||{},host=clean(body.host)||'smtp.office365.com',port=Number(body.port)||587;
+  const authMode=clean(body.auth_mode).toLowerCase(),username=clean(body.username),fromEmail=clean(body.from_email);
+  const fromName=clean(body.from_name)||'İK Merkezi',tenantId=clean(body.tenant_id),clientId=clean(body.client_id);
+  if (host!=='smtp.office365.com' || port!==587) return res.status(400).json({error:'Office 365 için smtp.office365.com ve 587 portu kullanılmalıdır'});
+  if (!['password','oauth2'].includes(authMode) || !emailAddress(username) || !emailAddress(fromEmail)) return res.status(400).json({error:'Kimlik doğrulama yöntemi, kullanıcı ve gönderen e-posta adresini kontrol edin'});
+  if (authMode==='oauth2' && (!/^[A-Za-z0-9.-]{3,128}$/.test(tenantId) || !/^[A-Za-z0-9-]{20,64}$/.test(clientId))) return res.status(400).json({error:'Microsoft Entra kiracı ve uygulama kimliğini kontrol edin'});
+  const current=await readSmtpSettings();
+  const passwordEncrypted=authMode==='password'?(body.password?encryptSmtpSecret(body.password):current?.password_encrypted||null):null;
+  const clientSecretEncrypted=authMode==='oauth2'?(body.client_secret?encryptSmtpSecret(body.client_secret):current?.client_secret_encrypted||null):null;
+  if (authMode==='password'&&!passwordEncrypted) return res.status(400).json({error:'SMTP parolası zorunludur'});
+  if (authMode==='oauth2'&&!clientSecretEncrypted) return res.status(400).json({error:'Microsoft Entra istemci sırrı zorunludur'});
+  await pool.query(`
+    insert into smtp_settings(id,enabled,host,port,secure,auth_mode,username,from_email,from_name,password_encrypted,tenant_id,client_id,client_secret_encrypted,updated_by,updated_at)
+    values(1,$1,$2,$3,false,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+    on conflict(id) do update set enabled=excluded.enabled,host=excluded.host,port=excluded.port,secure=false,
+      auth_mode=excluded.auth_mode,username=excluded.username,from_email=excluded.from_email,from_name=excluded.from_name,
+      password_encrypted=excluded.password_encrypted,tenant_id=excluded.tenant_id,client_id=excluded.client_id,
+      client_secret_encrypted=excluded.client_secret_encrypted,updated_by=excluded.updated_by,updated_at=now()`,
+    [Boolean(body.enabled),host,port,authMode,username,fromEmail,fromName,passwordEncrypted,tenantId||null,clientId||null,clientSecretEncrypted,req.user.name]);
+  const saved=await readSmtpSettings();
+  res.json({ok:true,enabled:saved.enabled,configured:true,password_saved:Boolean(saved.password_encrypted),client_secret_saved:Boolean(saved.client_secret_encrypted),updated_at:saved.updated_at});
+}));
+
+app.post('/api/smtp-settings/test', asyncRoute(async (req,res)=>{
+  if (!requireSystemAdmin(req,res)) return;
+  const recipient=clean(req.body?.recipient);
+  if (!emailAddress(recipient)) return res.status(400).json({error:'Geçerli bir test alıcısı e-posta adresi girin'});
+  const settings=await readSmtpSettings();
+  if (!settings) return res.status(409).json({error:'Önce SMTP ayarlarını kaydedin'});
+  try {
+    const transport=await smtpTransport(settings);
+    const result=await transport.sendMail({
+      from:{name:settings.from_name,address:settings.from_email},to:recipient,
+      subject:'İK Merkezi · Office 365 SMTP testi',
+      text:'Bu e-posta, İK Merkezi Office 365 SMTP ayarlarının başarıyla çalıştığını doğrulamak için gönderildi.',
+      html:'<p>Bu e-posta, <strong>İK Merkezi</strong> Office 365 SMTP ayarlarının başarıyla çalıştığını doğrulamak için gönderildi.</p>'
+    });
+    res.json({ok:true,message_id:result.messageId});
+  } catch (cause) {
+    console.error('SMTP test failed',cause?.code||cause?.responseCode||cause?.message);
+    const error=new Error('Test e-postası gönderilemedi. SMTP AUTH, Entra izinleri ve hesap bilgilerini kontrol edin.');
+    error.status=502;
+    throw error;
+  }
 }));
 
 app.get('/api/health', asyncRoute(async (_req, res) => {
