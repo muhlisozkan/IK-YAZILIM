@@ -198,6 +198,7 @@ create table if not exists annual_leave_entitlements(
   entitled_days numeric(7,2) not null default 0 check(entitled_days between 0 and 3650),
   manual_adjustment numeric(6,2) not null default 0 check(manual_adjustment between -365 and 365),
   manual_used_days numeric(7,2) not null default 0 check(manual_used_days between 0 and 3650),
+  current_year_days numeric(6,2),
   manual_override boolean not null default false,
   adjustment_note text not null default '',
   updated_by text,
@@ -206,6 +207,19 @@ create table if not exists annual_leave_entitlements(
   unique(employee_id,entitlement_year)
 );
 create index if not exists annual_leave_entitlements_year_idx on annual_leave_entitlements(entitlement_year,employee_id);
+
+create table if not exists leave_usage_records(
+  id bigserial primary key,
+  employee_id integer not null references employees(id) on delete cascade,
+  start_date date,
+  end_date date,
+  week_rest_days numeric(5,1) not null default 0,
+  official_holiday_days numeric(5,1) not null default 0,
+  used_days numeric(6,2) not null default 0,
+  source text not null default 'Çizelge',
+  created_at timestamptz not null default now()
+);
+create index if not exists leave_usage_records_employee_idx on leave_usage_records(employee_id, start_date);
 
 create table if not exists leave_requests(
   id bigserial primary key,

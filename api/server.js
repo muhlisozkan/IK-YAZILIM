@@ -1221,6 +1221,20 @@ function annualLeaveEntitlement(startDate, birthDate, year) {
   return total;
 }
 
+// Bu yıl (en son tamamlanan hizmet yılı) hak edilen izin günü.
+function currentYearLeaveDays(startDate, birthDate, year) {
+  const start = annualLeaveDate(startDate);
+  if (!start) return 0;
+  const yearEnd = new Date(Date.UTC(Number(year), 11, 31));
+  const now = new Date();
+  const reference = now < yearEnd ? now : yearEnd;
+  const completedYears = completedFullYears(start, reference);
+  if (completedYears < 1) return 0;
+  const birth = annualLeaveDate(birthDate);
+  const ageAtStart = birth ? completedFullYears(birth, start) : null;
+  return yearlyLeaveDays(completedYears, ageAtStart === null ? null : ageAtStart + (completedYears - 1));
+}
+
 async function visibleAnnualLeaveEmployees(user) {
   const cols = "select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif'";
   const scope = visibleDepartments(user);
@@ -1273,8 +1287,12 @@ app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
     const entitled=Number(record.entitled_days||0),adjustment=Number(record.manual_adjustment||0);
     const manualUsed=Number(record.manual_used_days||0),attendanceUsed=usedMap.get(Number(employee.id))||0;
     const used=manualUsed+attendanceUsed;
+    const currentYearDays=record.current_year_days!=null
+      ? Number(record.current_year_days)
+      : currentYearLeaveDays(employee.leave_entitlement_start_date||employee.start_date,employee.birth_date,year);
     return {employee_id:employee.id,employee_name:employee.name,department:employee.department,year,
       entitled_days:entitled,manual_adjustment:adjustment,total_days:entitled+adjustment,
+      current_year_days:currentYearDays,
       manual_used_days:manualUsed,attendance_used_days:attendanceUsed,used_days:used,
       remaining_days:entitled+adjustment-used,manual_override:Boolean(record.manual_override),
       adjustment_note:record.adjustment_note||'',updated_by:record.updated_by||null,updated_at:record.updated_at||null};
@@ -1300,6 +1318,26 @@ app.patch('/api/annual-leave-balances/:employeeId', asyncRoute(async (req,res)=>
       adjustment_note=excluded.adjustment_note,updated_by=excluded.updated_by,updated_at=now()`,
     [employeeId,year,entitled,adjustment,manualUsed,clean(req.body?.adjustment_note).slice(0,500),req.user.name]);
   res.json({ok:true});
+}));
+
+app.get('/api/annual-leave-balances/:employeeId/usage', asyncRoute(async (req,res)=>{
+  const employeeId=Number(req.params.employeeId);
+  if (!Number.isInteger(employeeId)) return res.status(400).json({error:'Geçersiz çalışan'});
+  const employee=await pool.query('select id,name,department from employees where id=$1',[employeeId]);
+  if (!employee.rowCount) return res.status(404).json({error:'Çalışan bulunamadı'});
+  // Yalnızca yıllık izin ekranındaki kapsamına giren çalışan için.
+  const scope=visibleDepartments(req.user);
+  const allowed = scope===null
+    || (Array.isArray(scope) && scope.length && scope.includes(clean(employee.rows[0].department)))
+    || String(req.user.employee_id||'')===String(employeeId);
+  if (!allowed) return res.status(403).json({error:'Bu çalışanın izin kullanım detayını görme yetkiniz yok'});
+  const rows=(await pool.query(`
+    select to_char(start_date,'YYYY-MM-DD') as start_date, to_char(end_date,'YYYY-MM-DD') as end_date,
+           week_rest_days, official_holiday_days, used_days, source
+    from leave_usage_records where employee_id=$1
+    order by start_date nulls last, id`,[employeeId])).rows;
+  const total=rows.reduce((sum,row)=>sum+Number(row.used_days||0),0);
+  res.json({employee:{id:employee.rows[0].id,name:employee.rows[0].name,department:employee.rows[0].department},total_used:total,records:rows});
 }));
 
 app.get('/api/leaves', asyncRoute(async (req, res) => {

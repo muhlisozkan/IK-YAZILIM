@@ -56,7 +56,7 @@ function renderAnnualDashboard(data){
   const usedPercent=chartTotal?Math.min(100,positiveUsed/chartTotal*100):0;
   const maxRemaining=Math.max(1,...rows.map(row=>Math.max(0,Number(row.remaining_days)||0)));
   const bars=rows.map(row=>`<div class="leave-person-bar"><div><span>${leaveEsc(row.employee_name)}</span><strong>${leaveNumber(row.remaining_days)} gün</strong></div><small>${leaveEsc(row.department)}</small><div class="bar"><i style="width:${Math.max(0,Number(row.remaining_days)||0)/maxRemaining*100}%"></i></div></div>`).join('');
-  const tableRows=rows.map(row=>`<tr><td><strong>${leaveEsc(row.employee_name)}</strong></td><td>${leaveEsc(row.department)}</td><td>${leaveNumber(row.entitled_days)}</td><td>${leaveNumber(row.manual_adjustment)}</td><td>${leaveNumber(row.used_days)}</td><td><strong>${leaveNumber(row.remaining_days)}</strong></td><td>${data.can_edit?`<button class="btn ghost" data-annual-edit="${row.employee_id}">Düzenle</button>`:''}</td></tr>`).join('');
+  const tableRows=rows.map(row=>`<tr><td><strong>${leaveEsc(row.employee_name)}</strong></td><td>${leaveEsc(row.department)}</td><td>${leaveNumber(row.entitled_days)}</td><td>${leaveNumber(row.current_year_days)}</td><td>${leaveNumber(row.used_days)}</td><td><strong>${leaveNumber(row.remaining_days)}</strong></td><td class="row-actions"><button class="btn ghost" data-annual-usage="${row.employee_id}">Kullanım detayı</button>${data.can_edit?`<button class="btn ghost" data-annual-edit="${row.employee_id}">Düzenle</button>`:''}</td></tr>`).join('');
   const years=[annualYear-2,annualYear-1,annualYear,annualYear+1].filter((year,index,array)=>array.indexOf(year)===index).sort();
   $('#app').innerHTML=`<div class="section-title"><div><h2>${annualYear} yıllık izinleri</h2><span class="muted">Kullanım yalnızca puantajda Y (Yıllık İzin) girilen ve tarihi gelmiş günlerden hesaplanır</span></div>${leaveTabs()}</div>
     <div class="card"><div class="toolbar" style="margin:0"><label class="muted" for="annual-year">Yıl</label><select class="select" id="annual-year">${years.map(year=>`<option value="${year}" ${year===annualYear?'selected':''}>${year}</option>`).join('')}</select><label class="muted" for="annual-department">Departman</label><select class="select" id="annual-department"><option value="">Tüm departmanlar</option>${(data.departments||[]).map(department=>`<option value="${leaveEsc(department)}" ${department===annualDepartment?'selected':''}>${leaveEsc(department)}</option>`).join('')}</select></div></div>
@@ -64,11 +64,27 @@ function renderAnnualDashboard(data){
       <article class="card dashboard-chart"><div class="card-head"><div><h2>Departman izin özeti</h2><span class="muted">${leaveEsc(annualDepartment||'Tüm departmanlar')} · ${rows.length} çalışan</span></div></div><div class="chart-body"><div class="large-donut" style="background:${chartTotal?`conic-gradient(#e55261 0 ${usedPercent}%,#18a874 ${usedPercent}% 100%)`:'conic-gradient(#e9edf4 0 100%)'}"><div><strong>${leaveNumber(positiveRemaining)}</strong><span>kalan gün</span></div></div><ul class="chart-legend"><li><span class="legend-color" style="background:#4967f4"></span><span>Toplam hak</span><strong>${leaveNumber(totals.entitled)}</strong></li><li><span class="legend-color" style="background:#e55261"></span><span>Kullanılan</span><strong>${leaveNumber(totals.used)}</strong></li><li><span class="legend-color" style="background:#18a874"></span><span>Kalan</span><strong>${leaveNumber(totals.remaining)}</strong></li></ul></div></article>
       <article class="card"><div class="card-head"><div><h2>Kalan izne göre çalışanlar</h2><span class="muted">En çok izni kalandan aşağı doğru</span></div></div><div class="leave-bars">${bars||'<div class="empty">Gösterilecek çalışan yok</div>'}</div></article>
     </div>
-    <div class="card" style="margin-top:18px"><div class="card-head"><div><h2>Çalışan yıllık izinleri</h2><span class="muted">Hak + manuel düzeltme − puantajdaki Y günleri</span></div></div><div class="annual-leave-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>HAK EDİLEN</th><th>DÜZELTME</th><th>KULLANILAN</th><th>KALAN</th><th></th></tr></thead><tbody>${tableRows||'<tr><td colspan="7" class="empty">Gösterilecek çalışan yok</td></tr>'}</tbody></table></div></div>`;
+    <div class="card" style="margin-top:18px"><div class="card-head"><div><h2>Çalışan yıllık izinleri</h2><span class="muted">Toplam hak edilen − kullanılan (çizelge + puantajdaki Y günleri)</span></div></div><div class="annual-leave-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>TOPLAM HAK EDİLEN</th><th>BU YIL HAK EDİLEN</th><th>KULLANILAN</th><th>KALAN</th><th></th></tr></thead><tbody>${tableRows||'<tr><td colspan="7" class="empty">Gösterilecek çalışan yok</td></tr>'}</tbody></table></div></div>`;
   bindLeaveTabs();
   $('#annual-year').onchange=event=>{annualYear=Number(event.target.value);renderAnnualLeave()};
   $('#annual-department').onchange=event=>{annualDepartment=event.target.value;renderAnnualLeave()};
   document.querySelectorAll('[data-annual-edit]').forEach(button=>button.onclick=()=>editAnnualLeave(rows.find(row=>String(row.employee_id)===button.dataset.annualEdit)));
+  document.querySelectorAll('[data-annual-usage]').forEach(button=>button.onclick=()=>showLeaveUsage(button.dataset.annualUsage,rows.find(row=>String(row.employee_id)===button.dataset.annualUsage)));
+}
+
+async function showLeaveUsage(employeeId,row){
+  const title=row?`${leaveEsc(row.employee_name)} · izin kullanım detayı`:'İzin kullanım detayı';
+  modal(title,'<div class="empty" id="usage-slot">Kayıtlar yükleniyor…</div>',()=>closeModal());
+  const submit=document.querySelector('.modal .submit');if(submit){submit.textContent='Kapat';submit.onclick=closeModal;}
+  try{
+    const data=await leaveApi(`/api/annual-leave-balances/${employeeId}/usage`);
+    const recs=data.records||[];
+    const body=recs.map(r=>`<tr><td>${leaveDate(r.start_date)||'—'}</td><td>${leaveDate(r.end_date)||'—'}</td><td style="text-align:right">${leaveNumber(r.week_rest_days)}</td><td style="text-align:right">${leaveNumber(r.official_holiday_days)}</td><td style="text-align:right"><strong>${leaveNumber(r.used_days)}</strong></td></tr>`).join('');
+    const html=`<div class="formula" style="margin-bottom:12px">Yıllık İzin Takip Çizelgesi · İzin Kayıt · ${recs.length} kayıt · toplam <strong>${leaveNumber(data.total_used)}</strong> gün</div><div style="max-height:52vh;overflow:auto"><table><thead><tr><th>BAŞLAMA</th><th>BİTİŞ</th><th style="text-align:right">HAFTA T.</th><th style="text-align:right">RESMİ T.</th><th style="text-align:right">KULLANILAN</th></tr></thead><tbody>${body||'<tr><td colspan="5" class="empty">Bu çalışan için çizelgede izin kaydı bulunmuyor</td></tr>'}</tbody></table></div>`;
+    const slot=document.querySelector('#usage-slot');if(slot)slot.outerHTML=html;
+  }catch(error){
+    const slot=document.querySelector('#usage-slot');if(slot)slot.textContent=error.message;
+  }
 }
 
 function editAnnualLeave(row){
