@@ -1190,12 +1190,20 @@ function completedFullYears(from, to) {
   return years;
 }
 
-// Yıllık İzin Takip Çizelgesi "Kriterler" kuralları:
-//   1–5 yıl kıdem (5 dahil)        -> 14 gün
-//   5 yıldan fazla, 15 yıldan az   -> 20 gün
-//   15 yıl ve üzeri (15 dahil)     -> 26 gün
-//   18 yaş ve altı / 50 yaş ve üstü -> çalışma süresine bakılmaksızın en az 20 gün
-// Kıdem ve yaş, seçilen yılın sonuna (ya da bugüne, hangisi önceyse) göre hesaplanır.
+// Bir hizmet yılının izin hakkı — çizelgedeki "Hesap Cetveli" ile birebir:
+//   1–5. yıl   -> 14 gün
+//   6–14. yıl  -> 20 gün
+//   15. yıl ve sonrası -> 26 gün
+//   O hizmet yılının başında yaş 17 ve altı ya da 49 ve üstü ise -> en az 20 gün
+//   (çizelge bu sınırları kullanıyor; mevzuat metni "18 ve altı / 50 ve üstü" der).
+function yearlyLeaveDays(serviceYear, ageAtYearStart) {
+  let days = serviceYear <= 5 ? 14 : serviceYear <= 14 ? 20 : 26;
+  if (ageAtYearStart !== null && (ageAtYearStart <= 17 || ageAtYearStart >= 49)) days = Math.max(days, 20);
+  return days;
+}
+
+// Toplam (kümülatif) hak edilen yıllık izin. startDate = yıllık izne esas giriş
+// (10 günden kısa aralarla giriş-çıkışta ilk giriş; askı personelinde son giriş).
 function annualLeaveEntitlement(startDate, birthDate, year) {
   const start = annualLeaveDate(startDate);
   if (!start) return 0;
@@ -1204,13 +1212,13 @@ function annualLeaveEntitlement(startDate, birthDate, year) {
   const reference = now < yearEnd ? now : yearEnd;
   const completedYears = completedFullYears(start, reference);
   if (completedYears < 1) return 0;
-  let entitlement = completedYears <= 5 ? 14 : completedYears < 15 ? 20 : 26;
   const birth = annualLeaveDate(birthDate);
-  if (birth) {
-    const age = completedFullYears(birth, reference);
-    if (age <= 18 || age >= 50) entitlement = Math.max(entitlement, 20);
+  const ageAtStart = birth ? completedFullYears(birth, start) : null;
+  let total = 0;
+  for (let y = 1; y <= completedYears; y++) {
+    total += yearlyLeaveDays(y, ageAtStart === null ? null : ageAtStart + (y - 1));
   }
-  return entitlement;
+  return total;
 }
 
 async function visibleAnnualLeaveEmployees(user) {
@@ -1262,9 +1270,12 @@ app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
   const usedMap=new Map(usedRows.map(row=>[Number(row.employee_id),Number(row.used_days)]));
   const rows=employees.map(employee=>{
     const record=entitlementMap.get(Number(employee.id))||{};
-    const entitled=Number(record.entitled_days||0),adjustment=Number(record.manual_adjustment||0),used=usedMap.get(Number(employee.id))||0;
+    const entitled=Number(record.entitled_days||0),adjustment=Number(record.manual_adjustment||0);
+    const manualUsed=Number(record.manual_used_days||0),attendanceUsed=usedMap.get(Number(employee.id))||0;
+    const used=manualUsed+attendanceUsed;
     return {employee_id:employee.id,employee_name:employee.name,department:employee.department,year,
-      entitled_days:entitled,manual_adjustment:adjustment,total_days:entitled+adjustment,used_days:used,
+      entitled_days:entitled,manual_adjustment:adjustment,total_days:entitled+adjustment,
+      manual_used_days:manualUsed,attendance_used_days:attendanceUsed,used_days:used,
       remaining_days:entitled+adjustment-used,manual_override:Boolean(record.manual_override),
       adjustment_note:record.adjustment_note||'',updated_by:record.updated_by||null,updated_at:record.updated_at||null};
   }).sort((a,b)=>b.remaining_days-a.remaining_days||a.employee_name.localeCompare(b.employee_name,'tr'));
@@ -1275,18 +1286,19 @@ app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
 app.patch('/api/annual-leave-balances/:employeeId', asyncRoute(async (req,res)=>{
   if (!annualLeaveEditor(req.user)) return res.status(403).json({error:'Yıllık izin düzeltmesini yalnızca sistem veya İK yöneticisi yapabilir'});
   const employeeId=Number(req.params.employeeId),year=Number(req.body?.year),entitled=Number(req.body?.entitled_days),adjustment=Number(req.body?.manual_adjustment||0);
-  if (!Number.isInteger(employeeId)||!Number.isInteger(year)||year<2000||year>2100||!Number.isFinite(entitled)||entitled<0||entitled>365||!Number.isFinite(adjustment)||adjustment<-365||adjustment>365) {
-    return res.status(400).json({error:'Yıl, hak edilen gün ve düzeltme değerlerini kontrol edin'});
+  const manualUsed=Number(req.body?.manual_used_days||0);
+  if (!Number.isInteger(employeeId)||!Number.isInteger(year)||year<2000||year>2100||!Number.isFinite(entitled)||entitled<0||entitled>3650||!Number.isFinite(adjustment)||adjustment<-365||adjustment>365||!Number.isFinite(manualUsed)||manualUsed<0||manualUsed>3650) {
+    return res.status(400).json({error:'Yıl, hak edilen gün, kullanılan gün ve düzeltme değerlerini kontrol edin'});
   }
   const employee=await pool.query('select id from employees where id=$1',[employeeId]);
   if (!employee.rowCount) return res.status(404).json({error:'Çalışan bulunamadı'});
   await pool.query(`
-    insert into annual_leave_entitlements(employee_id,entitlement_year,entitled_days,manual_adjustment,manual_override,adjustment_note,updated_by)
-    values($1,$2,$3,$4,true,$5,$6)
+    insert into annual_leave_entitlements(employee_id,entitlement_year,entitled_days,manual_adjustment,manual_used_days,manual_override,adjustment_note,updated_by)
+    values($1,$2,$3,$4,$5,true,$6,$7)
     on conflict(employee_id,entitlement_year) do update set
-      entitled_days=excluded.entitled_days,manual_adjustment=excluded.manual_adjustment,manual_override=true,
+      entitled_days=excluded.entitled_days,manual_adjustment=excluded.manual_adjustment,manual_used_days=excluded.manual_used_days,manual_override=true,
       adjustment_note=excluded.adjustment_note,updated_by=excluded.updated_by,updated_at=now()`,
-    [employeeId,year,entitled,adjustment,clean(req.body?.adjustment_note).slice(0,500),req.user.name]);
+    [employeeId,year,entitled,adjustment,manualUsed,clean(req.body?.adjustment_note).slice(0,500),req.user.name]);
   res.json({ok:true});
 }));
 
