@@ -1050,23 +1050,38 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus) 
 const annualLeaveEditor = user => ['Sistem yöneticisi','İK yöneticisi'].includes(user?.role)
   || clean(user?.department) === 'İnsan Kaynakları';
 
-function annualLeaveEntitlement(startDate, year) {
-  const rawDate = startDate instanceof Date ? startDate.toISOString().slice(0,10) : String(startDate).slice(0,10);
-  const start = new Date(`${rawDate}T00:00:00Z`);
-  if (Number.isNaN(start.getTime())) return 0;
+function annualLeaveDate(value) {
+  const rawDate = value instanceof Date ? value.toISOString().slice(0,10) : String(value || "").slice(0,10);
+  const date = new Date(rawDate + "T00:00:00Z");
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function annualLeaveEntitlement(startDate, birthDate, year) {
+  const start = annualLeaveDate(startDate);
+  if (!start) return 0;
   const completedYears = Number(year) - start.getUTCFullYear();
-  return completedYears < 1 ? 0 : completedYears < 5 ? 14 : completedYears < 15 ? 20 : 26;
+  if (completedYears < 1) return 0;
+  let entitlement = completedYears <= 5 ? 14 : completedYears < 15 ? 20 : 26;
+  const birth = annualLeaveDate(birthDate);
+  if (birth) {
+    const anniversary = new Date(Date.UTC(Number(year),start.getUTCMonth(),start.getUTCDate()));
+    let age = anniversary.getUTCFullYear() - birth.getUTCFullYear();
+    const birthdayThisYear = new Date(Date.UTC(anniversary.getUTCFullYear(),birth.getUTCMonth(),birth.getUTCDate()));
+    if (anniversary < birthdayThisYear) age--;
+    if (age <= 18 || age >= 50) entitlement = Math.max(entitlement,20);
+  }
+  return entitlement;
 }
 
 async function visibleAnnualLeaveEmployees(user) {
   if (annualLeaveEditor(user)) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' order by name")).rows;
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' order by name")).rows;
   }
   if (user?.role === 'Departman yöneticisi' && clean(user.department)) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' and department=$1 order by name", [clean(user.department)])).rows;
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' and department=$1 order by name", [clean(user.department)])).rows;
   }
   if (user?.employee_id) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' and id=$1 order by name", [Number(user.employee_id)])).rows;
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' and id=$1 order by name", [Number(user.employee_id)])).rows;
   }
   return [];
 }
@@ -1075,7 +1090,7 @@ async function ensureAnnualLeaveEntitlements(year, employees, actor='Sistem') {
   if (!employees.length) return;
   const allocations = employees.map(employee => ({
     employee_id:Number(employee.id),
-    entitled_days:annualLeaveEntitlement(employee.leave_entitlement_start_date || employee.start_date, year)
+    entitled_days:annualLeaveEntitlement(employee.leave_entitlement_start_date || employee.start_date, employee.birth_date, year)
   }));
   await pool.query(`
     insert into annual_leave_entitlements(employee_id,entitlement_year,entitled_days,updated_by)
