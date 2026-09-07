@@ -65,10 +65,9 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .notif-panel{display:flex;flex-direction:column}
 /* Genel Bakış sağ bildirim rayı */
 .content:has(.dashboard-grid){max-width:1680px}
-.dashboard-grid{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:20px;align-items:start}
-.dashboard-main{min-width:0;display:flex;flex-direction:column;gap:0}
-.dashboard-main .dashboard-charts{margin-top:18px}
-.dashboard-main .dashboard-absence{margin-top:18px}
+.dashboard-grid{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:20px;align-items:start;margin-top:18px}
+.dashboard-main{min-width:0;display:flex;flex-direction:column;gap:18px}
+.dashboard-main>.dashboard-charts,.dashboard-main>.dashboard-absence{margin-top:0}
 .dashboard-rail{position:sticky;top:20px}
-.dashboard-rail .notif-panel{max-height:calc(100vh - 120px);overflow:auto}
+.dashboard-rail .notif-panel{max-height:calc(100vh - 110px);overflow:auto}
 @media(max-width:1180px){.dashboard-grid{grid-template-columns:1fr}.dashboard-rail{position:static}.dashboard-rail .notif-panel{max-height:none}}

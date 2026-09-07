@@ -59,23 +59,23 @@
     const absentRows=absent.map(item=>`<tr><td><div class="person"><span class="person-avatar">${esc(initials(item.employee.name))}</span><span><strong>${esc(item.employee.name)}</strong><small class="muted" style="display:block">${esc(item.employee.title||'Pozisyon belirtilmemiş')}</small></span></div></td><td>${esc(dashboardDepartment(item.employee.department)||'-')}</td><td><span class="badge ${item.kind}">${esc(item.type)}</span></td><td>${item.end?new Date(`${item.end}T00:00:00`).toLocaleDateString('tr-TR'):'-'}</td></tr>`).join('');
 
     const departmentFilter=departments.length>1?`<div class="dashboard-filter"><label for="dashboard-department">Departman</label><select class="select" id="dashboard-department"><option value="">Tüm departmanlar</option>${departments.map(department=>`<option value="${esc(department)}" ${selectedDepartment===department?'selected':''}>${esc(department)}</option>`).join('')}</select></div>`:'';
-    $('#app').innerHTML=`<div class="dashboard-grid">
-      <div class="dashboard-main">
-        <div class="dashboard-heading"><div><h2>İK durum dashboard'u</h2><p>Güncel kadro, izin ve rapor durumlarını tek ekranda izleyin.</p></div>${departmentFilter}</div>
-        <div class="dashboard-metrics">
-          ${metric('Güncel çalışan',total,total,'#18a874',selectedDepartment||'Tüm şirket')}
-          ${metric('Görevde',working.length,total,'#4967f4','Aktif olarak çalışıyor')}
-          ${metric('İzinli',onLeave.length,total,'#f59e0b','Bugün izinli')}
-          ${metric('Raporlu',sick.length,total,'#e55261','Bugün raporlu')}
-        </div>
-        <div class="dashboard-charts">
-          ${largeChart('Çalışan durumları',total,statusParts,'çalışan')}
-          ${largeChart(selectedDepartment?'Seçili departman':'Departman dağılımı',total,departmentParts,'kişi')}
-        </div>
-        <div class="card dashboard-absence"><div class="card-head"><div><h2>Bugün izinli ve raporlu çalışanlar</h2><span class="muted">${absent.length} çalışan · ${pending} bekleyen izin talebi</span></div><button class="btn ghost" data-go="leave">İzin yönetimine git →</button></div><div class="dashboard-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>DURUM</th><th>BİTİŞ</th></tr></thead><tbody>${absentRows||'<tr><td colspan="4" class="empty">Bugün izinli veya raporlu çalışan bulunmuyor.</td></tr>'}</tbody></table></div></div>
+    $('#app').innerHTML=`<div class="dashboard-heading"><div><h2>İK durum dashboard'u</h2><p>Güncel kadro, izin ve rapor durumlarını tek ekranda izleyin.</p></div>${departmentFilter}</div>
+      <div class="dashboard-metrics">
+        ${metric('Güncel çalışan',total,total,'#18a874',selectedDepartment||'Tüm şirket')}
+        ${metric('Görevde',working.length,total,'#4967f4','Aktif olarak çalışıyor')}
+        ${metric('İzinli',onLeave.length,total,'#f59e0b','Bugün izinli')}
+        ${metric('Raporlu',sick.length,total,'#e55261','Bugün raporlu')}
       </div>
-      <aside class="dashboard-rail" id="dashboard-notifications"></aside>
-    </div>`;
+      <div class="dashboard-grid">
+        <div class="dashboard-main">
+          <div class="dashboard-charts">
+            ${largeChart('Çalışan durumları',total,statusParts,'çalışan')}
+            ${largeChart(selectedDepartment?'Seçili departman':'Departman dağılımı',total,departmentParts,'kişi')}
+          </div>
+          <div class="card dashboard-absence"><div class="card-head"><div><h2>Bugün izinli ve raporlu çalışanlar</h2><span class="muted">${absent.length} çalışan · ${pending} bekleyen izin talebi</span></div><button class="btn ghost" data-go="leave">İzin yönetimine git →</button></div><div class="dashboard-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>DURUM</th><th>BİTİŞ</th></tr></thead><tbody>${absentRows||'<tr><td colspan="4" class="empty">Bugün izinli veya raporlu çalışan bulunmuyor.</td></tr>'}</tbody></table></div></div>
+        </div>
+        <aside class="dashboard-rail" id="dashboard-notifications"></aside>
+      </div>`;
     const departmentSelect=$('#dashboard-department');
     if(departmentSelect)departmentSelect.onchange=event=>{selectedDepartment=event.target.value;dashboard()};
     bindGo();
