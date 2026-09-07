@@ -753,7 +753,7 @@ app.get('/api/employees/:id/payroll-details', asyncRoute(async (req, res) => {
 }));
 app.post('/api/employees', asyncRoute(async (req, res) => {
   const e = req.body;
-  const result = await pool.query('insert into employees(name,email,department,title,start_date,salary,status) values($1,$2,$3,$4,$5,$6,$7) returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
+  const result = await pool.query("insert into employees(name,email,department,title,start_date,salary,status,source,payroll_sync_protected) values($1,$2,$3,$4,$5,$6,$7,'Manuel',true) returning *", [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
   res.status(201).json(result.rows[0]);
 }));
 app.put('/api/employees/:id', asyncRoute(async (req, res) => {
@@ -847,7 +847,8 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
           termination_date=excluded.termination_date,
           leave_seniority_exempt=excluded.leave_seniority_exempt,
           employment_gap_days=excluded.employment_gap_days,
-          previous_termination_date=excluded.previous_termination_date`,
+          previous_termination_date=excluded.previous_termination_date
+        where employees.payroll_sync_protected=false`,
       [clean(row.name), department, clean(row.title), row.start_date, sourceStatus(row.payroll_status), payrollSicil, workplace, unit, JSON.stringify(row), terminationDate, leaveSeniorityExempt, employmentGapDays, previousTerminationDate]);
     }
     // Eksik/henüz oluşmakta olan Bordro döneminde görünmeyen personeli pasife
