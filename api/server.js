@@ -829,7 +829,7 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
         .sort((a, b) => new Date(b.termination_date) - new Date(a.termination_date))[0];
       const previousTerminationDate = previousPeriod?.termination_date || null;
       const employmentGapDays = previousTerminationDate ? dayDifference(row.start_date, previousTerminationDate) : null;
-      const leaveSeniorityExempt = employmentGapDays !== null && employmentGapDays >= 10;
+      const leaveSeniorityExempt = false;
       await client.query(`
         insert into employees(name,email,department,title,start_date,salary,status,payroll_sicil,workplace,unit,source,source_synced_at,payroll_details,termination_date,leave_seniority_exempt,employment_gap_days,previous_termination_date)
         values($1,'',$2,$3,$4,0,$5,$6,$7,$8,'Bordro',now(),$9::jsonb,$10,$11,$12,$13)
@@ -875,7 +875,7 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
       update employees e
       set previous_termination_date=p.termination_date,
           employment_gap_days=p.gap_days,
-          leave_seniority_exempt=coalesce(p.gap_days >= 10,false)
+          leave_seniority_exempt=false
       from previous_period p
       where e.id=p.id`);
     await client.query(`
@@ -909,8 +909,7 @@ app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
     await client.query(`
       update employees
       set seniority_start_date=start_date
-      where source='Bordro'
-        and (seniority_start_date is null or employment_gap_days between 0 and 9)`);
+      where source='Bordro'`);
     await client.query(`
       with first_employment as (
         select e.id, coalesce((
