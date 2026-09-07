@@ -7,7 +7,7 @@
   const can=action=>typeof window.__ikCan!=='function'||window.__ikCan(state.view,action);
   const currentUser=()=>window.__ikCurrentUser?.()||{};
   const currentEmployee=()=>window.__ikCurrentEmployee?.()||null;
-  const employeeOptions=(selected='')=>state.employees.filter(e=>e.status==='Aktif').map(e=>`<option value="${e.id}" ${String(e.id)===String(selected)?'selected':''}>${esc(e.name)} · ${esc(e.department)}</option>`).join('');
+  const employeeOptions=(selected='')=>state.employees.filter(e=>e.status==='Aktif').sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr')).map(e=>`<option value="${e.id}" ${String(e.id)===String(selected)?'selected':''}>${esc(e.name)} · ${esc(e.department)}</option>`).join('');
   async function api(path,options){const response=await fetch(path,options);if(!response.ok){const data=await response.json().catch(()=>({}));throw Error(data.error||'Sunucu işlemi tamamlanamadı')}return response.status===204?null:response.json()}
 
   function stats(items,dateField){

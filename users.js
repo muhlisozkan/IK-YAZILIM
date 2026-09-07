@@ -44,7 +44,7 @@
   }
 
   function userModal(existing){
-    const employeeOptions=['<option value="">Bağlantı yok</option>',...(state.employees||[]).map(e=>`<option value="${e.id}" ${String(existing?.employee_id||'')===String(e.id)?'selected':''}>${esc(e.name)} · ${esc(e.department)}</option>`)].join('');
+    const employeeOptions=['<option value="">Bağlantı yok</option>',...(state.employees||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr')).map(e=>`<option value="${e.id}" ${String(existing?.employee_id||'')===String(e.id)?'selected':''}>${esc(e.name)} · ${esc(e.department)}</option>`)].join('');
     modal(existing?'Kullanıcıyı düzenle':'Yeni kullanıcı',`<div class="form-grid">
       <div class="field"><label>Giriş kullanıcı adı *</label><input class="input" id="u-username" autocomplete="off" value="${esc(existing?.username||'')}"></div>
       <div class="field"><label>${existing?'Yeni şifre':'Şifre *'}</label><input class="input" id="u-password" type="password" autocomplete="new-password" placeholder="${existing?'Değişmeyecekse boş bırakın':'En az 8 karakter'}"></div>
