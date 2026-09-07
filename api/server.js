@@ -1380,7 +1380,7 @@ function decorateApproval(row, user, pendingStatus) {
   };
 }
 
-async function decideApproval(table, id, user, decision, reason, pendingStatus) {
+async function decideApproval(table, id, user, decision, reason, pendingStatus, options = {}) {
   if (!['leave_requests', 'expenses', 'advances'].includes(table)) throw new Error('Geçersiz onay türü');
   const client = await pool.connect();
   try {
@@ -1416,12 +1416,17 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus) 
         where id=$4 returning *`, [JSON.stringify(history), user.name, clean(reason), id]);
     } else {
       const nextStep = step + 1;
-      const completed = nextStep >= route.length;
-      const nextApprover = completed ? null : route[nextStep];
+      // İzin: son onay İK'da ve İK "GM onayına gönder" derse rotaya Genel müdür eklenir
+      const wouldComplete = nextStep >= route.length;
+      const escalateToGm = options.escalate === true && table === 'leave_requests'
+        && wouldComplete && clean(row.current_approver) === 'İK yöneticisi';
+      const workingRoute = escalateToGm ? [...route, 'Genel müdür'] : route;
+      const completed = nextStep >= workingRoute.length;
+      const nextApprover = completed ? null : workingRoute[nextStep];
       const approvedStatus = 'Onaylandı';
       result = await client.query(`update ${table} set status=$1,current_approver=$2,approval_step=$3,
-        approval_history=$4::jsonb,updated_at=now() where id=$5 returning *`,
-      [completed ? approvedStatus : pendingStatus, nextApprover, nextStep, JSON.stringify(history), id]);
+        approval_route=$4::jsonb,approval_history=$5::jsonb,updated_at=now() where id=$6 returning *`,
+      [completed ? approvedStatus : pendingStatus, nextApprover, nextStep, JSON.stringify(workingRoute), JSON.stringify(history), id]);
     }
     if (table === 'advances') {
       const updated = result.rows[0];
@@ -1639,7 +1644,7 @@ app.patch('/api/leaves/:id/decision', asyncRoute(async (req, res) => {
   const decision = clean(req.body?.decision).toLowerCase();
   const reason = clean(req.body?.reason);
   if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
-  const row = await decideApproval('leave_requests', req.params.id, req.user, decision, reason, 'Bekliyor');
+  const row = await decideApproval('leave_requests', req.params.id, req.user, decision, reason, 'Bekliyor', { escalate: Boolean(req.body?.escalate) });
   res.json(decorateApproval(row, req.user, 'Bekliyor'));
   if (decision === 'approve') notifyApprovalSms(row, 'leave_requests');
 }));

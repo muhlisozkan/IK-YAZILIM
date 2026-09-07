@@ -107,3 +107,6 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .cb-opt:hover,.cb-opt.cb-active{background:#eef1ff}
 .cb-opt.cb-cur{font-weight:650;color:var(--blue)}
 .cb-empty{padding:10px;color:var(--muted);font-size:12px}
+
+.gm-escalate{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);margin-left:6px;white-space:nowrap;cursor:pointer}
+.gm-escalate input{cursor:pointer}
