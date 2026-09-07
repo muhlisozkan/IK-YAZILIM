@@ -133,5 +133,11 @@ async function decideLeave(id,decision){
 
 async function deleteLeave(id){if(!confirm('İzin talebini silmek istediğinize emin misiniz?'))return;try{await leaveApi(`/api/leaves/${id}`,{method:'DELETE'});state.leaves=state.leaves.filter(item=>String(item.id)!==String(id));renderLeaveRequests();toast('İzin talebi silindi')}catch(error){toast(error.message)}}
 
+window.__ikOpenLeave=function(section){
+  leaveSection=section||'requests';
+  if(typeof window.__ikNavigate==='function')window.__ikNavigate('leave');
+  else{state.view='leave';shell();}
+};
+
 loadLeaves().catch(error=>console.error('İzin talepleri yüklenemedi',error));
 shell();

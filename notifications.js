@@ -18,29 +18,25 @@
   const readSet=()=>new Set(jget(READ_KEY(),[]));
   const saveReadSet=s=>{try{localStorage.setItem(READ_KEY(),JSON.stringify([...s]))}catch{}};
 
-  function isMyApproval(item){
-    const u=window.__ikCurrentUser?.()||{};
-    if(['Sistem yöneticisi','İK yöneticisi'].includes(u.role))return true;
-    return String(item.current_approver||'')===String(u.role||'');
-  }
   const numId=id=>Number(String(id).split(':')[1])||0;
 
+  // Sunucu can_approve alanı sıralı onay akışında yalnızca sıradaki onaycıya true döner
   function currentNotifications(){
     const list=[];
     (state.leaves||[]).forEach(l=>{
-      if(l.status==='Bekliyor'&&isMyApproval(l))
-        list.push({id:'leave:'+l.id,cat:'İzin onayı',kind:'orange',
-          text:`${esc(l.employee||l.employee_name||'Çalışan')} · ${esc(l.type||l.leave_type||'izin')} talebi onay bekliyor`,go:'leave'});
+      if(l.can_approve)
+        list.push({id:'leave:'+l.id,cat:'İzin onayı',kind:'orange',view:'leave',section:'requests',
+          text:`${esc(l.employee||l.employee_name||'Çalışan')} · ${esc(l.type||l.leave_type||'izin')} talebi onayınızı bekliyor`});
     });
     (state.expenses||[]).forEach(x=>{
-      if(x.status==='Bekliyor'&&isMyApproval(x))
-        list.push({id:'expense:'+x.id,cat:'Masraf onayı',kind:'orange',
-          text:`${esc(x.employee_name||'Çalışan')} · ${fmt(x.amount)} masraf onay bekliyor`,go:'expenses'});
+      if(x.can_approve)
+        list.push({id:'expense:'+x.id,cat:'Masraf onayı',kind:'orange',view:'expenses',
+          text:`${esc(x.employee_name||'Çalışan')} · ${fmt(x.amount)} masraf onayınızı bekliyor`});
     });
     (state.advances||[]).forEach(a=>{
-      if(a.status==='Onay Sürecinde'&&isMyApproval(a))
-        list.push({id:'advance:'+a.id,cat:'Avans onayı',kind:'orange',
-          text:`${esc(a.employee_name||'Çalışan')} · ${fmt(a.amount)} avans onay bekliyor`,go:'advances'});
+      if(a.can_approve)
+        list.push({id:'advance:'+a.id,cat:'Avans onayı',kind:'orange',view:'advances',
+          text:`${esc(a.employee_name||'Çalışan')} · ${fmt(a.amount)} avans onayınızı bekliyor`});
     });
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
@@ -98,7 +94,7 @@
   }
 
   function itemRow(n,inDropdown){
-    return `<button class="notif-item" data-notif-go="${n.id}" data-go-view="${n.go}">
+    return `<button class="notif-item" data-notif-go="${n.id}" data-go-view="${n.view||''}" data-go-section="${n.section||''}">
       <span class="badge ${n.kind}">${n.cat}</span>
       <span class="notif-text">${n.text}</span>
       <span class="notif-read" data-notif-read="${n.id}" title="Okundu işaretle">✓</span>
@@ -150,7 +146,9 @@
     root.querySelectorAll('[data-notif-go]').forEach(b=>b.onclick=()=>{
       const s=readSet();s.add(b.dataset.notifGo);saveReadSet(s);
       closeDropdown();
-      if(b.dataset.goView&&window.__ikNavigate)window.__ikNavigate(b.dataset.goView);
+      const view=b.dataset.goView,sec=b.dataset.goSection;
+      if(view==='leave'&&typeof window.__ikOpenLeave==='function')window.__ikOpenLeave(sec||'requests');
+      else if(view&&typeof window.__ikNavigate==='function')window.__ikNavigate(view);
       tick(false);
     });
   }
