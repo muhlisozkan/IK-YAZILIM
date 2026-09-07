@@ -61,7 +61,17 @@
       const isAdmin=window.__ikCurrentUser?.()?.role==='Sistem yöneticisi';
       const departmentFilter=isAdmin?`<select class="select" id="att-department"><option value="">Tüm departmanlar</option>${[...new Set(state.employees.map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr')).map(d=>`<option ${department===d?'selected':''}>${d}</option>`).join('')}</select>`:'';
       $('#app').innerHTML=`<div class="section-title"><div><h2>Puantaj ve devam</h2><span class="muted">${month} dönemi · ${filtered.length} çalışan · Sayfa ${page}/${pages} · Hücre değişiklikleri otomatik kaydedilir</span></div></div><div class="card"><div class="toolbar"><input class="input" id="att-search" placeholder="Çalışan, sicil veya departman ara…" value="${search}">${departmentFilter}<button class="btn secondary" id="att-export">Excel raporu</button><button class="btn ghost" id="att-prev" ${page<=1?'disabled':''}>← Önceki</button><button class="btn ghost" id="att-next" ${page>=pages?'disabled':''}>Sonraki →</button></div><div class="att-scroll"><table class="att-table"><thead><tr><th>Çalışan</th><th>Çalışma tipi</th>${Array.from({length:days},(_,i)=>`<th>${i+1}</th>`).join('')}</tr></thead><tbody>${rows||`<tr><td colspan="${days+2}" class="empty">Çalışan bulunmuyor</td></tr>`}</tbody></table></div></div><div class="formula" style="margin-top:18px">${unrestricted?'<strong>Yetkili düzenleme:</strong> Sistem yöneticisi ve İK kullanıcıları tüm puantaj dönemlerinde değişiklik yapabilir.':'<strong>Düzenleme sınırı:</strong> Yalnızca güncel ayda, geriye dönük son 2 gün ve sonrası için işlem yapılabilir. Yeni aya geçildiğinde önceki ay salt okunur olur.'}<br><small>Excel raporu seçili departman veya tüm departmanlar için indirilebilir.</small></div>`;
-      $('#att-search').oninput=e=>{search=e.target.value;page=1;render()}; if($('#att-department')) $('#att-department').onchange=e=>{department=e.target.value;page=1;render()}; $('#att-prev').onclick=()=>{page--;render()}; $('#att-next').onclick=()=>{page++;render()}; $('#att-export').onclick=()=>exportTemplate(filtered,month,department);
+      $('#att-search').oninput=e=>{
+        search=e.target.value;page=1;
+        const caret=e.target.selectionStart;
+        clearTimeout(window.__attSearchTimer);
+        window.__attSearchTimer=setTimeout(()=>{
+          render();
+          const box=$('#att-search');
+          if(box){box.focus();try{box.setSelectionRange(caret,caret)}catch(_){}}
+        },220);
+      };
+      if($('#att-department')) $('#att-department').onchange=e=>{department=e.target.value;page=1;render()}; $('#att-prev').onclick=()=>{page--;render()}; $('#att-next').onclick=()=>{page++;render()}; $('#att-export').onclick=()=>exportTemplate(filtered,month,department);
       document.querySelectorAll('.att-select').forEach(s=>{s.dataset.savedValue=s.value;s.onchange=()=>saveEntry(s)});
       const monthInput=document.createElement('input'); monthInput.type='month'; monthInput.id='att-month'; monthInput.className='input'; monthInput.value=month; monthInput.title='Puantaj dönemi'; document.querySelector('.toolbar').prepend(monthInput);
       monthInput.onchange=async()=>{month=monthInput.value||attMonth();page=1;monthInput.disabled=true;try{await loadMonth(month);render()}catch(error){toast(error.message)}finally{monthInput.disabled=false}};
