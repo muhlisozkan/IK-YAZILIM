@@ -5,6 +5,13 @@
   const isApproved=value=>value==='Onaylandı';
   const isCurrentLeave=leave=>isApproved(leave.status)&&String(leave.start||'')<=dateKey()&&String(leave.end||'')>=dateKey();
   const isSickType=type=>/hastalık|rapor/i.test(String(type||''));
+  const dashboardDepartment=value=>{
+    const department=String(value||'').trim();
+    const normalized=department.toLocaleLowerCase('tr-TR');
+    if(normalized.startsWith('teknik'))return 'Teknik Servis';
+    if(normalized.startsWith('yiyecek içecek'))return 'Yiyecek İçecek';
+    return department;
+  };
 
   function donutStyle(parts,total){
     if(!total)return 'conic-gradient(#e9edf4 0 100%)';
@@ -26,9 +33,9 @@
   dashboard=function(){
     $('#page-title').textContent='Genel Bakış';
     const employees=(state.employees||[]).filter(employee=>employee.status!=='Pasif');
-    const departments=[...new Set(employees.map(employee=>employee.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+    const departments=[...new Set(employees.map(employee=>dashboardDepartment(employee.department)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
     if(selectedDepartment&&!departments.includes(selectedDepartment))selectedDepartment='';
-    const scoped=employees.filter(employee=>!selectedDepartment||employee.department===selectedDepartment);
+    const scoped=employees.filter(employee=>!selectedDepartment||dashboardDepartment(employee.department)===selectedDepartment);
     const currentLeaves=(state.leaves||[]).filter(isCurrentLeave);
     const leaveByName=new Map(currentLeaves.map(leave=>[leave.employee,leave]));
     const sick=scoped.filter(employee=>isSickType(employee.status)||isSickType(leaveByName.get(employee.name)?.type));
@@ -45,11 +52,11 @@
     ];
     const departmentParts=departments.map((department,index)=>({
       label:department,
-      value:scoped.filter(employee=>employee.department===department).length,
+      value:scoped.filter(employee=>dashboardDepartment(employee.department)===department).length,
       color:['#4967f4','#18a874','#f59e0b','#8b5cf6','#06b6d4','#e55261','#64748b'][index%7]
     })).filter(part=>part.value);
     const absent=[...sick.map(employee=>({employee,type:leaveByName.get(employee.name)?.type||'Raporlu',kind:'red',end:leaveByName.get(employee.name)?.end})),...onLeave.map(employee=>({employee,type:leaveByName.get(employee.name)?.type||'İzinli',kind:'orange',end:leaveByName.get(employee.name)?.end}))];
-    const absentRows=absent.map(item=>`<tr><td><div class="person"><span class="person-avatar">${esc(initials(item.employee.name))}</span><span><strong>${esc(item.employee.name)}</strong><small class="muted" style="display:block">${esc(item.employee.title||'Pozisyon belirtilmemiş')}</small></span></div></td><td>${esc(item.employee.department||'-')}</td><td><span class="badge ${item.kind}">${esc(item.type)}</span></td><td>${item.end?new Date(`${item.end}T00:00:00`).toLocaleDateString('tr-TR'):'-'}</td></tr>`).join('');
+    const absentRows=absent.map(item=>`<tr><td><div class="person"><span class="person-avatar">${esc(initials(item.employee.name))}</span><span><strong>${esc(item.employee.name)}</strong><small class="muted" style="display:block">${esc(item.employee.title||'Pozisyon belirtilmemiş')}</small></span></div></td><td>${esc(dashboardDepartment(item.employee.department)||'-')}</td><td><span class="badge ${item.kind}">${esc(item.type)}</span></td><td>${item.end?new Date(`${item.end}T00:00:00`).toLocaleDateString('tr-TR'):'-'}</td></tr>`).join('');
 
     $('#app').innerHTML=`<div class="dashboard-heading"><div><h2>İK durum dashboard'u</h2><p>Güncel kadro, izin ve rapor durumlarını tek ekranda izleyin.</p></div><div class="dashboard-filter"><label for="dashboard-department">Departman</label><select class="select" id="dashboard-department"><option value="">Tüm departmanlar</option>${departments.map(department=>`<option value="${esc(department)}" ${selectedDepartment===department?'selected':''}>${esc(department)}</option>`).join('')}</select></div></div>
       <div class="dashboard-metrics">
