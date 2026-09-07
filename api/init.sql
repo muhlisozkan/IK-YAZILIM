@@ -154,7 +154,7 @@ create table if not exists smtp_settings(
   host text not null default 'smtp.office365.com',
   port integer not null default 587 check(port between 1 and 65535),
   secure boolean not null default false,
-  auth_mode text not null default 'oauth2' check(auth_mode in ('password','oauth2')),
+  auth_mode text not null default 'password' check(auth_mode = 'password'),
   username text not null default '',
   from_email text not null default '',
   from_name text not null default 'İK Merkezi',
