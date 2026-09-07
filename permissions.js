@@ -5,7 +5,7 @@
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
-    'Departman yöneticisi': { views: ['dashboard','employees','departments','leave','expenses','advances','reports','attendance','shifts','notifications','performance','training'], create: true, approve: false },
+    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','attendance','shifts','notifications','performance','training'], create: true, approve: false },
     'Mali İşler': { views: ['dashboard','advances','expenses','reports','notifications'], create: false, approve: true },
     'Finans yöneticisi': { views: ['dashboard','advances','expenses','reports','notifications'], create: false, approve: true },
     'Genel müdür': { views: ['dashboard','leave','expenses','advances','reports','notifications'], create: false, approve: true },
