@@ -69,25 +69,50 @@ const istanbulClock = () => {
   return { date: istanbulDate(), hour: part('hour'), minute: part('minute') };
 };
 
+// Vardiya <-> puantaj aynası. Etkileşimli düzenlemelerde son yazan kazanır.
+async function mirrorShiftToAttendance(client, employeeId, workDate, workType, value, updatedBy, respectManual = false) {
+  if (value) {
+    await client.query(`
+      insert into attendance_entries(employee_id,work_date,work_type,value,updated_by,source)
+      values($1,$2,$3,$4,$5,'shift')
+      on conflict(employee_id,work_date,work_type) do update set
+        value=excluded.value, updated_by=excluded.updated_by, source='shift', updated_at=now()
+      ${respectManual ? "where attendance_entries.source='shift'" : ''}`,
+      [employeeId, workDate, workType, value, updatedBy || 'Vardiya planı']);
+  } else {
+    await client.query(
+      "delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type=$3 and source='shift'",
+      [employeeId, workDate, workType]);
+  }
+}
+async function mirrorAttendanceToShift(client, employeeId, workDate, workType, value, updatedBy) {
+  const column = workType === 'fazla' ? 'overtime' : 'shift_type';
+  const other = workType === 'fazla' ? 'shift_type' : 'overtime';
+  const existing = await client.query('select shift_type,overtime from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
+  const otherValue = existing.rows[0] ? existing.rows[0][other] : '';
+  if (!value && !otherValue) {
+    await client.query('delete from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
+    return;
+  }
+  await client.query(`
+    insert into shift_plans(employee_id,work_date,${column},updated_by,transferred_at,updated_at)
+    values($1,$2,$3,$4,now(),now())
+    on conflict(employee_id,work_date) do update set ${column}=$3,updated_by=$4,updated_at=now()`,
+    [employeeId, workDate, value || '', updatedBy || 'Puantaj']);
+}
+
 async function transferShiftPlansForDate(workDate = istanbulDate()) {
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const transferred = await client.query(`
-      insert into attendance_entries(employee_id,work_date,work_type,value,updated_by,source)
-      select employee_id,work_date,'normal',shift_type,coalesce(updated_by,'Otomatik vardiya aktarımı'),'shift'
-      from shift_plans
-      where work_date=$1
-      on conflict(employee_id,work_date,work_type) do update set
-        value=excluded.value,
-        updated_by=excluded.updated_by,
-        source='shift',
-        updated_at=now()
-      where attendance_entries.source='shift'
-      returning id`, [workDate]);
+    const plans = (await client.query('select employee_id,shift_type,overtime,updated_by from shift_plans where work_date=$1', [workDate])).rows;
+    for (const plan of plans) {
+      await mirrorShiftToAttendance(client, plan.employee_id, workDate, 'normal', clean(plan.shift_type), plan.updated_by || 'Otomatik vardiya aktarımı', true);
+      await mirrorShiftToAttendance(client, plan.employee_id, workDate, 'fazla', clean(plan.overtime), plan.updated_by || 'Otomatik vardiya aktarımı', true);
+    }
     await client.query('update shift_plans set transferred_at=now() where work_date=$1', [workDate]);
     await client.query('commit');
-    return transferred.rowCount;
+    return plans.length;
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -844,8 +869,10 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
   if (!unrestricted && (workDate.slice(0, 7) !== today.slice(0, 7) || dateDistance(today, workDate) > 2)) {
     return res.status(403).json({ error: 'Bu tarih için puantaj düzeltme süresi doldu' });
   }
+  const inShiftWindow = (() => { const off = dateDistance(workDate, today); return off >= -1 && off <= 14; })();
   if (!value) {
     await pool.query('delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type=$3', [employeeId, workDate, workType]);
+    if (inShiftWindow) await mirrorAttendanceToShift(pool, employeeId, workDate, workType, '', req.user.name);
     return res.status(204).end();
   }
   const result = await pool.query(`
@@ -855,6 +882,7 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
       value=excluded.value, updated_by=excluded.updated_by, source='manual', updated_at=now()
     returning employee_id,to_char(work_date,'YYYY-MM-DD') as work_date,work_type,value,updated_at`,
   [employeeId, workDate, workType, value, req.user.name || null]);
+  if (inShiftWindow) await mirrorAttendanceToShift(pool, employeeId, workDate, workType, value, req.user.name);
   res.json(result.rows[0]);
 }));
 
@@ -868,7 +896,7 @@ app.get('/api/shifts', asyncRoute(async (req, res) => {
   const params = [start, end];
   const scopeSql = scopeEmployeeSql(req.user, 's.employee_id', params);
   const result = await pool.query(`
-    select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type
+    select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type, s.overtime
     from shift_plans s
     join employees e on e.id=s.employee_id
     where s.work_date between $1 and $2${scopeSql}
@@ -880,10 +908,15 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const employeeId = Number(body.employee_id);
   const workDate = dateOnly(body.work_date);
+  const hasNormal = Object.prototype.hasOwnProperty.call(body, 'shift_type');
+  const hasOvertime = Object.prototype.hasOwnProperty.call(body, 'overtime');
   const shiftType = clean(body.shift_type);
-  if (!Number.isInteger(employeeId) || employeeId <= 0 || !workDate || (shiftType && !attendanceNormalValues.has(shiftType))) {
+  const overtime = clean(body.overtime);
+  if (!Number.isInteger(employeeId) || employeeId <= 0 || !workDate || (!hasNormal && !hasOvertime)) {
     return res.status(400).json({ error: 'Geçersiz vardiya kaydı' });
   }
+  if (hasNormal && shiftType && !attendanceNormalValues.has(shiftType)) return res.status(400).json({ error: 'Geçersiz vardiya kodu' });
+  if (hasOvertime && overtime && !attendanceOvertimeValues.has(overtime)) return res.status(400).json({ error: 'Geçersiz fazla mesai değeri' });
   if (!requireRole(req, res, canEditWorkforce, 'Vardiya planlama yetkiniz yok')) return;
   const today = istanbulDate();
   const offset = dateDistance(workDate, today);
@@ -893,24 +926,32 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   if (!canActOnDepartment(req.user, employee.rows[0].department)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızdaki çalışanın vardiyasını planlayabilirsiniz' });
   }
-  if (!shiftType) {
-    await pool.query('delete from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
-    const clock = istanbulClock();
-    if (workDate === clock.date && clock.hour >= 17) {
-      await pool.query("delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type='normal' and source='shift'", [employeeId, workDate]);
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const existing = (await client.query('select shift_type,overtime from shift_plans where employee_id=$1 and work_date=$2 for update', [employeeId, workDate])).rows[0] || { shift_type: '', overtime: '' };
+    const nextNormal = hasNormal ? shiftType : clean(existing.shift_type);
+    const nextOvertime = hasOvertime ? overtime : clean(existing.overtime);
+    if (!nextNormal && !nextOvertime) {
+      await client.query('delete from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
+    } else {
+      await client.query(`
+        insert into shift_plans(employee_id,work_date,shift_type,overtime,updated_by,transferred_at,updated_at)
+        values($1,$2,$3,$4,$5,null,now())
+        on conflict(employee_id,work_date) do update set
+          shift_type=excluded.shift_type,overtime=excluded.overtime,updated_by=excluded.updated_by,transferred_at=null,updated_at=now()`,
+        [employeeId, workDate, nextNormal, nextOvertime, req.user.name || null]);
     }
-    return res.status(204).end();
+    if (hasNormal) await mirrorShiftToAttendance(client, employeeId, workDate, 'normal', nextNormal, req.user.name);
+    if (hasOvertime) await mirrorShiftToAttendance(client, employeeId, workDate, 'fazla', nextOvertime, req.user.name);
+    await client.query('commit');
+    res.json({ employee_id: employeeId, date: workDate, type: nextNormal, overtime: nextOvertime });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
   }
-  const result = await pool.query(`
-    insert into shift_plans(employee_id,work_date,shift_type,updated_by)
-    values($1,$2,$3,$4)
-    on conflict(employee_id,work_date) do update set
-      shift_type=excluded.shift_type,updated_by=excluded.updated_by,transferred_at=null,updated_at=now()
-    returning employee_id,to_char(work_date,'YYYY-MM-DD') as date,shift_type as type,updated_at`,
-  [employeeId, workDate, shiftType, req.user.name || null]);
-  const clock = istanbulClock();
-  if (workDate === clock.date && clock.hour >= 17) await transferShiftPlansForDate(workDate);
-  res.json(result.rows[0]);
 }));
 
 app.post('/api/attendance-report', asyncRoute(async (req, res) => {

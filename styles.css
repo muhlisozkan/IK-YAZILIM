@@ -80,3 +80,9 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .rf-table th[data-sort]{cursor:pointer;user-select:none;white-space:nowrap}
 .rf-table th[data-sort]:hover{color:var(--blue)}
 .rf-table th.rf-sort-active{color:var(--blue)}
+
+/* Vardiya planında Normal + Fazla Mesai iki satır */
+.shift-table{min-width:1180px}
+.shift-table td,.shift-table th{border-bottom:1px solid #f0f2f6;padding:6px 5px}
+.shift-table td.att-type{min-width:92px;font-size:11px}
+.shift-table .shift-person{min-width:150px;vertical-align:middle}
