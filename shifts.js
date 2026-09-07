@@ -9,7 +9,7 @@
   const selectedWeek=()=>localStorage.getItem(weekKey)||isoWeek(new Date());
   const weekLabel=week=>{const start=weekStart(week),end=new Date(start);end.setDate(start.getDate()+6);const fmt=date=>date.toLocaleDateString('tr-TR',{day:'numeric',month:'long'});return start.getMonth()===end.getMonth()?`${start.getDate()}-${end.toLocaleDateString('tr-TR',{day:'numeric',month:'long'})}`:`${fmt(start)}-${fmt(end)}`};
   const itemFor=(employeeId,date)=>shifts.find(item=>String(item.employee_id)===String(employeeId)&&item.date===date);
-  const bodyFor=(employeeId,date,type)=>{const user=window.__ikCurrentUser?.()||{};return {employee_id:Number(employeeId),work_date:date,shift_type:type,actor_name:user.name||user.role||''}};
+  const bodyFor=(employeeId,date,type)=>({employee_id:Number(employeeId),work_date:date,shift_type:type});
   const sendShift=async(employeeId,date,type)=>{
     const response=await fetch('/api/shifts',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(bodyFor(employeeId,date,type))});
     if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Vardiya kaydedilemedi')}

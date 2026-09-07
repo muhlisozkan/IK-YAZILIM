@@ -371,24 +371,6 @@ const requireSystemAdmin = (req, res) => {
   }
   return true;
 };
-
-// Yetki, oturumdaki kullanıcıdan belirlenir; istemciden gelen rol/departman
-// bilgisine asla güvenilmez.
-const isSystemAdmin = user => user?.role === 'Sistem yöneticisi';
-const isHRUser = user => ['Sistem yöneticisi', 'İK yöneticisi'].includes(user?.role)
-  || clean(user?.department) === 'İnsan Kaynakları';
-const isPayrollUser = user => isHRUser(user) || user?.role === 'Bordro yetkilisi';
-const isDepartmentManager = user => user?.role === 'Departman yöneticisi';
-// Puantaj ve vardiya düzenleyebilen roller.
-const canEditWorkforce = user => isPayrollUser(user) || isDepartmentManager(user);
-const requireRole = (req, res, allowed, message = 'Bu işlem için yetkiniz yok') => {
-  if (allowed(req.user)) return true;
-  res.status(403).json({ error: message });
-  return false;
-};
-// Departman yöneticisi yalnızca kendi departmanındaki çalışana işlem yapabilir.
-const canActOnDepartment = (user, department) => isHRUser(user) || isPayrollUser(user)
-  || (isDepartmentManager(user) && clean(user?.department) && clean(user.department) === clean(department));
 const publicUserColumns = 'id,username,email,display_name as name,role,status,employee_id,department,created_at,updated_at';
 
 app.patch('/api/auth/password', asyncRoute(async (req, res) => {
@@ -529,21 +511,10 @@ app.get('/api/shared-data', asyncRoute(async (_req, res) => {
   res.json(Object.fromEntries(result.rows.map(row => [row.data_key, row.value])));
 }));
 
-// Ortak veri alanlarının kimler tarafından yazılabileceği.
-const sharedDataWriters = {
-  ik_approval_routes: user => ['Sistem yöneticisi', 'İK yöneticisi'].includes(user?.role),
-  ik_users: isSystemAdmin,
-  ik_documents: user => isHRUser(user) || isDepartmentManager(user),
-  ik_candidates: user => isHRUser(user) || isDepartmentManager(user),
-  ik_performance: user => isHRUser(user) || isDepartmentManager(user),
-  ik_training: user => isHRUser(user) || isDepartmentManager(user)
-};
-
 app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
   const key = clean(req.params.key);
   if (!sharedDataKeys.has(key)) return res.status(404).json({ error: 'Geçersiz ortak veri alanı' });
-  const canWrite = sharedDataWriters[key] || isSystemAdmin;
-  if (!canWrite(req.user)) return res.status(403).json({ error: 'Bu ortak veri alanını değiştirme yetkiniz yok' });
+  if (key === 'ik_approval_routes' && !['Sistem yöneticisi','İK yöneticisi'].includes(req.user?.role)) return res.status(403).json({ error: 'Onay akışını yalnızca sistem yöneticisi veya İK yöneticisi değiştirebilir' });
   let value = req.body?.value;
   if (value == null || typeof value !== 'object') return res.status(400).json({ error: 'Geçerli JSON verisi zorunludur' });
   if (key === 'ik_approval_routes') {
@@ -586,17 +557,15 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
   if (value && !(workType === 'normal' ? attendanceNormalValues : attendanceOvertimeValues).has(value)) {
     return res.status(400).json({ error: 'Geçersiz puantaj değeri' });
   }
-  if (!requireRole(req, res, canEditWorkforce, 'Puantaj düzenleme yetkiniz yok')) return;
-  const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
-  if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
-  if (!canActOnDepartment(req.user, employee.rows[0].department)) {
-    return res.status(403).json({ error: 'Yalnızca kendi departmanınızdaki çalışanın puantajını düzenleyebilirsiniz' });
-  }
-  const unrestricted = isHRUser(req.user) || isPayrollUser(req.user);
+  const actorRole = clean(body.actor_role);
+  const actorDepartment = clean(body.actor_department);
+  const unrestricted = ['Sistem yöneticisi', 'İK yöneticisi'].includes(actorRole) || actorDepartment === 'İnsan Kaynakları';
   const today = istanbulDate();
   if (!unrestricted && (workDate.slice(0, 7) !== today.slice(0, 7) || dateDistance(today, workDate) > 2)) {
     return res.status(403).json({ error: 'Bu tarih için puantaj düzeltme süresi doldu' });
   }
+  const employee = await pool.query('select id from employees where id=$1', [employeeId]);
+  if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   if (!value) {
     await pool.query('delete from attendance_entries where employee_id=$1 and work_date=$2 and work_type=$3', [employeeId, workDate, workType]);
     return res.status(204).end();
@@ -607,7 +576,7 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
     on conflict(employee_id,work_date,work_type) do update set
       value=excluded.value, updated_by=excluded.updated_by, source='manual', updated_at=now()
     returning employee_id,to_char(work_date,'YYYY-MM-DD') as work_date,work_type,value,updated_at`,
-  [employeeId, workDate, workType, value, req.user.name || null]);
+  [employeeId, workDate, workType, value, clean(body.actor_name) || actorRole || null]);
   res.json(result.rows[0]);
 }));
 
@@ -635,15 +604,11 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   if (!Number.isInteger(employeeId) || employeeId <= 0 || !workDate || (shiftType && !attendanceNormalValues.has(shiftType))) {
     return res.status(400).json({ error: 'Geçersiz vardiya kaydı' });
   }
-  if (!requireRole(req, res, canEditWorkforce, 'Vardiya planlama yetkiniz yok')) return;
   const today = istanbulDate();
   const offset = dateDistance(workDate, today);
   if (offset < -1 || offset > 14) return res.status(403).json({ error: 'Bu tarih vardiya planlama aralığı dışında' });
-  const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
+  const employee = await pool.query('select id from employees where id=$1', [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
-  if (!canActOnDepartment(req.user, employee.rows[0].department)) {
-    return res.status(403).json({ error: 'Yalnızca kendi departmanınızdaki çalışanın vardiyasını planlayabilirsiniz' });
-  }
   if (!shiftType) {
     await pool.query('delete from shift_plans where employee_id=$1 and work_date=$2', [employeeId, workDate]);
     const clock = istanbulClock();
@@ -658,18 +623,16 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
     on conflict(employee_id,work_date) do update set
       shift_type=excluded.shift_type,updated_by=excluded.updated_by,transferred_at=null,updated_at=now()
     returning employee_id,to_char(work_date,'YYYY-MM-DD') as date,shift_type as type,updated_at`,
-  [employeeId, workDate, shiftType, req.user.name || null]);
+  [employeeId, workDate, shiftType, clean(body.actor_name) || null]);
   const clock = istanbulClock();
   if (workDate === clock.date && clock.hour >= 17) await transferShiftPlansForDate(workDate);
   res.json(result.rows[0]);
 }));
 
 app.post('/api/attendance-report', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canEditWorkforce, 'Puantaj raporu alma yetkiniz yok')) return;
   const department = clean(req.body?.department);
   const month = /^\d{4}-\d{2}$/.test(clean(req.body?.month)) ? clean(req.body.month) : '2026-08';
   const employees = Array.isArray(req.body?.employees) ? req.body.employees : [];
-  if (employees.length > 2000) return res.status(413).json({ error: 'Rapor için çalışan listesi çok büyük' });
   const attendance = req.body?.attendance && typeof req.body.attendance === 'object' ? req.body.attendance : {};
   const template = department ? 'KAT HİZMETLERİ-2026-08.xlsx' : 'TümBölümler-2026-08.xlsx';
   const workbook = new ExcelJS.Workbook();
@@ -777,38 +740,29 @@ app.post('/api/attendance-report', asyncRoute(async (req, res) => {
   res.send(Buffer.from(output));
 }));
 
-app.get('/api/employees', asyncRoute(async (req, res) => {
-  const rows = (await pool.query(`
-    select e.*,
-      e.payroll_details->>'TC KİMLİK' as tc_kimlik,
-      e.payroll_details->>'KAN GRUBU' as kan_grubu,
-      e.payroll_details->>'CİNSİYET' as cinsiyet
-    from employees e order by e.id`)).rows;
-  // Hassas bordro alanları yalnızca İK / bordro rollerine döner.
-  if (isPayrollUser(req.user)) return res.json(rows);
-  res.json(rows.map(({ payroll_details, tc_kimlik, kan_grubu, cinsiyet, ...rest }) => rest));
-}));
+app.get('/api/employees', asyncRoute(async (_req, res) => res.json((await pool.query(`
+  select e.*,
+    e.payroll_details->>'TC KİMLİK' as tc_kimlik,
+    e.payroll_details->>'KAN GRUBU' as kan_grubu,
+    e.payroll_details->>'CİNSİYET' as cinsiyet
+  from employees e order by e.id`)).rows)));
 app.get('/api/employees/:id/payroll-details', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isPayrollUser, 'Bordro ayrıntılarını görme yetkiniz yok')) return;
   const result = await pool.query('select id,name,payroll_sicil,payroll_details,source_synced_at from employees where id=$1', [req.params.id]);
   if (!result.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   res.json(result.rows[0]);
 }));
 app.post('/api/employees', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isHRUser, 'Çalışan ekleme yetkiniz yok')) return;
   const e = req.body;
-  const result = await pool.query("insert into employees(name,email,department,title,start_date,salary,status,source,payroll_sync_protected) values($1,$2,$3,$4,$5,$6,$7,'Manuel',true) returning *", [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
+  const result = await pool.query('insert into employees(name,email,department,title,start_date,salary,status) values($1,$2,$3,$4,$5,$6,$7) returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
   res.status(201).json(result.rows[0]);
 }));
 app.put('/api/employees/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isHRUser, 'Çalışan düzenleme yetkiniz yok')) return;
   const e = req.body;
   const result = await pool.query('update employees set name=$1,email=$2,department=$3,title=$4,start_date=$5,salary=$6,status=$7 where id=$8 returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif', req.params.id]);
   if (!result.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   res.json(result.rows[0]);
 }));
 app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isHRUser, 'Çalışan silme yetkiniz yok')) return;
   await pool.query('delete from employees where id=$1', [req.params.id]);
   res.status(204).end();
 }));
@@ -828,8 +782,7 @@ app.get('/api/payroll-sync/status', asyncRoute(async (_req, res) => {
   res.json({ configured: payrollConfigured(), synced_at: last.rows[0].synced_at, synced_employees: last.rows[0].synced_employees });
 }));
 
-app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isPayrollUser, 'Bordro eşitleme yetkiniz yok')) return;
+app.post('/api/payroll-sync', asyncRoute(async (_req, res) => {
   const source = await readPayrollRows();
   const records = source.rows;
   const exitDates = new Map(source.exits.map(row => [clean(row.payroll_sicil), row.exit_date]));

@@ -3,8 +3,8 @@
   const codes=['A','B','C','D','E','F','M','AB','G','Y','O','Ü','Ö','ÇRT','ÇRT.','RT','RT.','ÇHT','DV','UZ','R.','R'];
   const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   const entryBody=(key,value)=>{
-    const parts=key.split('-'),user=window.__ikCurrentUser?.()||{};
-    return {employee_id:Number(parts[2]),work_date:`${parts[0]}-${parts[1]}-${String(Number(parts[3])).padStart(2,'0')}`,work_type:parts[4],value,actor_role:user.role||'',actor_department:user.department||'',actor_name:user.name||''};
+    const parts=key.split('-');
+    return {employee_id:Number(parts[2]),work_date:`${parts[0]}-${parts[1]}-${String(Number(parts[3])).padStart(2,'0')}`,work_type:parts[4],value};
   };
   const sendEntry=async(key,value)=>{
     const response=await fetch('/api/attendance',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(entryBody(key,value))});
