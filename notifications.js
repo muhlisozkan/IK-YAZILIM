@@ -249,6 +249,81 @@
   }
   window.__ikRenderSmtpSettings=renderSmtpSettings;
 
+  // --- SMS entegrasyonu (sağlayıcı bağımsız) --------------------
+  let smsSettings=null;
+  const kvParse=text=>{
+    const out={};
+    String(text||'').split(/\r?\n/).forEach(line=>{
+      const i=line.indexOf('=');
+      if(i>0){const k=line.slice(0,i).trim();const v=line.slice(i+1).trim();if(k)out[k]=v;}
+    });
+    return out;
+  };
+  async function loadSmsSettings(){
+    try{smsSettings=await api('/api/sms-settings');renderSmsSettings()}
+    catch(error){toast(error.message)}
+  }
+  function renderSmsSettings(){
+    if(state.view!=='users'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
+    if(!smsSettings){loadSmsSettings();return;}
+    const s=smsSettings;
+    document.querySelector('#sms-settings-card')?.remove();
+    const card=document.createElement('div');
+    card.id='sms-settings-card';card.className='card';card.style.marginTop='18px';
+    const keyHint=s.credential_keys?.length?`Kayıtlı kimlik alanları: <strong>${s.credential_keys.map(esc).join(', ')}</strong> · değiştirmek için yeniden yazın`:'Örn: <code>usercode=1234</code> ve alt satıra <code>password=••••</code>';
+    card.innerHTML=`<div class="card-head"><div><h2>SMS Entegrasyonu</h2><span class="muted">Sağlayıcı bağımsız HTTP SMS API'si; onay bildirimlerini SMS ile de gönderin</span></div><span class="badge ${s.configured?(s.enabled?'green':'orange'):'orange'}">${s.configured?(s.enabled?'Etkin':'Kapalı'):'Yapılandırılmadı'}</span></div>
+      <div class="formula">Şablonlarda kullanılabilir yer tutucular: <code>{phone}</code> <code>{message}</code> <code>{sender}</code> ve kimlik alanlarınız (örn. <code>{usercode}</code>). Değerler içerik tipine göre otomatik JSON/URL kodlanır.</div>
+      <div class="form-grid" style="margin-top:16px">
+        <div class="field"><label>Sağlayıcı adı</label><input class="input" id="sms-provider" value="${esc(s.provider_name)}" placeholder="NetGSM / Twilio / …"></div>
+        <div class="field"><label>Gönderimi etkinleştir</label><select class="select" id="sms-enabled"><option value="true" ${s.enabled?'selected':''}>Etkin</option><option value="false" ${!s.enabled?'selected':''}>Kapalı</option></select></div>
+        <div class="field" style="grid-column:1/-1"><label>API adresi (https) *</label><input class="input" id="sms-url" value="${esc(s.api_url)}" placeholder="https://api.saglayici.com/sms/send"></div>
+        <div class="field"><label>HTTP metodu</label><select class="select" id="sms-method"><option ${s.http_method==='POST'?'selected':''}>POST</option><option ${s.http_method==='GET'?'selected':''}>GET</option></select></div>
+        <div class="field"><label>İçerik tipi (POST)</label><input class="input" id="sms-ctype" value="${esc(s.content_type||'application/json')}" placeholder="application/json"></div>
+        <div class="field"><label>Gönderici / başlık</label><input class="input" id="sms-sender" value="${esc(s.sender)}" placeholder="FIRMAADI"></div>
+        <div class="field"><label>Başarı kontrolü (opsiyonel)</label><input class="input" id="sms-success" value="${esc(s.success_contains)}" placeholder="yanıtta bu metin varsa başarılı"></div>
+        <div class="field" style="grid-column:1/-1"><label>Kimlik alanları (her satır <code>anahtar=değer</code>)</label><textarea class="input" id="sms-creds" placeholder="usercode=...\npassword=..."></textarea><small class="muted">${keyHint}</small></div>
+        <div class="field" style="grid-column:1/-1"><label>İstek gövdesi / sorgu şablonu *</label><textarea class="input" id="sms-body" placeholder='{"usercode":"{usercode}","password":"{password}","gsmno":"{phone}","message":"{message}","msgheader":"{sender}"}'>${esc(s.body_template)}</textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>Ek başlıklar (opsiyonel, her satır <code>Ad: değer</code>)</label><textarea class="input" id="sms-headers" placeholder="Authorization: Bearer {apikey}">${esc(s.extra_headers)}</textarea></div>
+        <div class="field"><label>Onay bildirimlerini SMS gönder</label><select class="select" id="sms-notify"><option value="true" ${s.notify_approvals?'selected':''}>Evet</option><option value="false" ${!s.notify_approvals?'selected':''}>Hayır</option></select></div>
+        <div class="field"><label>Test numarası</label><input class="input" id="sms-test-recipient" type="tel" value="${esc(window.__ikCurrentUser?.()?.phone||'')}" placeholder="5xxxxxxxxx"></div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn secondary" id="sms-test">Test SMS gönder</button><button class="btn" id="sms-save">Ayarları kaydet</button></div>`;
+    $('#app').appendChild(card);
+    $('#sms-save').onclick=saveSmsSettings;
+    $('#sms-test').onclick=testSmsSettings;
+  }
+  async function saveSmsSettings(){
+    const button=$('#sms-save');button.disabled=true;
+    try{
+      const payload={
+        enabled:$('#sms-enabled').value==='true',
+        notify_approvals:$('#sms-notify').value==='true',
+        provider_name:$('#sms-provider').value.trim(),
+        api_url:$('#sms-url').value.trim(),
+        http_method:$('#sms-method').value,
+        content_type:$('#sms-ctype').value.trim()||'application/json',
+        sender:$('#sms-sender').value.trim(),
+        success_contains:$('#sms-success').value.trim(),
+        body_template:$('#sms-body').value,
+        extra_headers:$('#sms-headers').value
+      };
+      const creds=kvParse($('#sms-creds').value);
+      if(Object.keys(creds).length)payload.credentials=creds;
+      await api('/api/sms-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      smsSettings=null;toast('SMS ayarları kaydedildi');loadSmsSettings();
+    }catch(error){toast(error.message)}
+    finally{button.disabled=false}
+  }
+  async function testSmsSettings(){
+    const recipient=$('#sms-test-recipient').value.trim();
+    if(!recipient)return toast('Test telefon numarası girin');
+    const button=$('#sms-test');button.disabled=true;
+    try{await api('/api/sms-settings/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient})});toast('Test SMS gönderildi')}
+    catch(error){toast(error.message)}
+    finally{button.disabled=false}
+  }
+  window.__ikRenderSmsSettings=renderSmsSettings;
+
   // --- Bağlama --------------------------------------------------
   const baseShell=shell;
   shell=function(){

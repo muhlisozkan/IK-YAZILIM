@@ -489,7 +489,11 @@ function withUserScope(user) {
     can_see_salary: canSeeSalary(user)
   };
 }
-const publicUserColumns = 'id,username,email,display_name as name,role,status,employee_id,department,created_at,updated_at';
+const publicUserColumns = 'id,username,email,phone,display_name as name,role,status,employee_id,department,created_at,updated_at';
+const phoneNumber = value => {
+  const cleaned = clean(value);
+  return cleaned === '' || /^[0-9+()\s-]{7,20}$/.test(cleaned) ? cleaned : null;
+};
 
 app.patch('/api/auth/password', asyncRoute(async (req, res) => {
   const currentPassword = String(req.body?.current_password || '');
@@ -514,15 +518,17 @@ app.post('/api/users', asyncRoute(async (req, res) => {
   const username = clean(req.body?.username), email = clean(req.body?.email), name = clean(req.body?.name);
   const password = String(req.body?.password || ''), role = clean(req.body?.role), status = clean(req.body?.status) || 'Aktif';
   const department = clean(req.body?.department), employeeId = req.body?.employee_id ? Number(req.body.employee_id) : null;
+  const phone = phoneNumber(req.body?.phone);
   if (username.length < 3 || /\s/.test(username) || !name || password.length < 8 || !accountRoles.has(role) || !['Aktif','Pasif'].includes(status)) {
     return res.status(400).json({ error: 'Kullanıcı bilgilerini ve en az 8 karakterlik şifreyi kontrol edin' });
   }
+  if (phone === null) return res.status(400).json({ error: 'Telefon numarası geçersiz' });
   if (employeeId !== null && (!Number.isInteger(employeeId) || employeeId <= 0)) return res.status(400).json({ error: 'Geçersiz personel bağlantısı' });
   const duplicate = await pool.query('select 1 from app_users where lower(username)=lower($1)', [username]);
   if (duplicate.rowCount) return res.status(409).json({ error: 'Bu kullanıcı adı zaten kullanılıyor' });
-  const result = await pool.query(`insert into app_users(username,email,password_hash,display_name,role,status,employee_id,department)
-    values($1,$2,crypt($3,gen_salt('bf',12)),$4,$5,$6,$7,$8) returning ${publicUserColumns}`,
-    [username,email,password,name,role,status,employeeId,department]);
+  const result = await pool.query(`insert into app_users(username,email,phone,password_hash,display_name,role,status,employee_id,department)
+    values($1,$2,$3,crypt($4,gen_salt('bf',12)),$5,$6,$7,$8,$9) returning ${publicUserColumns}`,
+    [username,email,phone,password,name,role,status,employeeId,department]);
   res.status(201).json(result.rows[0]);
 }));
 
@@ -531,15 +537,17 @@ app.put('/api/users/:id', asyncRoute(async (req, res) => {
   const id = Number(req.params.id), username = clean(req.body?.username), email = clean(req.body?.email), name = clean(req.body?.name);
   const password = String(req.body?.password || ''), role = clean(req.body?.role), status = clean(req.body?.status);
   const department = clean(req.body?.department), employeeId = req.body?.employee_id ? Number(req.body.employee_id) : null;
+  const phone = phoneNumber(req.body?.phone);
   if (!Number.isInteger(id) || username.length < 3 || /\s/.test(username) || !name || (password && password.length < 8) || !accountRoles.has(role) || !['Aktif','Pasif'].includes(status)) {
     return res.status(400).json({ error: 'Kullanıcı bilgilerini kontrol edin' });
   }
+  if (phone === null) return res.status(400).json({ error: 'Telefon numarası geçersiz' });
   if (id === Number(req.user.id) && status !== 'Aktif') return res.status(400).json({ error: 'Kendi hesabınızı pasif yapamazsınız' });
   const duplicate = await pool.query('select 1 from app_users where lower(username)=lower($1) and id<>$2', [username,id]);
   if (duplicate.rowCount) return res.status(409).json({ error: 'Bu kullanıcı adı zaten kullanılıyor' });
-  const result = await pool.query(`update app_users set username=$2,email=$3,display_name=$4,role=$5,status=$6,employee_id=$7,department=$8,
+  const result = await pool.query(`update app_users set username=$2,email=$3,display_name=$4,role=$5,status=$6,employee_id=$7,department=$8,phone=$10,
     password_hash=case when $9='' then password_hash else crypt($9,gen_salt('bf',12)) end,updated_at=now()
-    where id=$1 returning ${publicUserColumns}`, [id,username,email,name,role,status,employeeId,department,password]);
+    where id=$1 returning ${publicUserColumns}`, [id,username,email,name,role,status,employeeId,department,password,phone]);
   if (!result.rowCount) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
   res.json(result.rows[0]);
 }));
@@ -617,6 +625,144 @@ app.post('/api/smtp-settings/test', asyncRoute(async (req,res)=>{
     error.status=502;
     throw error;
   }
+}));
+
+// --- SMS entegrasyonu (sağlayıcı bağımsız HTTP) --------------------------
+async function readSmsSettings() {
+  return (await pool.query('select * from sms_settings where id=1')).rows[0] || null;
+}
+// Şablon değişkenleri: {phone} {message} {sender} + kimlik alanları ({username} vb.)
+function fillTemplate(str, vars, mode) {
+  return String(str || '').replace(/\{(\w+)\}/g, (whole, key) => {
+    if (!(key in vars)) return whole;
+    const value = String(vars[key] ?? '');
+    if (mode === 'json') return JSON.stringify(value).slice(1, -1);
+    if (mode === 'url') return encodeURIComponent(value);
+    return value;
+  });
+}
+function smsCredentials(settings) {
+  if (!settings?.credentials_encrypted) return {};
+  try { return JSON.parse(decryptSmtpSecret(settings.credentials_encrypted)) || {}; } catch { return {}; }
+}
+async function sendSms(phone, message, context) {
+  const settings = await readSmsSettings();
+  if (!settings || !settings.enabled) return { ok: false, skipped: true };
+  const target = phoneNumber(phone);
+  if (!target) return { ok: false, error: 'Geçersiz telefon' };
+  const vars = { ...smsCredentials(settings), phone: target, message: String(message || ''), sender: clean(settings.sender) };
+  const method = (settings.http_method || 'POST').toUpperCase();
+  const headers = {};
+  clean(settings.extra_headers).split(/\r?\n/).map(line => line.trim()).filter(Boolean).forEach(line => {
+    const idx = line.indexOf(':');
+    if (idx > 0) headers[line.slice(0, idx).trim()] = fillTemplate(line.slice(idx + 1).trim(), vars);
+  });
+  let url = settings.api_url, body;
+  if (method === 'GET') {
+    const query = fillTemplate(settings.body_template, vars, 'url');
+    if (query) url += (url.includes('?') ? '&' : '?') + query;
+  } else {
+    const contentType = clean(settings.content_type) || 'application/json';
+    headers['Content-Type'] = contentType;
+    body = fillTemplate(settings.body_template, vars, /json/i.test(contentType) ? 'json' : 'url');
+  }
+  let ok = false, statusCode = null, responseText = '';
+  try {
+    const response = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
+    statusCode = response.status;
+    responseText = (await response.text()).slice(0, 1000);
+    ok = response.ok && (!clean(settings.success_contains) || responseText.includes(clean(settings.success_contains)));
+  } catch (cause) {
+    responseText = String(cause?.message || cause).slice(0, 1000);
+  }
+  pool.query('insert into sms_log(phone,message,context,ok,status_code,response) values($1,$2,$3,$4,$5,$6)',
+    [target, String(message || '').slice(0, 500), clean(context), ok, statusCode, responseText]).catch(() => {});
+  return { ok, status: statusCode, response: responseText };
+}
+function userMatchesApproverRole(user, role, department) {
+  if (!role) return false;
+  if (role === 'Departman yöneticisi') return user.role === role && clean(user.department) === clean(department);
+  if (role === 'İK yöneticisi') return user.role === role || clean(user.department) === 'İnsan Kaynakları';
+  if (['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(role)) return ['Mali İşler', 'Finans yöneticisi', 'Bordro yetkilisi'].includes(user.role);
+  return user.role === role;
+}
+const approvalKindLabel = { leave_requests: 'izin', expenses: 'masraf', advances: 'avans' };
+async function notifyApprovalSms(row, table) {
+  try {
+    const settings = await readSmsSettings();
+    if (!settings || !settings.enabled || !settings.notify_approvals) return;
+    const role = clean(row.current_approver);
+    if (!role || !['Bekliyor', 'Onay Sürecinde'].includes(row.status)) return;
+    const candidates = (await pool.query("select display_name,phone,role,department from app_users where status='Aktif' and coalesce(phone,'')<>''")).rows;
+    const targets = candidates.filter(user => userMatchesApproverRole(user, role, row.department));
+    if (!targets.length) return;
+    const kind = approvalKindLabel[table] || 'onay';
+    const who = clean(row.employee_name) || 'Bir çalışan';
+    const message = `İK Merkezi: ${who} adlı çalışanın ${kind} talebi onayınızı bekliyor.`;
+    for (const target of targets) await sendSms(target.phone, message, `${table}#${row.id}`);
+  } catch (cause) {
+    console.error('SMS bildirimi gönderilemedi', cause?.message || cause);
+  }
+}
+
+app.get('/api/sms-settings', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const settings = await readSmsSettings();
+  if (!settings) return res.json({ configured: false, enabled: false, notify_approvals: false, provider_name: '', api_url: '', http_method: 'POST', content_type: 'application/json', body_template: '', extra_headers: '', sender: '', success_contains: '', credential_keys: [] });
+  res.json({
+    configured: true, enabled: settings.enabled, notify_approvals: settings.notify_approvals,
+    provider_name: settings.provider_name, api_url: settings.api_url, http_method: settings.http_method,
+    content_type: settings.content_type, body_template: settings.body_template, extra_headers: settings.extra_headers,
+    sender: settings.sender, success_contains: settings.success_contains,
+    credential_keys: Object.keys(smsCredentials(settings)), updated_at: settings.updated_at
+  });
+}));
+
+app.put('/api/sms-settings', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const body = req.body || {};
+  const apiUrl = clean(body.api_url);
+  const method = clean(body.http_method).toUpperCase() === 'GET' ? 'GET' : 'POST';
+  const contentType = clean(body.content_type) || 'application/json';
+  const bodyTemplate = String(body.body_template || '').slice(0, 4000);
+  if (!/^https:\/\//i.test(apiUrl)) return res.status(400).json({ error: 'API adresi https:// ile başlamalıdır' });
+  if (!bodyTemplate.trim()) return res.status(400).json({ error: 'İstek gövdesi / sorgu şablonu zorunludur' });
+  const current = await readSmsSettings();
+  let credentialsEncrypted = current?.credentials_encrypted || null;
+  if (body.credentials && typeof body.credentials === 'object' && Object.keys(body.credentials).length) {
+    const merged = { ...smsCredentials(current), ...body.credentials };
+    for (const key of Object.keys(merged)) if (clean(merged[key]) === '') delete merged[key];
+    credentialsEncrypted = Object.keys(merged).length ? encryptSmtpSecret(JSON.stringify(merged)) : null;
+  }
+  await pool.query(`
+    insert into sms_settings(id,enabled,notify_approvals,provider_name,api_url,http_method,content_type,body_template,extra_headers,sender,success_contains,credentials_encrypted,updated_by,updated_at)
+    values(1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+    on conflict(id) do update set enabled=excluded.enabled,notify_approvals=excluded.notify_approvals,provider_name=excluded.provider_name,
+      api_url=excluded.api_url,http_method=excluded.http_method,content_type=excluded.content_type,body_template=excluded.body_template,
+      extra_headers=excluded.extra_headers,sender=excluded.sender,success_contains=excluded.success_contains,
+      credentials_encrypted=excluded.credentials_encrypted,updated_by=excluded.updated_by,updated_at=now()`,
+    [Boolean(body.enabled), Boolean(body.notify_approvals), clean(body.provider_name), apiUrl, method, contentType,
+      bodyTemplate, String(body.extra_headers || '').slice(0, 2000), clean(body.sender), clean(body.success_contains),
+      credentialsEncrypted, req.user.name]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/sms-settings/test', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const recipient = phoneNumber(req.body?.recipient);
+  if (!recipient) return res.status(400).json({ error: 'Geçerli bir test telefon numarası girin' });
+  const settings = await readSmsSettings();
+  if (!settings) return res.status(409).json({ error: 'Önce SMS ayarlarını kaydedin' });
+  if (!settings.enabled) return res.status(409).json({ error: 'SMS gönderimi kapalı; önce etkinleştirip kaydedin' });
+  const result = await sendSms(recipient, 'İK Merkezi SMS testi: ayarlarınız çalışıyor.', 'test');
+  if (!result.ok) return res.status(502).json({ error: `SMS gönderilemedi (HTTP ${result.status ?? '-'}). Yanıt: ${clean(result.response).slice(0, 200)}` });
+  res.json({ ok: true, status: result.status });
+}));
+
+app.get('/api/sms-log', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const rows = (await pool.query('select id,phone,message,context,ok,status_code,response,created_at from sms_log order by created_at desc limit 50')).rows;
+  res.json(rows);
 }));
 
 app.get('/api/health', asyncRoute(async (_req, res) => {
@@ -1423,6 +1569,7 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
     values($1,$2,$3,$4,$5,$6,$7,$8,$9,'Bekliyor',$10::jsonb,0,$11) returning *`,
   [person.id, person.name, person.department, req.user.id, req.user.name, clean(body.leave_type) || 'Yıllık izin', body.start_date, body.end_date, Number(body.days), JSON.stringify(route), route[0]]);
   res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
+  notifyApprovalSms(result.rows[0], 'leave_requests');
 }));
 
 app.patch('/api/leaves/:id/decision', asyncRoute(async (req, res) => {
@@ -1431,6 +1578,7 @@ app.patch('/api/leaves/:id/decision', asyncRoute(async (req, res) => {
   if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
   const row = await decideApproval('leave_requests', req.params.id, req.user, decision, reason, 'Bekliyor');
   res.json(decorateApproval(row, req.user, 'Bekliyor'));
+  if (decision === 'approve') notifyApprovalSms(row, 'leave_requests');
 }));
 
 app.delete('/api/leaves/:id', asyncRoute(async (req, res) => {
@@ -1465,6 +1613,7 @@ app.post('/api/expenses', asyncRoute(async (req, res) => {
     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Bekliyor',$12,$13::jsonb,0) returning *`,
   [person.id, person.name, person.department, req.user.id, req.user.name, clean(body.category), body.expense_date, amount(body.amount), clean(body.currency) || 'TRY', clean(body.description), clean(body.receipt_no), route[0], JSON.stringify(route)]);
   res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
+  notifyApprovalSms(result.rows[0], 'expenses');
 }));
 
 app.patch('/api/expenses/:id/decision', asyncRoute(async (req, res) => {
@@ -1473,6 +1622,7 @@ app.patch('/api/expenses/:id/decision', asyncRoute(async (req, res) => {
   if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
   const row = await decideApproval('expenses', req.params.id, req.user, decision, reason, 'Bekliyor');
   res.json(decorateApproval(row, req.user, 'Bekliyor'));
+  if (decision === 'approve') notifyApprovalSms(row, 'expenses');
 }));
 
 app.patch('/api/expenses/:id/status', asyncRoute(async (req, res) => {
@@ -1511,6 +1661,7 @@ app.post('/api/advances', asyncRoute(async (req, res) => {
     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Onay Sürecinde',$11,$12,$13::jsonb,0) returning *`,
   [person.id, person.name, person.department, req.user.id, req.user.name, body.requested_date, amount(body.amount), clean(body.currency) || 'TRY', dateOnly(body.deduction_month), clean(body.reason), approvalStageKey(route[0]), route[0], JSON.stringify(route)]);
   res.status(201).json(decorateApproval(result.rows[0], req.user, 'Onay Sürecinde'));
+  notifyApprovalSms(result.rows[0], 'advances');
 }));
 
 app.patch('/api/advances/:id/decision', asyncRoute(async (req, res) => {
@@ -1519,6 +1670,7 @@ app.patch('/api/advances/:id/decision', asyncRoute(async (req, res) => {
   if (!['approve', 'reject'].includes(decision) || (decision === 'reject' && !reason)) return res.status(400).json({ error: 'Geçerli karar ve ret nedeni zorunludur' });
   const row = await decideApproval('advances', req.params.id, req.user, decision, reason, 'Onay Sürecinde');
   res.json(decorateApproval(row, req.user, 'Onay Sürecinde'));
+  if (decision === 'approve') notifyApprovalSms(row, 'advances');
 }));
 
 app.get('/api/advances/:id/form', asyncRoute(async (req, res) => {

@@ -71,3 +71,7 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .dashboard-rail{position:sticky;top:20px}
 .dashboard-rail .notif-panel{max-height:calc(100vh - 110px);overflow:auto}
 @media(max-width:1180px){.dashboard-grid{grid-template-columns:1fr}.dashboard-rail{position:static}.dashboard-rail .notif-panel{max-height:none}}
+
+/* SMS/entegrasyon kartı çok satırlı alanlar */
+.field textarea.input{width:100%;min-height:64px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;resize:vertical}
+#sms-settings-card code,#smtp-settings-card code{background:#eef1f8;border-radius:4px;padding:1px 5px;font-size:11px}

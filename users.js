@@ -24,11 +24,12 @@
   function renderUsers(){
     document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='users'));
     $('#page-title').textContent='Kullanıcı ve Yetki Yönetimi';
-    const rows=users.map(u=>`<tr><td><strong>${esc(u.name)}</strong><small class="muted" style="display:block">@${esc(u.username)}${u.email?' · '+esc(u.email):''}</small></td><td>${esc(u.role)}</td><td>${esc(u.department||'-')}<small class="muted" style="display:block">${esc((state.employees||[]).find(e=>String(e.id)===String(u.employee_id))?.name||'Personel bağlantısı yok')}</small></td><td><span class="badge ${u.status==='Aktif'?'green':'red'}">${esc(u.status)}</span></td><td><button class="btn ghost" data-user-edit="${u.id}">Düzenle</button><button class="btn ghost danger-text" data-user-delete="${u.id}">Sil</button></td></tr>`).join('');
+    const rows=users.map(u=>`<tr><td><strong>${esc(u.name)}</strong><small class="muted" style="display:block">@${esc(u.username)}${u.email?' · '+esc(u.email):''}${u.phone?' · '+esc(u.phone):''}</small></td><td>${esc(u.role)}</td><td>${esc(u.department||'-')}<small class="muted" style="display:block">${esc((state.employees||[]).find(e=>String(e.id)===String(u.employee_id))?.name||'Personel bağlantısı yok')}</small></td><td><span class="badge ${u.status==='Aktif'?'green':'red'}">${esc(u.status)}</span></td><td><button class="btn ghost" data-user-edit="${u.id}">Düzenle</button><button class="btn ghost danger-text" data-user-delete="${u.id}">Sil</button></td></tr>`).join('');
     const body=loaded?(rows||'<tr><td colspan="5" class="empty">Kullanıcı bulunmuyor</td></tr>'):'<tr><td colspan="5" class="empty">Kullanıcılar yükleniyor…</td></tr>';
     $('#app').innerHTML=`<div class="section-title"><div><h2>Kullanıcı ve yetki yönetimi</h2><span class="muted">Gerçek giriş hesaplarını, rollerini ve personel bağlantılarını yönetin</span></div><button class="btn" id="add-user">+ Kullanıcı ekle</button></div><div class="card"><div class="card-head"><h2>Kullanıcılar</h2><span class="muted">${loaded?users.length:0} hesap</span></div><div style="overflow:auto"><table><thead><tr><th>KULLANICI / GİRİŞ ADI</th><th>ROL</th><th>DEPARTMAN / PERSONEL</th><th>DURUM</th><th></th></tr></thead><tbody>${body}</tbody></table></div></div>`;
     window.__ikRenderApprovalMatrix?.();
     window.__ikRenderSmtpSettings?.();
+    window.__ikRenderSmsSettings?.();
     $('#add-user').onclick=()=>userModal();
     document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick=()=>userModal(users.find(u=>String(u.id)===b.dataset.userEdit)));
     document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick=()=>deleteUser(b.dataset.userDelete));
@@ -51,6 +52,7 @@
       <div class="field"><label>${existing?'Yeni şifre':'Şifre *'}</label><input class="input" id="u-password" type="password" autocomplete="new-password" placeholder="${existing?'Değişmeyecekse boş bırakın':'En az 8 karakter'}"></div>
       <div class="field"><label>Ad soyad *</label><input class="input" id="u-name" value="${esc(existing?.name||'')}"></div>
       <div class="field"><label>E-posta</label><input class="input" id="u-email" type="email" value="${esc(existing?.email||'')}"></div>
+      <div class="field"><label>Telefon (SMS bildirimi)</label><input class="input" id="u-phone" type="tel" placeholder="5xx xxx xx xx" value="${esc(existing?.phone||'')}"></div>
       <div class="field"><label>Rol</label><select class="select" id="u-role">${roles.map(r=>`<option ${r===existing?.role?'selected':''}>${r}</option>`).join('')}</select></div>
       <div class="field"><label>Durum</label><select class="select" id="u-status"><option ${existing?.status!=='Pasif'?'selected':''}>Aktif</option><option ${existing?.status==='Pasif'?'selected':''}>Pasif</option></select></div>
       <div class="field"><label>Departman</label><select class="select" id="u-department"><option value="">Departman seçin</option>${departments().map(d=>`<option ${d===existing?.department?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
@@ -59,7 +61,7 @@
       const username=$('#u-username').value.trim(),password=$('#u-password').value,name=$('#u-name').value.trim(),employeeId=$('#u-employee').value;
       if(username.length<3||!name||(!existing&&password.length<8)||(password&&password.length<8))return toast('Kullanıcı adı, ad ve en az 8 karakterlik şifreyi kontrol edin');
       const employee=(state.employees||[]).find(e=>String(e.id)===employeeId);
-      const payload={username,password,name,email:$('#u-email').value.trim(),role:$('#u-role').value,status:$('#u-status').value,department:$('#u-department').value||employee?.department||'',employee_id:employeeId||null};
+      const payload={username,password,name,email:$('#u-email').value.trim(),phone:$('#u-phone').value.trim(),role:$('#u-role').value,status:$('#u-status').value,department:$('#u-department').value||employee?.department||'',employee_id:employeeId||null};
       const submit=document.querySelector('.modal .submit');
       if(submit)submit.disabled=true;
       try{
