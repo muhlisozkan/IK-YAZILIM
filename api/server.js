@@ -899,13 +899,26 @@ app.get('/api/shifts', asyncRoute(async (req, res) => {
   const params = [start, end];
   const scopeSql = scopeEmployeeSql(req.user, 's.employee_id', params);
   const result = await pool.query(`
-    select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type, s.overtime
+    select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type, s.overtime,
+      exists(
+        select 1 from attendance_entries a
+        where a.employee_id=s.employee_id and a.work_date=s.work_date
+          and a.work_type='normal' and a.source='manual' and a.value in ('R','R.')
+      ) as hr_locked
     from shift_plans s
     join employees e on e.id=s.employee_id
     where s.work_date between $1 and $2${scopeSql}
     order by e.name,s.work_date`, params);
   res.json(result.rows);
 }));
+
+// İK tarafından puantaja elle R / R. girilen gün departmanlarca kilitlidir.
+async function attendanceHrLocked(employeeId, workDate) {
+  const row = await pool.query(
+    "select value from attendance_entries where employee_id=$1 and work_date=$2 and work_type='normal' and source='manual'",
+    [employeeId, workDate]);
+  return Boolean(row.rows[0]) && ['R', 'R.'].includes(clean(row.rows[0].value));
+}
 
 app.put('/api/shifts', asyncRoute(async (req, res) => {
   const body = req.body || {};
@@ -926,6 +939,9 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   if (offset < -1 || offset > 14) return res.status(403).json({ error: 'Bu tarih vardiya planlama aralığı dışında' });
   const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
+  if (isDepartmentManager(req.user) && await attendanceHrLocked(employeeId, workDate)) {
+    return res.status(403).json({ error: 'Bu gün İK tarafından R (rapor) olarak işaretlendi; vardiyası değiştirilemez' });
+  }
   if (!canActOnDepartment(req.user, employee.rows[0].department)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızdaki çalışanın vardiyasını planlayabilirsiniz' });
   }

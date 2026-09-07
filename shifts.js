@@ -25,7 +25,7 @@
       migrated.filter(result=>result.status==='fulfilled').forEach(result=>remote.push(result.value));
     }
     shifts=shifts.filter(item=>item.date<start||item.date>end);
-    shifts.push(...remote.map(item=>({employee_id:item.employee_id,employee:item.employee,date:item.date,type:item.type||'',overtime:item.overtime||''})));
+    shifts.push(...remote.map(item=>({employee_id:item.employee_id,employee:item.employee,date:item.date,type:item.type||'',overtime:item.overtime||'',hrLocked:Boolean(item.hr_locked)})));
     localStorage.setItem(storageKey,JSON.stringify(shifts));
   };
   const normalOptions=item=>`<option value="">—</option>${types.map(type=>`<option value="${type}" ${item?.type===type?'selected':''}>${type}</option>`).join('')}`;
@@ -38,19 +38,27 @@
     const days=Array.from({length:7},(_,index)=>{const date=new Date(start);date.setDate(start.getDate()+index);return {date:isoDate(date),label:date.toLocaleDateString('tr-TR',{weekday:'short',day:'numeric',month:'short'})}});
     try{await loadShifts(days)}catch(error){toast(error.message)}
     const isAdmin=window.__ikCurrentUser?.()?.role==='Sistem yöneticisi';
+    const isDeptManager=window.__ikCurrentUser?.()?.role==='Departman yöneticisi';
     const departments=[...new Set(state.employees.map(employee=>employee.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
     const department=isAdmin?(localStorage.getItem(departmentKey)||''):'';
     const employees=isAdmin&&!department?[]:state.employees.filter(employee=>!department||employee.department===department);
-    const rows=employees.map(employee=>['normal','fazla'].map((rowType,idx)=>`<tr>${idx===0?`<td rowspan="2" class="shift-person"><strong>${employee.name}</strong><small class="muted" style="display:block">${employee.department}</small></td>`:''}<td class="att-type ${rowType==='normal'?'normal':'extra'}">${rowType==='normal'?'Normal':'Fazla Mesai'}</td>${days.map(day=>{const item=itemFor(employee.id,day.date);return `<td><select class="select shift-select" data-employee-id="${employee.id}" data-date="${day.date}" data-row="${rowType}">${rowType==='normal'?normalOptions(item):overtimeOptions(item)}</select></td>`;}).join('')}</tr>`).join('')).join('');
+    const rows=employees.map(employee=>['normal','fazla'].map((rowType,idx)=>`<tr>${idx===0?`<td rowspan="2" class="shift-person"><strong>${employee.name}</strong><small class="muted" style="display:block">${employee.department}</small></td>`:''}<td class="att-type ${rowType==='normal'?'normal':'extra'}">${rowType==='normal'?'Normal':'Fazla Mesai'}</td>${days.map(day=>{const item=itemFor(employee.id,day.date);const locked=item?.hrLocked?' shift-locked':'';return `<td><select class="select shift-select${locked}" data-employee-id="${employee.id}" data-date="${day.date}" data-row="${rowType}" data-locked="${item?.hrLocked?'1':''}">${rowType==='normal'?normalOptions(item):overtimeOptions(item)}</select></td>`;}).join('')}</tr>`).join('')).join('');
     const departmentFilter=isAdmin?`<div class="field"><label>Departman</label><select class="select" id="shift-department"><option value="">Tüm departmanlar</option>${departments.map(value=>`<option value="${value}" ${value===department?'selected':''}>${value}</option>`).join('')}</select></div>`:'';
     $('#app').innerHTML=`<div class="section-title"><div><h2>Haftalık vardiya planı</h2><span class="muted">Vardiya ve fazla mesai puantajla anlık senkronize olur</span></div></div><div class="card shift-toolbar"><div class="field"><label>Planlama haftası</label><input class="input" id="shift-week" type="week" value="${week}"></div>${departmentFilter}<button class="btn secondary" id="shift-current-week">Bu hafta</button><span class="muted">Normal satırında puantaj kodları, Fazla Mesai satırında saat değerleri kullanılır.</span></div><div class="card shift-card"><div class="shift-scroll"><table class="shift-table"><thead><tr><th>ÇALIŞAN</th><th>ÇALIŞMA TİPİ</th>${days.map(day=>`<th>${day.label}</th>`).join('')}</tr></thead><tbody>${rows||'<tr><td colspan="9" class="empty">Çalışan bulunmuyor</td></tr>'}</tbody></table></div></div><div class="formula" style="margin-top:18px"><strong>Çift yönlü senkron:</strong> Buraya girilen vardiya/fazla mesai anında puantaja işlenir; puantajda yapılan değişiklikler de bu haftanın planına yansır. Günü geldiğinde saat 17.00'de kalan planlar da otomatik aktarılır.</div>`;
     const shiftCutoff=new Date();shiftCutoff.setHours(0,0,0,0);shiftCutoff.setDate(shiftCutoff.getDate()-1);
-    document.querySelectorAll('.shift-select').forEach(select=>{select.disabled=new Date(`${select.dataset.date}T00:00:00`)<shiftCutoff;if(select.disabled)select.title='Bu vardiya günü için değişiklik süresi doldu'});
+    document.querySelectorAll('.shift-select').forEach(select=>{
+      const pastCutoff=new Date(`${select.dataset.date}T00:00:00`)<shiftCutoff;
+      const hrLocked=select.dataset.locked==='1';
+      select.disabled=pastCutoff||(hrLocked&&isDeptManager);
+      if(pastCutoff)select.title='Bu vardiya günü için değişiklik süresi doldu';
+      else if(hrLocked)select.title='İK bu günü R (rapor) olarak işaretledi'+(isDeptManager?'; değiştirilemez':'');
+    });
     $('#shift-week').style.display='none';const weekPicker=document.createElement('select');weekPicker.id='shift-week-display';weekPicker.className='select';weekPicker.innerHTML=`<option value="${currentWeek}">${weekLabel(currentWeek)}</option><option value="${nextWeek}">${weekLabel(nextWeek)}</option>`;weekPicker.value=week;$('#shift-week').parentNode.appendChild(weekPicker);
     weekPicker.onchange=()=>{localStorage.setItem(weekKey,weekPicker.value);renderShifts()};
     if($('#shift-department'))$('#shift-department').onchange=()=>{localStorage.setItem(departmentKey,$('#shift-department').value);renderShifts()};
     $('#shift-current-week').onclick=()=>{localStorage.setItem(weekKey,currentWeek);renderShifts()};
     document.querySelectorAll('.shift-select').forEach(select=>{select.dataset.savedValue=select.value;select.onchange=async()=>{
+      if(select.dataset.locked==='1'&&isDeptManager){select.value=select.dataset.savedValue||'';return toast('İK bu günü R (rapor) olarak işaretledi; değiştirilemez')}
       const previous=select.dataset.savedValue||'';const rowType=select.dataset.row;select.disabled=true;
       try{
         await sendShift(select.dataset.employeeId,select.dataset.date,rowType==='normal'?{shift_type:select.value}:{overtime:select.value});
