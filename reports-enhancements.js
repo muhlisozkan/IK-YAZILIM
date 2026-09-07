@@ -27,6 +27,30 @@
     a.download=name;a.click();URL.revokeObjectURL(a.href);
   }
 
+  // Sıralanabilir sütun başlıkları --------------------------------------
+  const sortArrow=dir=>dir==='desc'?' ▾':' ▴';
+  function th(label,key,f){
+    const active=f.sort&&f.sort.key===key;
+    return `<th class="rf-sort${active?' rf-sort-active':''}" data-sort="${key}">${label}${active?sortArrow(f.sort.dir):''}</th>`;
+  }
+  function sortList(list,f,accessors){
+    if(!f.sort||!accessors[f.sort.key])return list;
+    const get=accessors[f.sort.key],dir=f.sort.dir==='desc'?-1:1;
+    return list.slice().sort((a,b)=>{
+      const x=get(a),y=get(b);
+      if(typeof x==='number'&&typeof y==='number')return (x-y)*dir;
+      return String(x??'').localeCompare(String(y??''),'tr')*dir;
+    });
+  }
+  function bindSort(f,rerender){
+    document.querySelectorAll('#report-body [data-sort]').forEach(el=>el.onclick=()=>{
+      const key=el.dataset.sort;
+      if(f.sort&&f.sort.key===key)f.sort={key,dir:f.sort.dir==='asc'?'desc':'asc'};
+      else f.sort={key,dir:'asc'};
+      rerender();
+    });
+  }
+
   let tab=sessionStorage.getItem('ik_report_tab')||'employees';
   const tabs=[
     ['employees','Çalışanlar'],
@@ -61,12 +85,15 @@
     const statuses=[...new Set((state.employees||[]).map(e=>e.status).filter(Boolean))].sort(trSort);
     const workplaces=[...new Set((state.employees||[]).map(e=>e.workplace).filter(Boolean))].sort(trSort);
     const q=f.q.toLocaleLowerCase('tr-TR');
-    const list=(state.employees||[]).filter(e=>
+    const acc={name:e=>e.name||'',department:e=>e.department||'',title:e=>e.title||'',workplace:e=>e.workplace||'',
+      start:e=>+new Date(firstStart(e))||0,seniority:e=>serviceYears(e),status:e=>e.status||'',salary:e=>Number(e.salary||0)};
+    let list=(state.employees||[]).filter(e=>
       (!f.dept||e.department===f.dept)&&
       (!f.status||e.status===f.status)&&
       (!f.workplace||e.workplace===f.workplace)&&
       (!q||`${e.name} ${e.department} ${e.title||''} ${e.payroll_sicil||''}`.toLocaleLowerCase('tr-TR').includes(q))
     ).sort((a,b)=>trSort(a.name,b.name));
+    list=sortList(list,f,acc);
     const totalSalary=list.reduce((s,e)=>s+Number(e.salary||0),0);
     const rows=list.map(e=>`<tr>
       <td><strong>${esc(e.name)}</strong>${e.payroll_sicil?`<small class="muted" style="display:block">Sicil: ${esc(e.payroll_sicil)}</small>`:''}</td>
@@ -85,10 +112,11 @@
           ${hasWorkplace?field('İşyeri',selectEl('rf-workplace',[['','Tüm işyerleri'],...workplaces],f.workplace)):''}
         </div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>ÇALIŞAN</th><th>DEPARTMAN</th><th>POZİSYON</th>${hasWorkplace?'<th>İŞYERİ</th>':''}<th>İLK İŞE GİRİŞ</th><th>KIDEM</th><th>DURUM</th>${withSalary?'<th>BRÜT ÜCRET</th>':''}
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('ÇALIŞAN','name',f)}${th('DEPARTMAN','department',f)}${th('POZİSYON','title',f)}${hasWorkplace?th('İŞYERİ','workplace',f):''}${th('İLK İŞE GİRİŞ','start',f)}${th('KIDEM','seniority',f)}${th('DURUM','status',f)}${withSalary?th('BRÜT ÜCRET','salary',f):''}
         </tr></thead><tbody>${rows||`<tr><td colspan="9" class="empty">Kayıt bulunamadı</td></tr>`}</tbody></table></div>
       </div>`);
+    bindSort(f,renderEmployees);
     const upd=()=>{f.q=$('#rf-q').value;f.dept=$('#rf-dept').value;f.status=$('#rf-status').value;if($('#rf-workplace'))f.workplace=$('#rf-workplace').value;renderEmployees();};
     $('#rf-q').oninput=()=>{f.q=$('#rf-q').value;clearTimeout(window.__rfT);window.__rfT=setTimeout(renderEmployees,250);};
     $('#rf-dept').onchange=upd;$('#rf-status').onchange=upd;if($('#rf-workplace'))$('#rf-workplace').onchange=upd;
@@ -106,13 +134,16 @@
     const statuses=[...new Set(all.map(l=>l.status).filter(Boolean))].sort(trSort);
     const q=f.q.toLocaleLowerCase('tr-TR');
     const withDept=l=>l.department||empDept(l.employee_id);
-    const list=all.map(l=>({...l,_dept:withDept(l),_year:yearOf(l.start_date||l.start),_type:l.leave_type||l.type,_name:l.employee_name||l.employee})).filter(l=>
+    const acc={_name:l=>l._name||'',_dept:l=>l._dept||'',_type:l=>l._type||'',
+      start:l=>dateStr(l.start_date||l.start),end:l=>dateStr(l.end_date||l.end),days:l=>Number(l.days||0),status:l=>l.status||''};
+    let list=all.map(l=>({...l,_dept:withDept(l),_year:yearOf(l.start_date||l.start),_type:l.leave_type||l.type,_name:l.employee_name||l.employee})).filter(l=>
       (!f.year||String(l._year)===String(f.year))&&
       (!f.dept||l._dept===f.dept)&&
       (!f.type||l._type===f.type)&&
       (!f.status||l.status===f.status)&&
       (!q||String(l._name||'').toLocaleLowerCase('tr-TR').includes(q))
     ).sort((a,b)=>dateStr(b.start_date||b.start).localeCompare(dateStr(a.start_date||a.start)));
+    list=sortList(list,f,acc);
     const totalDays=list.reduce((s,l)=>s+Number(l.days||0),0);
     const approvedDays=list.filter(l=>l.status==='Onaylandı').reduce((s,l)=>s+Number(l.days||0),0);
     const rows=list.map(l=>`<tr>
@@ -130,10 +161,11 @@
           ${field('Durum',selectEl('rf-status',[['','Tüm durumlar'],...statuses],f.status))}
         </div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>ÇALIŞAN</th><th>DEPARTMAN</th><th>TÜR</th><th>BAŞLANGIÇ</th><th>BİTİŞ</th><th>GÜN</th><th>DURUM</th>
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('ÇALIŞAN','_name',f)}${th('DEPARTMAN','_dept',f)}${th('TÜR','_type',f)}${th('BAŞLANGIÇ','start',f)}${th('BİTİŞ','end',f)}${th('GÜN','days',f)}${th('DURUM','status',f)}
         </tr></thead><tbody>${rows||`<tr><td colspan="7" class="empty">İzin kaydı bulunamadı</td></tr>`}</tbody></table></div>
       </div>`);
+    bindSort(f,renderLeaves);
     const upd=()=>{f.q=$('#rf-q').value;f.year=$('#rf-year').value;f.dept=$('#rf-dept').value;f.type=$('#rf-type').value;f.status=$('#rf-status').value;renderLeaves();};
     $('#rf-q').oninput=()=>{f.q=$('#rf-q').value;clearTimeout(window.__rfT);window.__rfT=setTimeout(renderLeaves,250);};
     ['rf-year','rf-dept','rf-type','rf-status'].forEach(id=>$('#'+id).onchange=upd);
@@ -143,8 +175,18 @@
   }
 
   // 3) YILLIK İZİN BAKİYESİ --------------------------------------------
+  const remainingFilters={
+    '':['Tümü',()=>true],
+    'neg':['Negatif ( < 0 )',v=>v<0],
+    'zero':['Sıfır ( = 0 )',v=>v===0],
+    'pos':['Pozitif ( > 0 )',v=>v>0],
+    'lt5':['5 günden az',v=>v<5],
+    'lt10':['10 günden az',v=>v<10],
+    'ge15':['15 gün ve üzeri',v=>v>=15],
+    'ge20':['20 gün ve üzeri',v=>v>=20]
+  };
   async function renderBalances(){
-    const f=state_f.balances||(state_f.balances={year:String(new Date().getFullYear()),dept:'',negative:false});
+    const f=state_f.balances||(state_f.balances={year:String(new Date().getFullYear()),dept:'',remaining:''});
     const token=++renderBalances._t;
     mount(`<div class="card empty">Yıllık izin bakiyeleri yükleniyor…</div>`);
     let data;
@@ -156,28 +198,32 @@
     }catch(err){if(token===renderBalances._t)mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
     if(token!==renderBalances._t||tab!=='balances')return;
     const deps=(data.departments||deptList());
-    let rows=(data.rows||[]).slice().sort((a,b)=>trSort(a.employee_name,b.employee_name));
-    if(f.negative)rows=rows.filter(r=>Number(r.remaining_days)<0);
-    const t=data.totals||{entitled:0,used:0,remaining:0};
-    const body=`${statLine([['Kişi',rows.length],['Toplam hak',num(t.entitled)],['Kullanılan',num(t.used)],['Kalan',num(t.remaining)]])}
+    const acc={employee_name:r=>r.employee_name||'',department:r=>r.department||'',entitled_days:r=>Number(r.entitled_days||0),
+      current_year_days:r=>Number(r.current_year_days||0),used_days:r=>Number(r.used_days||0),remaining_days:r=>Number(r.remaining_days||0)};
+    const test=(remainingFilters[f.remaining]||remainingFilters[''])[1];
+    let rows=(data.rows||[]).slice().sort((a,b)=>trSort(a.employee_name,b.employee_name)).filter(r=>test(Number(r.remaining_days||0)));
+    rows=sortList(rows,f,acc);
+    const sum=rows.reduce((s,r)=>({e:s.e+Number(r.entitled_days||0),u:s.u+Number(r.used_days||0),k:s.k+Number(r.remaining_days||0)}),{e:0,u:0,k:0});
+    const body=`${statLine([['Kişi',rows.length],['Toplam hak',num(sum.e)],['Kullanılan',num(sum.u)],['Kalan',num(sum.k)]])}
       <div class="card">
         <div class="form-grid" style="margin-bottom:12px">
           ${field('Yıl',selectEl('rf-year',[f.year-2,f.year-1,f.year,Number(f.year)+1].map(String).filter((v,i,a)=>a.indexOf(v)===i),f.year))}
           ${field('Departman',selectEl('rf-dept',[['','Tüm departmanlar'],...deps],f.dept))}
-          ${field('Filtre',`<label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="rf-neg" ${f.negative?'checked':''}> Sadece negatif bakiye</label>`)}
+          ${field('Kalan izin',selectEl('rf-remaining',Object.entries(remainingFilters).map(([k,v])=>[k,v[0]]),f.remaining))}
         </div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>ÇALIŞAN</th><th>DEPARTMAN</th><th>TOPLAM HAK</th><th>BU YIL</th><th>KULLANILAN</th><th>KALAN</th>
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('ÇALIŞAN','employee_name',f)}${th('DEPARTMAN','department',f)}${th('TOPLAM HAK','entitled_days',f)}${th('BU YIL','current_year_days',f)}${th('KULLANILAN','used_days',f)}${th('KALAN','remaining_days',f)}
         </tr></thead><tbody>${rows.map(r=>`<tr>
           <td><strong>${esc(r.employee_name)}</strong></td><td>${esc(r.department||'—')}</td>
           <td>${num(r.entitled_days)}</td><td>${num(r.current_year_days)}</td><td>${num(r.used_days)}</td>
-          <td><strong style="color:${Number(r.remaining_days)<0?'var(--danger,#c0392b)':'inherit'}">${num(r.remaining_days)}</strong></td>
+          <td><strong style="color:${Number(r.remaining_days)<0?'var(--red)':'inherit'}">${num(r.remaining_days)}</strong></td>
         </tr>`).join('')||`<tr><td colspan="6" class="empty">Kayıt yok</td></tr>`}</tbody></table></div>
       </div>`;
     mount(body);
-    const reload=()=>{f.year=$('#rf-year').value;f.dept=$('#rf-dept').value;f.negative=$('#rf-neg').checked;renderBalances();};
-    $('#rf-year').onchange=reload;$('#rf-dept').onchange=reload;$('#rf-neg').onchange=reload;
+    bindSort(f,renderBalances);
+    const reload=()=>{f.year=$('#rf-year').value;f.dept=$('#rf-dept').value;f.remaining=$('#rf-remaining').value;renderBalances();};
+    $('#rf-year').onchange=reload;$('#rf-dept').onchange=reload;$('#rf-remaining').onchange=reload;
     $('#rf-csv').onclick=()=>downloadCsv(`yillik-izin-bakiyesi-${f.year}.csv`,
       ['Çalışan','Departman','Toplam hak','Bu yıl hak edilen','Kullanılan','Kalan'],
       rows.map(r=>[r.employee_name,r.department||'',r.entitled_days,r.current_year_days,r.used_days,r.remaining_days]));
@@ -185,25 +231,29 @@
 
   // 4) DEPARTMAN ÖZETİ -------------------------------------------------
   function renderDepartments(){
+    const f=state_f.departments||(state_f.departments={});
     const withSalary=salaryOn();
     const groups={};
     (state.employees||[]).forEach(e=>{(groups[e.department||'—']=groups[e.department||'—']||[]).push(e);});
-    const list=Object.entries(groups).sort((a,b)=>trSort(a[0],b[0])).map(([d,arr])=>{
+    let list=Object.entries(groups).sort((a,b)=>trSort(a[0],b[0])).map(([d,arr])=>{
       const active=arr.filter(e=>e.status==='Aktif').length;
       const totalSal=arr.reduce((s,e)=>s+Number(e.salary||0),0);
       const avgSen=arr.reduce((s,e)=>s+serviceYears(e),0)/arr.length;
       return {d,count:arr.length,active,totalSal,avgSal:totalSal/arr.length,avgSen};
     });
+    const acc={d:r=>r.d,count:r=>r.count,active:r=>r.active,avgSen:r=>r.avgSen,totalSal:r=>r.totalSal,avgSal:r=>r.avgSal};
+    list=sortList(list,f,acc);
     mount(`${statLine([['Departman',list.length],['Çalışan',(state.employees||[]).length],['Aktif',(state.employees||[]).filter(e=>e.status==='Aktif').length]])}
       <div class="card">
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>DEPARTMAN</th><th>ÇALIŞAN</th><th>AKTİF</th><th>ORT. KIDEM</th>${withSalary?'<th>TOPLAM BRÜT</th><th>ORT. BRÜT</th>':''}
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('DEPARTMAN','d',f)}${th('ÇALIŞAN','count',f)}${th('AKTİF','active',f)}${th('ORT. KIDEM','avgSen',f)}${withSalary?th('TOPLAM BRÜT','totalSal',f)+th('ORT. BRÜT','avgSal',f):''}
         </tr></thead><tbody>${list.map(r=>`<tr>
           <td><strong>${esc(r.d)}</strong></td><td>${r.count}</td><td>${r.active}</td><td>${num(r.avgSen)} yıl</td>
           ${withSalary?`<td>${fmt(r.totalSal)}</td><td>${fmt(r.avgSal)}</td>`:''}
         </tr>`).join('')||`<tr><td colspan="6" class="empty">Kayıt yok</td></tr>`}</tbody></table></div>
       </div>`);
+    bindSort(f,renderDepartments);
     $('#rf-csv').onclick=()=>downloadCsv('departman-ozeti.csv',
       ['Departman','Çalışan','Aktif','Ortalama kıdem (yıl)',...(withSalary?['Toplam brüt','Ortalama brüt']:[])],
       list.map(r=>[r.d,r.count,r.active,num(r.avgSen),...(withSalary?[r.totalSal,Math.round(r.avgSal)]:[])]));
@@ -214,8 +264,11 @@
     const leavers=(state.employees||[]).filter(e=>e.termination_date);
     const f=state_f.turnover||(state_f.turnover={year:'',dept:''});
     const years=[...new Set(leavers.map(e=>yearOf(e.termination_date)).filter(Boolean))].sort((a,b)=>b-a);
-    const list=leavers.filter(e=>(!f.year||String(yearOf(e.termination_date))===String(f.year))&&(!f.dept||e.department===f.dept))
+    const acc={name:e=>e.name||'',department:e=>e.department||'',start:e=>+new Date(firstStart(e))||0,
+      term:e=>dateStr(e.termination_date),tenure:e=>serviceYears(e)};
+    let list=leavers.filter(e=>(!f.year||String(yearOf(e.termination_date))===String(f.year))&&(!f.dept||e.department===f.dept))
       .sort((a,b)=>dateStr(b.termination_date).localeCompare(dateStr(a.termination_date)));
+    list=sortList(list,f,acc);
     const headcount=(state.employees||[]).length;
     const rate=headcount?(leavers.filter(e=>!f.year||String(yearOf(e.termination_date))===String(f.year)).length/headcount*100):0;
     mount(`${statLine([['Ayrılan',list.length],['Kadro',headcount],['Devir oranı',num(rate)+'%']])}
@@ -225,13 +278,14 @@
           ${field('Departman',selectEl('rf-dept',[['','Tüm departmanlar'],...deptList()],f.dept))}
         </div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>ÇALIŞAN</th><th>DEPARTMAN</th><th>İŞE GİRİŞ</th><th>ÇIKIŞ</th><th>ÇALIŞMA SÜRESİ</th>
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('ÇALIŞAN','name',f)}${th('DEPARTMAN','department',f)}${th('İŞE GİRİŞ','start',f)}${th('ÇIKIŞ','term',f)}${th('ÇALIŞMA SÜRESİ','tenure',f)}
         </tr></thead><tbody>${list.map(e=>`<tr>
           <td><strong>${esc(e.name)}</strong></td><td>${esc(e.department||'—')}</td>
           <td>${trDate(firstStart(e))}</td><td>${trDate(e.termination_date)}</td><td>${serviceYears(e)} yıl</td>
         </tr>`).join('')||`<tr><td colspan="5" class="empty">İşten ayrılan kaydı yok</td></tr>`}</tbody></table></div>
       </div>`);
+    bindSort(f,renderTurnover);
     ['rf-year','rf-dept'].forEach(id=>$('#'+id).onchange=()=>{f.year=$('#rf-year').value;f.dept=$('#rf-dept').value;renderTurnover();});
     $('#rf-csv').onclick=()=>downloadCsv('isten-ayrilanlar.csv',
       ['Çalışan','Departman','İşe giriş','Çıkış tarihi','Çalışma süresi (yıl)'],
@@ -245,9 +299,11 @@
     const active=(state.employees||[]).filter(e=>!e.termination_date&&e.status!=='Pasif');
     const buckets=[['0-1 yıl',0,1],['1-5 yıl',1,5],['5-10 yıl',5,10],['10-15 yıl',10,15],['15+ yıl',15,999]];
     const dist=buckets.map(([l,lo,hi])=>[l,active.filter(e=>{const y=serviceYears(e);return y>=lo&&y<hi;}).length]);
-    const anniv=active.filter(e=>{const d=new Date(firstStart(e));return !isNaN(d)&&d.getMonth()+1===Number(f.month)&&(!f.dept||e.department===f.dept);})
+    const acc={day:e=>e.day,name:e=>e.name||'',department:e=>e.department||'',start:e=>+new Date(firstStart(e))||0,years:e=>e.years};
+    let anniv=active.filter(e=>{const d=new Date(firstStart(e));return !isNaN(d)&&d.getMonth()+1===Number(f.month)&&(!f.dept||e.department===f.dept);})
       .map(e=>({...e,day:new Date(firstStart(e)).getDate(),years:serviceYears(e)+1}))
       .sort((a,b)=>a.day-b.day||trSort(a.name,b.name));
+    anniv=sortList(anniv,f,acc);
     mount(`${statLine(dist.map(([l,v])=>[l,v]))}
       <div class="card" style="margin-bottom:16px">
         <div class="card-head"><h2>Kıdem dağılımı</h2><span class="muted">${active.length} aktif çalışan</span></div>
@@ -260,13 +316,14 @@
           ${field('Departman',selectEl('rf-dept',[['','Tüm departmanlar'],...deptList()],f.dept))}
         </div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn" id="rf-csv">CSV indir</button></div>
-        <div style="overflow:auto"><table><thead><tr>
-          <th>GÜN</th><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>İŞE GİRİŞ</th><th>TAMAMLANAN YIL</th>
+        <div style="overflow:auto"><table class="rf-table"><thead><tr>
+          ${th('GÜN','day',f)}${th('ÇALIŞAN','name',f)}${th('DEPARTMAN','department',f)}${th('İŞE GİRİŞ','start',f)}${th('TAMAMLANAN YIL','years',f)}
         </tr></thead><tbody>${anniv.map(e=>`<tr>
           <td>${e.day} ${months[Number(f.month)-1]}</td><td><strong>${esc(e.name)}</strong></td>
           <td>${esc(e.department||'—')}</td><td>${trDate(firstStart(e))}</td><td>${e.years}. yıl</td>
         </tr>`).join('')||`<tr><td colspan="5" class="empty">Bu ay yıl dönümü yok</td></tr>`}</tbody></table></div>
       </div>`);
+    bindSort(f,renderSeniority);
     ['rf-month','rf-dept'].forEach(id=>$('#'+id).onchange=()=>{f.month=$('#rf-month').value;f.dept=$('#rf-dept').value;renderSeniority();});
     $('#rf-csv').onclick=()=>downloadCsv(`yil-donumu-${months[Number(f.month)-1]}.csv`,
       ['Gün','Çalışan','Departman','İşe giriş','Tamamlanan yıl'],

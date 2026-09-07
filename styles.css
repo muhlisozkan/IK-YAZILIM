@@ -75,3 +75,8 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 /* SMS/entegrasyon kartı çok satırlı alanlar */
 .field textarea.input{width:100%;min-height:64px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;resize:vertical}
 #sms-settings-card code,#smtp-settings-card code{background:#eef1f8;border-radius:4px;padding:1px 5px;font-size:11px}
+
+/* Raporlarda sıralanabilir sütun başlıkları */
+.rf-table th[data-sort]{cursor:pointer;user-select:none;white-space:nowrap}
+.rf-table th[data-sort]:hover{color:var(--blue)}
+.rf-table th.rf-sort-active{color:var(--blue)}
