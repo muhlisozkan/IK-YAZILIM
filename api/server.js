@@ -1047,6 +1047,98 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus) 
   }
 }
 
+const annualLeaveEditor = user => ['Sistem yöneticisi','İK yöneticisi'].includes(user?.role)
+  || clean(user?.department) === 'İnsan Kaynakları';
+
+function annualLeaveEntitlement(startDate, year) {
+  const rawDate = startDate instanceof Date ? startDate.toISOString().slice(0,10) : String(startDate).slice(0,10);
+  const start = new Date(`${rawDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime())) return 0;
+  const completedYears = Number(year) - start.getUTCFullYear();
+  return completedYears < 1 ? 0 : completedYears < 5 ? 14 : completedYears < 15 ? 20 : 26;
+}
+
+async function visibleAnnualLeaveEmployees(user) {
+  if (annualLeaveEditor(user)) {
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' order by name")).rows;
+  }
+  if (user?.role === 'Departman yöneticisi' && clean(user.department)) {
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' and department=$1 order by name", [clean(user.department)])).rows;
+  }
+  if (user?.employee_id) {
+    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date from employees where status<>'Pasif' and id=$1 order by name", [Number(user.employee_id)])).rows;
+  }
+  return [];
+}
+
+async function ensureAnnualLeaveEntitlements(year, employees, actor='Sistem') {
+  if (!employees.length) return;
+  const allocations = employees.map(employee => ({
+    employee_id:Number(employee.id),
+    entitled_days:annualLeaveEntitlement(employee.leave_entitlement_start_date || employee.start_date, year)
+  }));
+  await pool.query(`
+    insert into annual_leave_entitlements(employee_id,entitlement_year,entitled_days,updated_by)
+    select item.employee_id,$1,item.entitled_days,$3
+    from jsonb_to_recordset($2::jsonb) as item(employee_id integer,entitled_days numeric)
+    on conflict(employee_id,entitlement_year) do update set
+      entitled_days=excluded.entitled_days,updated_by=excluded.updated_by,updated_at=now()
+    where annual_leave_entitlements.manual_override=false`, [year,JSON.stringify(allocations),actor]);
+}
+
+app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
+  const year=Number(req.query.year || new Date().getFullYear());
+  if (!Number.isInteger(year) || year<2000 || year>2100) return res.status(400).json({error:'Geçerli bir izin yılı seçin'});
+  const accessible=await visibleAnnualLeaveEmployees(req.user);
+  await ensureAnnualLeaveEntitlements(year,accessible,req.user?.name||'Sistem');
+  const departments=[...new Set(accessible.map(employee=>employee.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+  const requestedDepartment=clean(req.query.department);
+  const employees=requestedDepartment?accessible.filter(employee=>employee.department===requestedDepartment):accessible;
+  const ids=employees.map(employee=>Number(employee.id));
+  if (!ids.length) return res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals:{entitled:0,used:0,remaining:0},rows:[]});
+  const entitlementRows=(await pool.query(`select * from annual_leave_entitlements where entitlement_year=$1 and employee_id=any($2::int[])`,[year,ids])).rows;
+  const usedRows=(await pool.query(`
+    select employee_id,count(distinct work_date)::numeric as used_days
+    from attendance_entries
+    where employee_id=any($1::int[])
+      and work_type='normal'
+      and upper(trim(value))='Y'
+      and work_date>=make_date($2,1,1)
+      and work_date<make_date($2+1,1,1)
+      and work_date<=(now() at time zone 'Europe/Istanbul')::date
+    group by employee_id`,[ids,year])).rows;
+  const entitlementMap=new Map(entitlementRows.map(row=>[Number(row.employee_id),row]));
+  const usedMap=new Map(usedRows.map(row=>[Number(row.employee_id),Number(row.used_days)]));
+  const rows=employees.map(employee=>{
+    const record=entitlementMap.get(Number(employee.id))||{};
+    const entitled=Number(record.entitled_days||0),adjustment=Number(record.manual_adjustment||0),used=usedMap.get(Number(employee.id))||0;
+    return {employee_id:employee.id,employee_name:employee.name,department:employee.department,year,
+      entitled_days:entitled,manual_adjustment:adjustment,total_days:entitled+adjustment,used_days:used,
+      remaining_days:entitled+adjustment-used,manual_override:Boolean(record.manual_override),
+      adjustment_note:record.adjustment_note||'',updated_by:record.updated_by||null,updated_at:record.updated_at||null};
+  }).sort((a,b)=>b.remaining_days-a.remaining_days||a.employee_name.localeCompare(b.employee_name,'tr'));
+  const totals=rows.reduce((sum,row)=>({entitled:sum.entitled+row.total_days,used:sum.used+row.used_days,remaining:sum.remaining+row.remaining_days}),{entitled:0,used:0,remaining:0});
+  res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals,rows});
+}));
+
+app.patch('/api/annual-leave-balances/:employeeId', asyncRoute(async (req,res)=>{
+  if (!annualLeaveEditor(req.user)) return res.status(403).json({error:'Yıllık izin düzeltmesini yalnızca sistem veya İK yöneticisi yapabilir'});
+  const employeeId=Number(req.params.employeeId),year=Number(req.body?.year),entitled=Number(req.body?.entitled_days),adjustment=Number(req.body?.manual_adjustment||0);
+  if (!Number.isInteger(employeeId)||!Number.isInteger(year)||year<2000||year>2100||!Number.isFinite(entitled)||entitled<0||entitled>365||!Number.isFinite(adjustment)||adjustment<-365||adjustment>365) {
+    return res.status(400).json({error:'Yıl, hak edilen gün ve düzeltme değerlerini kontrol edin'});
+  }
+  const employee=await pool.query('select id from employees where id=$1',[employeeId]);
+  if (!employee.rowCount) return res.status(404).json({error:'Çalışan bulunamadı'});
+  await pool.query(`
+    insert into annual_leave_entitlements(employee_id,entitlement_year,entitled_days,manual_adjustment,manual_override,adjustment_note,updated_by)
+    values($1,$2,$3,$4,true,$5,$6)
+    on conflict(employee_id,entitlement_year) do update set
+      entitled_days=excluded.entitled_days,manual_adjustment=excluded.manual_adjustment,manual_override=true,
+      adjustment_note=excluded.adjustment_note,updated_by=excluded.updated_by,updated_at=now()`,
+    [employeeId,year,entitled,adjustment,clean(req.body?.adjustment_note).slice(0,500),req.user.name]);
+  res.json({ok:true});
+}));
+
 app.get('/api/leaves', asyncRoute(async (req, res) => {
   const rows = (await pool.query('select * from leave_requests order by start_date desc,id desc')).rows;
   res.json(rows.filter(row => approvalCanSee(row, req.user, 'Bekliyor')).map(row => decorateApproval(row, req.user, 'Bekliyor')));

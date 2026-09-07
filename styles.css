@@ -35,3 +35,5 @@ body.auth-ok .auth-overlay{display:none}body:not(.auth-ok) .sidebar,body:not(.au
 .account-dropdown>button:hover{background:#f3f6fa}
 .account-dropdown>button.danger-text{color:#b42318}
 .account-password-form{margin-top:4px}
+
+.leave-tabs{display:flex;gap:8px}.leave-bars{max-height:430px;overflow:auto;padding-right:6px}.leave-person-bar{margin:0 0 15px}.leave-person-bar>div:first-child{display:flex;justify-content:space-between;gap:12px;font-size:12px}.leave-person-bar small{display:block;color:var(--muted);font-size:10px;margin:3px 0 6px}.annual-leave-table{overflow:auto;max-height:560px}(max-width:760px){.leave-tabs{width:100%;margin-top:12px}.leave-tabs .btn{flex:1}.section-title:has(.leave-tabs){align-items:stretch;flex-direction:column}}

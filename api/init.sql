@@ -189,6 +189,21 @@ alter table advances add column if not exists approval_route jsonb not null defa
 alter table advances add column if not exists approval_step integer not null default 0;
 alter table advances add column if not exists approval_history jsonb not null default '[]'::jsonb;
 
+create table if not exists annual_leave_entitlements(
+  id bigserial primary key,
+  employee_id integer not null references employees(id) on delete cascade,
+  entitlement_year integer not null check(entitlement_year between 2000 and 2100),
+  entitled_days numeric(6,2) not null default 0 check(entitled_days between 0 and 365),
+  manual_adjustment numeric(6,2) not null default 0 check(manual_adjustment between -365 and 365),
+  manual_override boolean not null default false,
+  adjustment_note text not null default '',
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(employee_id,entitlement_year)
+);
+create index if not exists annual_leave_entitlements_year_idx on annual_leave_entitlements(entitlement_year,employee_id);
+
 create table if not exists leave_requests(
   id bigserial primary key,
   employee_id integer references employees(id) on delete set null,

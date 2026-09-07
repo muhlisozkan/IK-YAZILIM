@@ -51,7 +51,7 @@
       const earliest=new Date(today);earliest.setDate(earliest.getDate()-2);
       return d>=earliest;
     };
-    const options=(id,d,type)=>{const value=store[key(id,d,type)]||'';return type==='normal'?codes.map(s=>`<option ${value===s?'selected':''}>${s}</option>`).join(''):['0.5','1','1.5','2','2.5','3'].map(s=>`<option value="${s}" ${String(value||'')===s?'selected':''}>${s}</option>`).join('')};
+    const options=(id,d,type)=>{const value=store[key(id,d,type)]||'';return type==='normal'?codes.map(s=>`<option value="${s}" ${value===s?'selected':''}>${s==='Y'?'Y - Yıllık İzin':s}</option>`).join(''):['0.5','1','1.5','2','2.5','3'].map(s=>`<option value="${s}" ${String(value||'')===s?'selected':''}>${s}</option>`).join('')};
     function render(){
       const [year,monthNumber]=month.split('-').map(Number),days=new Date(year,monthNumber,0).getDate();
       const unrestricted=canEditWithoutDateLimit();

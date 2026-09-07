@@ -52,7 +52,6 @@
         row.insertBefore(cell, row.firstChild);
         const detailFields = [
           ['TC Kimlik', employee?.tc_kimlik],
-          ['Kan Grubu', employee?.kan_grubu],
           ['Cinsiyet', employee?.cinsiyet]
         ];
         const taskCell = row.children[2];
@@ -63,7 +62,7 @@
         });
         const exitCell = document.createElement('td');
         exitCell.textContent = employee?.termination_date ? new Date(employee.termination_date).toLocaleDateString('tr-TR') : '—';
-        row.insertBefore(exitCell, row.children[8]);
+        row.insertBefore(exitCell, row.children[row.children.length - 2]);
       }
       const detailButton = document.createElement('button');
       detailButton.className = 'btn ghost';
@@ -77,14 +76,14 @@
     const header = document.querySelector('#emp-table thead tr');
     if (header) {
       const taskHeader = header.children[2];
-      ['TC Kimlik', 'Kan Grubu', 'Cinsiyet'].forEach(label => {
+      ['TC Kimlik', 'Cinsiyet'].forEach(label => {
         const cell = document.createElement('th');
         cell.textContent = label;
         header.insertBefore(cell, taskHeader);
       });
       const exitHeader = document.createElement('th');
       exitHeader.textContent = 'İşten Çıkış';
-      header.insertBefore(exitHeader, header.children[8]);
+      header.insertBefore(exitHeader, header.children[header.children.length - 2]);
     }
     const toolbar = document.querySelector('.toolbar');
     if (toolbar && !document.querySelector('#status-filter')) {
