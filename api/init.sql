@@ -255,3 +255,25 @@ where s.data_key='ik_leaves'
       and existing.end_date=(item->>'end')::date
       and existing.leave_type=coalesce(nullif(item->>'type',''),'Yıllık izin')
   );
+
+create table if not exists candidates(
+  id bigserial primary key,
+  name text not null,
+  email text not null default '',
+  phone text not null default '',
+  position text not null default '',
+  department text not null default '',
+  status text not null default 'Yeni başvuru'
+    check(status in ('Yeni başvuru','Ön görüşme','Mülakat','Teklif gönderildi','İşe alındı','Olumsuz')),
+  cv_name text not null default '',
+  interview_date date,
+  notes text not null default '',
+  hr_approved boolean not null default false,
+  hr_approved_by text,
+  hr_approved_at timestamptz,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists candidates_department_idx on candidates(department);
+create index if not exists candidates_status_idx on candidates(status);

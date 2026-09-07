@@ -51,7 +51,7 @@ const decryptSmtpSecret = value => {
 };
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const attendanceTypes = new Set(['normal', 'fazla']);
-const sharedDataKeys = new Set(['ik_approval_routes','ik_users','ik_documents','ik_candidates','ik_performance','ik_training']);
+const sharedDataKeys = new Set(['ik_approval_routes','ik_users','ik_documents','ik_performance','ik_training']);
 const attendanceNormalValues = new Set(['A','B','C','D','E','F','M','AB','G','Y','O','Ü','Ö','ÇRT','ÇRT.','RT','RT.','ÇHT','DV','UZ','R.','R']);
 const attendanceOvertimeValues = new Set(['0.5','1','1.5','2','2.5','3']);
 const istanbulDate = () => {
@@ -574,7 +574,6 @@ const sharedDataWriters = {
   ik_approval_routes: user => ['Sistem yöneticisi', 'İK yöneticisi'].includes(user?.role),
   ik_users: isSystemAdmin,
   ik_documents: user => isHRUser(user) || isDepartmentManager(user),
-  ik_candidates: user => isHRUser(user) || isDepartmentManager(user),
   ik_performance: user => isHRUser(user) || isDepartmentManager(user),
   ik_training: user => isHRUser(user) || isDepartmentManager(user)
 };
@@ -1423,6 +1422,88 @@ app.delete('/api/advances/:id', asyncRoute(async (req, res) => {
   const row = found.rows[0];
   if (req.user.role !== 'Sistem yöneticisi' && !(approvalOwnedBy(row, req.user) && row.status === 'Onay Sürecinde' && Number(row.approval_step || 0) === 0)) return res.status(403).json({ error: 'Yalnızca ilk onayı bekleyen kendi talebinizi silebilirsiniz' });
   await pool.query('delete from advances where id=$1', [req.params.id]);
+  res.status(204).end();
+}));
+
+// --- İşe alım / aday takip ---
+const candidateStatuses = new Set(['Yeni başvuru', 'Ön görüşme', 'Mülakat', 'Teklif gönderildi', 'İşe alındı', 'Olumsuz']);
+const canManageCandidates = user => isHRUser(user);
+
+app.get('/api/candidates', asyncRoute(async (req, res) => {
+  if (canManageCandidates(req.user)) {
+    return res.json((await pool.query('select * from candidates order by created_at desc, id desc')).rows);
+  }
+  // Departman yöneticisi yalnızca kendi departmanının İK onaylı adaylarını görür.
+  const scope = visibleDepartments(req.user);
+  if (!Array.isArray(scope) || !scope.length) {
+    return res.status(403).json({ error: 'İşe alım kayıtlarını görme yetkiniz yok' });
+  }
+  const rows = (await pool.query(
+    'select * from candidates where hr_approved=true and department = any($1) order by created_at desc, id desc', [scope]
+  )).rows;
+  res.json(rows);
+}));
+
+app.post('/api/candidates', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageCandidates, 'Aday ekleme yetkiniz yok')) return;
+  const b = req.body || {};
+  const name = clean(b.name);
+  if (!name) return res.status(400).json({ error: 'Aday adı zorunludur' });
+  const status = candidateStatuses.has(clean(b.status)) ? clean(b.status) : 'Yeni başvuru';
+  const result = await pool.query(`
+    insert into candidates(name,email,phone,position,department,status,cv_name,interview_date,notes,created_by)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+  [name, clean(b.email), clean(b.phone), clean(b.position), clean(b.department), status,
+    clean(b.cv_name), dateOnly(b.interview_date), clean(b.notes), req.user.name]);
+  res.status(201).json(result.rows[0]);
+}));
+
+app.put('/api/candidates/:id', asyncRoute(async (req, res) => {
+  const found = await pool.query('select * from candidates where id=$1', [req.params.id]);
+  if (!found.rowCount) return res.status(404).json({ error: 'Aday bulunamadı' });
+  const row = found.rows[0];
+  const b = req.body || {};
+  const status = candidateStatuses.has(clean(b.status)) ? clean(b.status) : row.status;
+  if (canManageCandidates(req.user)) {
+    const result = await pool.query(`
+      update candidates set name=$1,email=$2,phone=$3,position=$4,department=$5,status=$6,
+        cv_name=$7,interview_date=$8,notes=$9,updated_at=now() where id=$10 returning *`,
+    [clean(b.name) || row.name, clean(b.email), clean(b.phone), clean(b.position), clean(b.department), status,
+      clean(b.cv_name), dateOnly(b.interview_date), clean(b.notes), row.id]);
+    return res.json(result.rows[0]);
+  }
+  // Departman yöneticisi: yalnızca kendi departmanının İK onaylı adayında durum + not.
+  const scope = visibleDepartments(req.user);
+  if (!row.hr_approved || !Array.isArray(scope) || !scope.includes(clean(row.department))) {
+    return res.status(403).json({ error: 'Bu aday kaydını düzenleme yetkiniz yok' });
+  }
+  const result = await pool.query(
+    'update candidates set status=$1,notes=$2,updated_at=now() where id=$3 returning *',
+    [status, clean(b.notes), row.id]);
+  res.json(result.rows[0]);
+}));
+
+app.patch('/api/candidates/:id/approve', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageCandidates, 'Aday onaylama yetkiniz yok')) return;
+  const approved = req.body?.approved !== false;
+  const found = await pool.query('select * from candidates where id=$1', [req.params.id]);
+  if (!found.rowCount) return res.status(404).json({ error: 'Aday bulunamadı' });
+  if (approved && !clean(found.rows[0].department)) {
+    return res.status(400).json({ error: 'Önce adaya bir departman atayın' });
+  }
+  const result = await pool.query(`
+    update candidates set hr_approved=$1,
+      hr_approved_by=case when $1 then $2 else null end,
+      hr_approved_at=case when $1 then now() else null end,
+      updated_at=now() where id=$3 returning *`,
+  [approved, req.user.name, req.params.id]);
+  res.json(result.rows[0]);
+}));
+
+app.delete('/api/candidates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageCandidates, 'Aday silme yetkiniz yok')) return;
+  const result = await pool.query('delete from candidates where id=$1', [req.params.id]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Aday bulunamadı' });
   res.status(204).end();
 }));
 
