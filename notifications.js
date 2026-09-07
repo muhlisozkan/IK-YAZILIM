@@ -112,25 +112,29 @@
     </div>`;
   }
 
+  function section(title,arr,limit,isRead){
+    const shown=arr.slice(0,limit);
+    return `<div class="notif-section">
+      <div class="notif-section-head">${title}<span class="muted">${arr.length}</span></div>
+      <div class="notif-list">
+        ${shown.map(n=>isRead?readRow(n):itemRow(n)).join('')||`<div class="notif-empty">${isRead?'Okunan bildirim yok':'Yeni bildirim yok'}</div>`}
+        ${arr.length>limit?`<div class="notif-more">+${arr.length-limit} bildirim daha</div>`:''}
+      </div>
+    </div>`;
+  }
   function panelHtml(compact){
     const read=readSet();
     const cur=currentNotifications();
     const unread=cur.filter(n=>!read.has(n.id));
     const done=cur.filter(n=>read.has(n.id));
-    const limit=compact?8:40;
+    const limit=compact?8:250;
     return `<div class="notif-head">
         <strong>Bildirimler</strong>
-        <span class="muted">${unread.length} okunmamış</span>
+        <span class="muted">${unread.length} yeni</span>
         ${unread.length?`<button class="btn ghost" data-notif-readall="1">Tümünü okundu işaretle</button>`:''}
       </div>
-      <div class="notif-list">
-        ${unread.slice(0,limit).map(n=>itemRow(n,compact)).join('')||'<div class="notif-empty">Okunmamış bildirim yok</div>'}
-        ${unread.length>limit?`<div class="notif-more">+${unread.length-limit} bildirim daha</div>`:''}
-      </div>
-      ${done.length?`<details class="notif-done" ${compact?'':'open'}>
-        <summary>Okunmuş bildirimler (${done.length})</summary>
-        <div class="notif-list">${done.slice(0,limit).map(readRow).join('')}</div>
-      </details>`:''}`;
+      ${section('Yeni bildirimler',unread,limit,false)}
+      ${section('Okunan bildirimler',done,limit,true)}`;
   }
 
   function bindPanel(root){
