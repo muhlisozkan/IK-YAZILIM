@@ -464,8 +464,10 @@ const isHRUser = user => ['Sistem yöneticisi', 'İK yöneticisi'].includes(user
   || clean(user?.department) === 'İnsan Kaynakları';
 const isPayrollUser = user => isHRUser(user) || user?.role === 'Bordro yetkilisi';
 const isDepartmentManager = user => user?.role === 'Departman yöneticisi';
-// Puantaj ve vardiya düzenleyebilen roller.
+// Vardiya düzenleyebilen roller (departman yöneticisi kendi departmanı için).
 const canEditWorkforce = user => isPayrollUser(user) || isDepartmentManager(user);
+// Puantaj yalnızca İK ve Bordro; departman yöneticileri göremez.
+const canViewAttendance = user => isPayrollUser(user);
 const requireRole = (req, res, allowed, message = 'Bu işlem için yetkiniz yok') => {
   if (allowed(req.user)) return true;
   res.status(403).json({ error: message });
@@ -828,6 +830,7 @@ app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/attendance', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canViewAttendance, 'Puantaj görüntüleme yetkiniz yok')) return;
   const month = /^\d{4}-\d{2}$/.test(clean(req.query.month)) ? clean(req.query.month) : null;
   if (!month) return res.status(400).json({ error: 'Geçerli bir puantaj ayı zorunludur' });
   const params = [month];
@@ -858,7 +861,7 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
   if (value && !(workType === 'normal' ? attendanceNormalValues : attendanceOvertimeValues).has(value)) {
     return res.status(400).json({ error: 'Geçersiz puantaj değeri' });
   }
-  if (!requireRole(req, res, canEditWorkforce, 'Puantaj düzenleme yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewAttendance, 'Puantaj düzenleme yetkiniz yok')) return;
   const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   if (!canActOnDepartment(req.user, employee.rows[0].department)) {
@@ -955,7 +958,7 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/attendance-report', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canEditWorkforce, 'Puantaj raporu alma yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewAttendance, 'Puantaj raporu alma yetkiniz yok')) return;
   let department = clean(req.body?.department);
   const month = /^\d{4}-\d{2}$/.test(clean(req.body?.month)) ? clean(req.body.month) : '2026-08';
   let employees = Array.isArray(req.body?.employees) ? req.body.employees : [];

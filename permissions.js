@@ -5,7 +5,7 @@
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
-    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','attendance','shifts','recruitment','performance','training'], create: true, approve: false },
+    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','shifts','recruitment','performance','training'], create: true, approve: false },
     'Mali İşler': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
     'Finans yöneticisi': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
     'Genel müdür': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
@@ -13,7 +13,7 @@
     'Bölge yöneticisi': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
     'Bordro yetkilisi': { views: ['dashboard','payroll','expenses','advances','reports','attendance'], create: true, approve: true },
     'Personel': { views: ['dashboard','leave','expenses','advances','documents'], create: true, approve: false },
-    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users'), create: false, approve: false }
+    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance'), create: false, approve: false }
   };
 
   function users() {
