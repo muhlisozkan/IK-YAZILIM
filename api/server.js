@@ -1617,6 +1617,9 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
   if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date || !Number.isInteger(Number(body.days)) || Number(body.days) <= 0) {
     return res.status(400).json({ error: 'Çalışan, geçerli tarih aralığı ve izin süresi zorunludur' });
   }
+  if (dateDistance(body.end_date, body.start_date) > 40) {
+    return res.status(400).json({ error: 'İzin bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir' });
+  }
   const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
   if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
   if (req.user.role !== 'Sistem yöneticisi' && (!req.user.employee_id || String(req.user.employee_id) !== String(employeeId))) {

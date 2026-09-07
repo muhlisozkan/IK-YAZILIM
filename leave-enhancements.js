@@ -118,11 +118,22 @@ function leaveModal(){
   modal('İzin talebi',`<div class="form-grid"><div class="field"><label>Çalışan *</label>${employeeField}</div><div class="field"><label>İzin türü</label><select class="select" id="l-type"><option>Yıllık izin</option><option>Ücretsiz izin</option><option>Hastalık izni</option><option>Mazeret izni</option></select></div><div class="field"><label>Başlangıç *</label><input class="input" id="l-start" type="date"></div><div class="field"><label>Bitiş *</label><input class="input" id="l-end" type="date"></div></div><div id="leave-preview" class="formula" style="margin-top:14px">Tarihleri seçtiğinizde çalışma günü hesaplanır.</div>`,async()=>{
     const start=$('#l-start').value,end=$('#l-end').value,employee=state.employees.find(item=>String(item.id)===String($('#l-employee').value)),type=$('#l-type').value;
     if(!employee||!start||!end||end<start)return toast('Çalışan ve tarihleri kontrol edin');
+    if(Math.round((new Date(end)-new Date(start))/86400000)>40)return toast('Bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir');
     const days=businessDays(start,end);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
     try{const created=await leaveApi('/api/leaves',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:employee.id,leave_type:type,start_date:start,end_date:end,days})});state.leaves.unshift({...created,employee:created.employee_name,type:created.leave_type,start:leaveDate(created.start_date),end:leaveDate(created.end_date)});closeModal();renderLeaveRequests();toast(`İzin talebi ${created.current_approver} onayına gönderildi`)}catch(error){toast(error.message)}
   });
   const preview=()=>{const start=$('#l-start').value,end=$('#l-end').value;if(start&&end&&end>=start)$('#leave-preview').innerHTML=`Hesaplanan izin süresi: <strong>${businessDays(start,end)} çalışma günü</strong>`};
-  $('#l-start').onchange=preview;$('#l-end').onchange=preview;$('#l-type').onchange=preview;
+  const applyEndLimits=()=>{
+    const start=$('#l-start').value,end=$('#l-end');
+    if(!start){end.removeAttribute('min');end.removeAttribute('max');return;}
+    end.min=start;
+    const max=new Date(start);max.setDate(max.getDate()+40);
+    end.max=max.toISOString().slice(0,10);
+    if(end.value&&(end.value<end.min||end.value>end.max)){end.value='';$('#leave-preview').innerHTML='Bitiş tarihini yeniden seçin.';}
+  };
+  $('#l-start').onchange=()=>{applyEndLimits();preview();};
+  $('#l-end').onchange=preview;$('#l-type').onchange=preview;
+  applyEndLimits();
 }
 
 async function decideLeave(id,decision){
