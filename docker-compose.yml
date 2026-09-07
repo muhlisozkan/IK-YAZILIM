@@ -17,6 +17,9 @@ services:
     environment:
       DATABASE_URL: postgres://ik:ik@db:5432/ik
       SMTP_SETTINGS_KEY: ${SMTP_SETTINGS_KEY}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
     env_file:
       - ${BORDRO_ENV_FILE:-/dev/null}
     depends_on: [db]

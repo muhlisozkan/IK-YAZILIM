@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://ik:ik@db:5432/ik' });
 const app = express();
+app.set('trust proxy', true); // nginx + Cloudflare Tunnel arkasında; gerçek istemci IP'si için
 app.use(express.json({ limit: '5mb' }));
 app.disable('etag');
 app.use('/api', (_req, res, next) => {
@@ -276,6 +277,46 @@ const cookieValue = (req, name) => {
   return match ? decodeURIComponent(match.slice(name.length + 1)) : '';
 };
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
+
+// Oturum çerezi: HTTPS arkasında (Cloudflare) Secure zorunlu; düz HTTP ile yerel
+// test için COOKIE_SECURE=false ile kapatılabilir.
+const cookieSecure = clean(process.env.COOKIE_SECURE || 'true').toLowerCase() !== 'false';
+const sessionCookie = (token, maxAgeSeconds) =>
+  `ik_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}` +
+  (cookieSecure ? '; Secure' : '');
+
+// Giriş için kaba kuvvet koruması (bellek içi). Tek süreçli API olduğu için
+// harici bir depoya gerek yok; konteyner yeniden başlarsa sayaç sıfırlanır.
+const LOGIN_MAX_ATTEMPTS = Math.max(1, Number(process.env.LOGIN_MAX_ATTEMPTS) || 5);
+const LOGIN_LOCK_MS = Math.max(1, Number(process.env.LOGIN_LOCK_MINUTES) || 15) * 60000;
+const loginAttempts = new Map(); // "kullanıcı|ip" -> { count, lockedUntil }
+const requestIp = req =>
+  clean(req.headers['cf-connecting-ip']) || clean(req.ip) || clean(req.socket?.remoteAddress) || 'bilinmiyor';
+const loginKey = (username, ip) => `${String(username).toLowerCase()}|${ip}`;
+function loginLockState(key) {
+  const entry = loginAttempts.get(key);
+  if (!entry || !entry.lockedUntil) return { locked: false };
+  const remaining = entry.lockedUntil - Date.now();
+  if (remaining <= 0) { loginAttempts.delete(key); return { locked: false }; }
+  return { locked: true, retryAfterSeconds: Math.ceil(remaining / 1000) };
+}
+function registerLoginFailure(key) {
+  const entry = loginAttempts.get(key) || { count: 0, lockedUntil: 0 };
+  entry.count += 1;
+  if (entry.count >= LOGIN_MAX_ATTEMPTS) {
+    entry.lockedUntil = Date.now() + LOGIN_LOCK_MS;
+    entry.count = 0;
+  }
+  loginAttempts.set(key, entry);
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of loginAttempts) {
+    if ((!entry.lockedUntil || entry.lockedUntil <= now) && !entry.count) loginAttempts.delete(key);
+    else if (entry.lockedUntil && entry.lockedUntil <= now) loginAttempts.delete(key);
+  }
+}, 300000).unref();
+
 async function authenticatedUser(req) {
   const token = cookieValue(req, 'ik_session');
   if (!token) return null;
@@ -290,15 +331,25 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   const username = clean(req.body?.username);
   const password = String(req.body?.password || '');
   if (!username || !password) return res.status(400).json({ error: 'Kullanıcı adı ve şifre zorunludur' });
+  const key = loginKey(username, requestIp(req));
+  const lock = loginLockState(key);
+  if (lock.locked) {
+    res.setHeader('Retry-After', String(lock.retryAfterSeconds));
+    return res.status(429).json({ error: `Çok fazla hatalı giriş denemesi. ${Math.ceil(lock.retryAfterSeconds / 60)} dakika sonra tekrar deneyin.` });
+  }
   const result = await pool.query(`
     select id,username,email,display_name as name,role,employee_id,department
     from app_users
     where lower(username)=lower($1) and status='Aktif' and password_hash=crypt($2,password_hash)`, [username, password]);
-  if (!result.rowCount) return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
+  if (!result.rowCount) {
+    registerLoginFailure(key);
+    return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
+  }
+  loginAttempts.delete(key);
   const user = result.rows[0], token = crypto.randomBytes(32).toString('hex');
   await pool.query("delete from auth_sessions where expires_at<=now()");
   await pool.query("insert into auth_sessions(token_hash,user_id,expires_at) values($1,$2,now()+interval '12 hours')", [tokenHash(token), user.id]);
-  res.setHeader('Set-Cookie', `ik_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
+  res.setHeader('Set-Cookie', sessionCookie(token, 43200));
   res.json(withUserScope(user));
 }));
 
@@ -311,7 +362,7 @@ app.get('/api/auth/me', asyncRoute(async (req, res) => {
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const token = cookieValue(req, 'ik_session');
   if (token) await pool.query('delete from auth_sessions where token_hash=$1', [tokenHash(token)]);
-  res.setHeader('Set-Cookie', 'ik_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  res.setHeader('Set-Cookie', sessionCookie('', 0));
   res.status(204).end();
 }));
 
