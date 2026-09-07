@@ -9,16 +9,8 @@ function yearsOfService(employeeOrStart) {
   const start = employeeOrStart && typeof employeeOrStart === 'object' ? employeeOrStart.start : employeeOrStart;
   return completedServiceYears(start);
 }
-function leaveYearsOfService(employeeOrStart) {
-  const start = employeeOrStart && typeof employeeOrStart === 'object'
-    ? (employeeOrStart.leave_entitlement_start_date || employeeOrStart.seniority_start_date || employeeOrStart.start)
-    : employeeOrStart;
-  return completedServiceYears(start);
-}
-function annualEntitlement(employeeOrStart) {
-  const y = leaveYearsOfService(employeeOrStart);
-  return y < 1 ? 0 : y < 5 ? 14 : y < 15 ? 20 : 26;
-}
+// Yıllık izin hakkı hesabı sunucuda (annualLeaveEntitlement) tek noktadan yapılır;
+// ekranlar /api/annual-leave-balances değerlerini gösterir.
 function firstEmploymentStart(employee) { return employee.first_employment_start_date || employee.start; }
 function employeeDetails(e) {
   const seniority = `${yearsOfService(e)} yıl`;

@@ -1182,19 +1182,33 @@ function annualLeaveDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// İki tarih arasında tamamlanmış tam yıl sayısı (yıl dönümü geçmediyse eksik sayılır).
+function completedFullYears(from, to) {
+  let years = to.getUTCFullYear() - from.getUTCFullYear();
+  const anniversary = new Date(Date.UTC(to.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
+  if (to < anniversary) years -= 1;
+  return years;
+}
+
+// Yıllık İzin Takip Çizelgesi "Kriterler" kuralları:
+//   1–5 yıl kıdem (5 dahil)        -> 14 gün
+//   5 yıldan fazla, 15 yıldan az   -> 20 gün
+//   15 yıl ve üzeri (15 dahil)     -> 26 gün
+//   18 yaş ve altı / 50 yaş ve üstü -> çalışma süresine bakılmaksızın en az 20 gün
+// Kıdem ve yaş, seçilen yılın sonuna (ya da bugüne, hangisi önceyse) göre hesaplanır.
 function annualLeaveEntitlement(startDate, birthDate, year) {
   const start = annualLeaveDate(startDate);
   if (!start) return 0;
-  const completedYears = Number(year) - start.getUTCFullYear();
+  const yearEnd = new Date(Date.UTC(Number(year), 11, 31));
+  const now = new Date();
+  const reference = now < yearEnd ? now : yearEnd;
+  const completedYears = completedFullYears(start, reference);
   if (completedYears < 1) return 0;
   let entitlement = completedYears <= 5 ? 14 : completedYears < 15 ? 20 : 26;
   const birth = annualLeaveDate(birthDate);
   if (birth) {
-    const anniversary = new Date(Date.UTC(Number(year),start.getUTCMonth(),start.getUTCDate()));
-    let age = anniversary.getUTCFullYear() - birth.getUTCFullYear();
-    const birthdayThisYear = new Date(Date.UTC(anniversary.getUTCFullYear(),birth.getUTCMonth(),birth.getUTCDate()));
-    if (anniversary < birthdayThisYear) age--;
-    if (age <= 18 || age >= 50) entitlement = Math.max(entitlement,20);
+    const age = completedFullYears(birth, reference);
+    if (age <= 18 || age >= 50) entitlement = Math.max(entitlement, 20);
   }
   return entitlement;
 }
