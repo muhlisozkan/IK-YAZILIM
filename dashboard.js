@@ -70,7 +70,10 @@
         ${largeChart('Çalışan durumları',total,statusParts,'çalışan')}
         ${largeChart(selectedDepartment?'Seçili departman':'Departman dağılımı',total,departmentParts,'kişi')}
       </div>
-      <div class="card dashboard-absence"><div class="card-head"><div><h2>Bugün izinli ve raporlu çalışanlar</h2><span class="muted">${absent.length} çalışan · ${pending} bekleyen izin talebi</span></div><button class="btn ghost" data-go="leave">İzin yönetimine git →</button></div><div class="dashboard-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>DURUM</th><th>BİTİŞ</th></tr></thead><tbody>${absentRows||'<tr><td colspan="4" class="empty">Bugün izinli veya raporlu çalışan bulunmuyor.</td></tr>'}</tbody></table></div></div>`;
+      <div class="dashboard-lower">
+        <div class="card dashboard-absence"><div class="card-head"><div><h2>Bugün izinli ve raporlu çalışanlar</h2><span class="muted">${absent.length} çalışan · ${pending} bekleyen izin talebi</span></div><button class="btn ghost" data-go="leave">İzin yönetimine git →</button></div><div class="dashboard-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>DURUM</th><th>BİTİŞ</th></tr></thead><tbody>${absentRows||'<tr><td colspan="4" class="empty">Bugün izinli veya raporlu çalışan bulunmuyor.</td></tr>'}</tbody></table></div></div>
+        <div id="dashboard-notifications"></div>
+      </div>`;
     const departmentSelect=$('#dashboard-department');
     if(departmentSelect)departmentSelect.onchange=event=>{selectedDepartment=event.target.value;dashboard()};
     bindGo();

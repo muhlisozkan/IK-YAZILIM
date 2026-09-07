@@ -37,3 +37,32 @@ body.auth-ok .auth-overlay{display:none}body:not(.auth-ok) .sidebar,body:not(.au
 .account-password-form{margin-top:4px}
 
 .leave-tabs{display:flex;gap:8px}.leave-bars{max-height:430px;overflow:auto;padding-right:6px}.leave-person-bar{margin:0 0 15px}.leave-person-bar>div:first-child{display:flex;justify-content:space-between;gap:12px;font-size:12px}.leave-person-bar small{display:block;color:var(--muted);font-size:10px;margin:3px 0 6px}.annual-leave-table{overflow:auto;max-height:560px}(max-width:760px){.leave-tabs{width:100%;margin-top:12px}.leave-tabs .btn{flex:1}.section-title:has(.leave-tabs){align-items:stretch;flex-direction:column}}
+
+/* --- Bildirim merkezi --- */
+.notif-bell{position:relative;border:0;background:#eef1f8;width:35px;height:35px;border-radius:50%;cursor:pointer;font-size:16px;line-height:1;display:grid;place-items:center;padding:0}
+.notif-bell:hover{background:#e3e8f5}
+.notif-bell.has-unread{background:#e9edff}
+.notif-badge{position:absolute;top:-4px;right:-4px;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--red);color:#fff;font-size:10px;font-weight:800;display:none;place-items:center;border:2px solid #fff}
+#notif-dropdown{position:fixed;z-index:60;width:min(360px,calc(100vw - 24px));background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:0 18px 50px rgba(35,48,80,.18);padding:14px;max-height:70vh;overflow:auto}
+.notif-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.notif-head strong{font-size:14px}
+.notif-head .muted{font-size:11px}
+.notif-head .btn.ghost{margin-left:auto;font-size:11px;white-space:nowrap}
+.notif-list{display:flex;flex-direction:column;gap:6px}
+.notif-item{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 10px;cursor:pointer;font:inherit;font-size:12px;color:var(--ink)}
+button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
+.notif-item.read{opacity:.62;cursor:default}
+.notif-item .badge{flex:0 0 auto}
+.notif-text{flex:1;line-height:1.4}
+.notif-read,.notif-unread{flex:0 0 auto;width:22px;height:22px;border-radius:6px;display:grid;place-items:center;color:var(--muted);font-size:13px}
+.notif-read:hover{background:#e6f8f1;color:#14845d}
+.notif-unread:hover{background:#e9edff;color:var(--blue)}
+.notif-empty{color:var(--muted);font-size:12px;padding:14px 4px;text-align:center}
+.notif-more{color:var(--muted);font-size:11px;padding:6px 2px;text-align:center}
+.notif-done{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.notif-done summary{cursor:pointer;color:var(--muted);font-size:12px;font-weight:600;margin-bottom:8px}
+.notif-panel{display:flex;flex-direction:column}
+.notif-panel .notif-list{max-height:none}
+.dashboard-lower{display:grid;grid-template-columns:1.6fr 1fr;gap:18px;margin-top:18px;align-items:start}
+.dashboard-lower .dashboard-absence{margin-top:0}
+@media(max-width:980px){.dashboard-lower{grid-template-columns:1fr}}

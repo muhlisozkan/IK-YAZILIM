@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>İK Merkezi</title>
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
   <div class="auth-overlay" id="login-overlay">
@@ -37,13 +37,12 @@
       <button class="nav-item" data-view="payroll" onclick="window.__ikNavigate('payroll')">₺ <span>Ücret Hesaplama</span></button>
       <button class="nav-item" data-view="recruitment" onclick="window.__ikNavigate('recruitment')">♧ <span>İşe Alım</span></button>
       <button class="nav-item" data-view="reports" onclick="window.__ikNavigate('reports')">▥ <span>Raporlar</span></button>
-      <button class="nav-item" data-view="notifications" onclick="window.__ikNavigate('notifications')">● <span>Bildirimler</span></button>
       <button class="nav-item" data-view="users" onclick="window.__ikNavigate('users')">♙ <span>Kullanıcı ve Yetkiler</span></button>
     </nav>
     <div class="sidebar-foot"><small>Sunucu sürümü</small><span>● Sistem çalışıyor</span></div>
   </aside>
   <main class="main">
-    <header class="topbar"><div><p class="eyebrow">İK YÖNETİM PANELİ</p><h1 id="page-title">Genel Bakış</h1></div><div class="top-actions"><span id="today"></span><button class="avatar">AY</button></div></header>
+    <header class="topbar"><div><p class="eyebrow">İK YÖNETİM PANELİ</p><h1 id="page-title">Genel Bakış</h1></div><div class="top-actions"><button class="notif-bell" id="notif-bell" type="button" aria-label="Bildirimler"><span class="notif-ic">🔔</span></button><span id="today"></span><button class="avatar">AY</button></div></header>
     <section id="app" class="content"></section>
   </main>
   <div id="toast" class="toast"></div>
@@ -56,13 +55,13 @@
   <script src="attendance.js?v=5"></script>
   <script src="approval.js?v=5"></script>
   <script src="payroll-enhancements.js?v=2"></script>
-  <script src="users.js?v=6"></script>
-  <script src="permissions.js?v=7"></script>
+  <script src="users.js?v=7"></script>
+  <script src="permissions.js?v=8"></script>
   <script src="departments.js?v=2"></script>
   <script src="expense-advance.js?v=5"></script>
   <script src="shifts.js?v=6"></script>
   <script src="reports-enhancements.js?v=4"></script>
-  <script src="notifications.js?v=3"></script>
+  <script src="notifications.js?v=4"></script>
   <script src="documents.js?v=2"></script>
   <script src="recruitment.js?v=2"></script>
   <script src="performance.js?v=2"></script>
@@ -71,6 +70,6 @@
   <script src="employee-details.js?v=4"></script>
   <script src="attendance-paged.js?v=10"></script>
   <script src="attendance-controls.js?v=3"></script>
-  <script src="dashboard.js?v=4"></script>
+  <script src="dashboard.js?v=5"></script>
 </body>
 </html>

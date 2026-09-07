@@ -28,6 +28,7 @@
     const body=loaded?(rows||'<tr><td colspan="5" class="empty">Kullanıcı bulunmuyor</td></tr>'):'<tr><td colspan="5" class="empty">Kullanıcılar yükleniyor…</td></tr>';
     $('#app').innerHTML=`<div class="section-title"><div><h2>Kullanıcı ve yetki yönetimi</h2><span class="muted">Gerçek giriş hesaplarını, rollerini ve personel bağlantılarını yönetin</span></div><button class="btn" id="add-user">+ Kullanıcı ekle</button></div><div class="card"><div class="card-head"><h2>Kullanıcılar</h2><span class="muted">${loaded?users.length:0} hesap</span></div><div style="overflow:auto"><table><thead><tr><th>KULLANICI / GİRİŞ ADI</th><th>ROL</th><th>DEPARTMAN / PERSONEL</th><th>DURUM</th><th></th></tr></thead><tbody>${body}</tbody></table></div></div>`;
     window.__ikRenderApprovalMatrix?.();
+    window.__ikRenderSmtpSettings?.();
     $('#add-user').onclick=()=>userModal();
     document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick=()=>userModal(users.find(u=>String(u.id)===b.dataset.userEdit)));
     document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick=()=>deleteUser(b.dataset.userDelete));
