@@ -278,12 +278,21 @@ const cookieValue = (req, name) => {
 };
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 
-// Oturum çerezi: HTTPS arkasında (Cloudflare) Secure zorunlu; düz HTTP ile yerel
-// test için COOKIE_SECURE=false ile kapatılabilir.
-const cookieSecure = clean(process.env.COOKIE_SECURE || 'true').toLowerCase() !== 'false';
-const sessionCookie = (token, maxAgeSeconds) =>
-  `ik_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}` +
-  (cookieSecure ? '; Secure' : '');
+// Oturum çerezi. COOKIE_SECURE:
+//   auto (varsayılan) → yalnızca istek HTTPS ise Secure eklenir (Cloudflare = HTTPS,
+//                       düz http://ip:8080 erişiminde eklenmez, böylece çerez düşmez)
+//   true  → her zaman Secure   |   false → hiçbir zaman Secure
+const cookieSecureMode = clean(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+const requestIsHttps = req => {
+  const proto = clean(req.headers['x-forwarded-proto']).split(',')[0].trim().toLowerCase();
+  if (proto) return proto === 'https';
+  try { return JSON.parse(req.headers['cf-visitor'] || '{}').scheme === 'https'; } catch { return false; }
+};
+const sessionCookie = (req, token, maxAgeSeconds) => {
+  const secure = cookieSecureMode === 'true' || (cookieSecureMode !== 'false' && requestIsHttps(req));
+  return `ik_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}` +
+    (secure ? '; Secure' : '');
+};
 
 // Giriş için kaba kuvvet koruması (bellek içi). Tek süreçli API olduğu için
 // harici bir depoya gerek yok; konteyner yeniden başlarsa sayaç sıfırlanır.
@@ -349,7 +358,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   const user = result.rows[0], token = crypto.randomBytes(32).toString('hex');
   await pool.query("delete from auth_sessions where expires_at<=now()");
   await pool.query("insert into auth_sessions(token_hash,user_id,expires_at) values($1,$2,now()+interval '12 hours')", [tokenHash(token), user.id]);
-  res.setHeader('Set-Cookie', sessionCookie(token, 43200));
+  res.setHeader('Set-Cookie', sessionCookie(req, token, 43200));
   res.json(withUserScope(user));
 }));
 
@@ -362,7 +371,7 @@ app.get('/api/auth/me', asyncRoute(async (req, res) => {
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const token = cookieValue(req, 'ik_session');
   if (token) await pool.query('delete from auth_sessions where token_hash=$1', [tokenHash(token)]);
-  res.setHeader('Set-Cookie', sessionCookie('', 0));
+  res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
   res.status(204).end();
 }));
 
