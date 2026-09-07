@@ -299,13 +299,13 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   await pool.query("delete from auth_sessions where expires_at<=now()");
   await pool.query("insert into auth_sessions(token_hash,user_id,expires_at) values($1,$2,now()+interval '12 hours')", [tokenHash(token), user.id]);
   res.setHeader('Set-Cookie', `ik_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
-  res.json(user);
+  res.json(withUserScope(user));
 }));
 
 app.get('/api/auth/me', asyncRoute(async (req, res) => {
   const user = await authenticatedUser(req);
   if (!user) return res.status(401).json({ error: 'Oturum açmanız gerekiyor' });
-  res.json(user);
+  res.json(withUserScope(user));
 }));
 
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
@@ -389,6 +389,46 @@ const requireRole = (req, res, allowed, message = 'Bu işlem için yetkiniz yok'
 // Departman yöneticisi yalnızca kendi departmanındaki çalışana işlem yapabilir.
 const canActOnDepartment = (user, department) => isHRUser(user) || isPayrollUser(user)
   || (isDepartmentManager(user) && clean(user?.department) && clean(user.department) === clean(department));
+
+// Şirket genelini görebilen roller (departman kısıtı yok).
+const companyWideRoles = new Set([
+  'Sistem yöneticisi', 'İK yöneticisi', 'Bordro yetkilisi', 'Mali İşler', 'Finans yöneticisi',
+  'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Sadece görüntüleme'
+]);
+// Kullanıcının görebileceği departmanlar:
+//   null       -> kısıt yok (tüm şirket)
+//   [ 'X' ]    -> yalnızca bu departman(lar)
+//   []         -> departman bazlı liste yok (yalnızca kendi kayıtları)
+function visibleDepartments(user) {
+  if (companyWideRoles.has(user?.role) || clean(user?.department) === 'İnsan Kaynakları') return null;
+  if (isDepartmentManager(user) && clean(user?.department)) return [clean(user.department)];
+  return [];
+}
+// Maaş/ücret bilgisini Departman yöneticisi ve Personel görmez.
+const canSeeSalary = user => !isDepartmentManager(user) && user?.role !== 'Personel';
+
+// Bir sorguya, kullanıcının departman kapsamına göre çalışan kısıtı ekler.
+// `column` bir employees.id referansı olmalı; `params` dizisine yeni parametreler
+// eklenir ve döndürülen metin WHERE'e eklenmek üzere ' and ...' ile başlar (ya da boş).
+function scopeEmployeeSql(user, column, params) {
+  const scope = visibleDepartments(user);
+  if (scope === null) return '';
+  if (scope.length) {
+    params.push(scope);
+    return ` and ${column} in (select id from employees where department = any($${params.length}))`;
+  }
+  params.push(Number(user?.employee_id) || 0);
+  return ` and ${column} = $${params.length}`;
+}
+
+function withUserScope(user) {
+  const scope = visibleDepartments(user);
+  return {
+    ...user,
+    department_scope: scope,           // null => tümü
+    can_see_salary: canSeeSalary(user)
+  };
+}
 const publicUserColumns = 'id,username,email,display_name as name,role,status,employee_id,department,created_at,updated_at';
 
 app.patch('/api/auth/password', asyncRoute(async (req, res) => {
@@ -560,12 +600,14 @@ app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
 app.get('/api/attendance', asyncRoute(async (req, res) => {
   const month = /^\d{4}-\d{2}$/.test(clean(req.query.month)) ? clean(req.query.month) : null;
   if (!month) return res.status(400).json({ error: 'Geçerli bir puantaj ayı zorunludur' });
+  const params = [month];
+  const scopeSql = scopeEmployeeSql(req.user, 'employee_id', params);
   const result = await pool.query(`
     select employee_id, to_char(work_date,'YYYY-MM-DD') as work_date, work_type, value
     from attendance_entries
     where work_date >= ($1 || '-01')::date
-      and work_date < (($1 || '-01')::date + interval '1 month')
-    order by employee_id, work_date, work_type`, [month]);
+      and work_date < (($1 || '-01')::date + interval '1 month')${scopeSql}
+    order by employee_id, work_date, work_type`, params);
   const attendance = {};
   for (const row of result.rows) {
     const day = Number(row.work_date.slice(8, 10));
@@ -618,12 +660,14 @@ app.get('/api/shifts', asyncRoute(async (req, res) => {
   if (!start || !end || dateDistance(end, start) < 0 || dateDistance(end, start) > 31) {
     return res.status(400).json({ error: 'Geçerli vardiya tarih aralığı zorunludur' });
   }
+  const params = [start, end];
+  const scopeSql = scopeEmployeeSql(req.user, 's.employee_id', params);
   const result = await pool.query(`
     select s.employee_id, e.name as employee, to_char(s.work_date,'YYYY-MM-DD') as date, s.shift_type as type
     from shift_plans s
     join employees e on e.id=s.employee_id
-    where s.work_date between $1 and $2
-    order by e.name,s.work_date`, [start, end]);
+    where s.work_date between $1 and $2${scopeSql}
+    order by e.name,s.work_date`, params);
   res.json(result.rows);
 }));
 
@@ -666,10 +710,21 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
 
 app.post('/api/attendance-report', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canEditWorkforce, 'Puantaj raporu alma yetkiniz yok')) return;
-  const department = clean(req.body?.department);
+  let department = clean(req.body?.department);
   const month = /^\d{4}-\d{2}$/.test(clean(req.body?.month)) ? clean(req.body.month) : '2026-08';
-  const employees = Array.isArray(req.body?.employees) ? req.body.employees : [];
+  let employees = Array.isArray(req.body?.employees) ? req.body.employees : [];
   if (employees.length > 2000) return res.status(413).json({ error: 'Rapor için çalışan listesi çok büyük' });
+  // Departman kapsamı: kısıtlı kullanıcı yalnızca kendi departmanı için rapor alabilir.
+  const scope = visibleDepartments(req.user);
+  if (Array.isArray(scope)) {
+    if (!scope.length) return res.status(403).json({ error: 'Puantaj raporu alma yetkiniz yok' });
+    department = scope.includes(department) ? department : scope[0];
+    const ids = employees.map(row => Number(row.id)).filter(Number.isInteger);
+    const allowed = new Set((await pool.query(
+      'select id from employees where id = any($1::int[]) and department = any($2)', [ids, scope]
+    )).rows.map(row => row.id));
+    employees = employees.filter(row => allowed.has(Number(row.id)));
+  }
   const attendance = req.body?.attendance && typeof req.body.attendance === 'object' ? req.body.attendance : {};
   const template = department ? 'KAT HİZMETLERİ-2026-08.xlsx' : 'TümBölümler-2026-08.xlsx';
   const workbook = new ExcelJS.Workbook();
@@ -778,15 +833,27 @@ app.post('/api/attendance-report', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/employees', asyncRoute(async (req, res) => {
-  const rows = (await pool.query(`
+  let rows = (await pool.query(`
     select e.*,
       e.payroll_details->>'TC KİMLİK' as tc_kimlik,
       e.payroll_details->>'KAN GRUBU' as kan_grubu,
       e.payroll_details->>'CİNSİYET' as cinsiyet
     from employees e order by e.id`)).rows;
+  // Departman kapsamı: kısıtlı roller yalnızca kendi departman(lar)ını,
+  // Personel yalnızca kendi personel kaydını görür.
+  const scope = visibleDepartments(req.user);
+  if (Array.isArray(scope)) {
+    rows = scope.length
+      ? rows.filter(row => scope.includes(clean(row.department)))
+      : rows.filter(row => String(row.id) === String(req.user.employee_id));
+  }
   // Hassas bordro alanları yalnızca İK / bordro rollerine döner.
-  if (isPayrollUser(req.user)) return res.json(rows);
-  res.json(rows.map(({ payroll_details, tc_kimlik, kan_grubu, cinsiyet, ...rest }) => rest));
+  if (!isPayrollUser(req.user)) {
+    rows = rows.map(({ payroll_details, tc_kimlik, kan_grubu, cinsiyet, ...rest }) => rest);
+  }
+  // Maaş bilgisi Departman yöneticisi ve Personelden gizlenir.
+  if (!canSeeSalary(req.user)) rows = rows.map(({ salary, ...rest }) => rest);
+  res.json(rows);
 }));
 app.get('/api/employees/:id/payroll-details', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isPayrollUser, 'Bordro ayrıntılarını görme yetkiniz yok')) return;
@@ -813,13 +880,21 @@ app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
   res.status(204).end();
 }));
 
-app.get('/api/departments', asyncRoute(async (_req, res) => {
+app.get('/api/departments', asyncRoute(async (req, res) => {
+  const params = [];
+  const scope = visibleDepartments(req.user);
+  let filter = '';
+  if (Array.isArray(scope)) {
+    params.push(scope);
+    filter = `where d.name = any($1)`;
+  }
   const result = await pool.query(`
     select d.*, count(e.id)::int as employee_count
     from departments d
     left join employees e on e.department=d.name and e.workplace=d.workplace and e.unit=d.unit
+    ${filter}
     group by d.id
-    order by d.name, d.workplace, d.unit`);
+    order by d.name, d.workplace, d.unit`, params);
   res.json(result.rows);
 }));
 
@@ -1022,7 +1097,11 @@ const approvalOwnedBy = (row, user) => String(row.requester_user_id || '') === S
 const approvalPreviouslyHandledBy = (row, user) => approvalHistory(row).some(entry => String(entry.user_id) === String(user.id));
 const approvalCanAct = (row, user, pendingStatus) => row.status === pendingStatus
   && approvalRoleMatches(user, row.current_approver, row.department);
+// Departman yöneticisi kendi departmanının tüm talep tablosunu görebilir.
+const approvalInUserDepartment = (row, user) => isDepartmentManager(user)
+  && clean(user.department) && clean(row.department) === clean(user.department);
 const approvalCanSee = (row, user, pendingStatus) => user.role === 'Sistem yöneticisi'
+  || approvalInUserDepartment(row, user)
   || approvalOwnedBy(row, user)
   || approvalPreviouslyHandledBy(row, user)
   || approvalCanAct(row, user, pendingStatus);
@@ -1122,15 +1201,11 @@ function annualLeaveEntitlement(startDate, birthDate, year) {
 }
 
 async function visibleAnnualLeaveEmployees(user) {
-  if (annualLeaveEditor(user)) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' order by name")).rows;
-  }
-  if (user?.role === 'Departman yöneticisi' && clean(user.department)) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' and department=$1 order by name", [clean(user.department)])).rows;
-  }
-  if (user?.employee_id) {
-    return (await pool.query("select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif' and id=$1 order by name", [Number(user.employee_id)])).rows;
-  }
+  const cols = "select id,name,department,start_date,leave_entitlement_start_date,payroll_details->>'DOĞUM TARİHİ' birth_date from employees where status<>'Pasif'";
+  const scope = visibleDepartments(user);
+  if (scope === null) return (await pool.query(`${cols} order by name`)).rows;
+  if (scope.length) return (await pool.query(`${cols} and department = any($1) order by name`, [scope])).rows;
+  if (user?.employee_id) return (await pool.query(`${cols} and id=$1 order by name`, [Number(user.employee_id)])).rows;
   return [];
 }
 
