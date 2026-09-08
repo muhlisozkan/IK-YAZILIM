@@ -23,15 +23,15 @@
   const canWrite=module=>['full','operate'].includes(permFor(module));
   const canDelete=module=>permFor(module)==='full';
 
-  const tabs=[
-    ['visitors','Ziyaretçiler'],
-    ['vehicles','Araç Takipleri'],
-    ['fleet','Araçlar'],
-    ['staff_status','Çalışan Takipleri'],
-    ['lost_items','Kayıp/Bulunan Eşyalar'],
-    ['lost_approvals','Onay Bekleyenler'],
-    ['report','Rapor']
-  ];
+  const TABDEFS={
+    security:[['visitors','Ziyaretçiler'],['vehicles','Araç Takipleri'],['fleet','Araçlar'],['staff_status','Çalışan Takipleri'],['report','Rapor']],
+    lostfound:[['lost_items','Kayıp/Bulunan Eşyalar'],['lost_approvals','Onay Bekleyenler'],['report','Rapor']]
+  };
+  const VIEW_META={
+    security:{title:'Güvenlik',subtitle:'Ziyaretçi, araç ve çalışan giriş/çıkış takibi'},
+    lostfound:{title:'Kayıp Eşya',subtitle:'Kayıp/bulunan eşya kaydı, departman transferi ve raporlar'}
+  };
+  let currentView='security';
 
   const columns={
     visitors:[['date','Ziyaret Tarihi',fromInput],['type','Tip'],['name','İsim'],['company','Firma'],['plate','Plaka'],['department','Departman'],['status','Durum'],['exit','Çıkış',fromInput],['identity','Kimlik'],['count','Kişi']],
@@ -49,9 +49,10 @@
     lost_items:()=>[['foundDate','Kayıp/Bulunma Tarihi','datetime-local'],['category','Kategori','select',lostCategories],['item','Eşya'],['location','Nerede Bulundu'],['notes','Notlar','textarea'],['status','Durum','select',['Beklemede','Saklama Sonu','Teslim Edildi']],['storage','Saklandığı Yer'],['receiver','Teslim Alan']]
   };
 
-  let tab=sessionStorage.getItem('ik_hms_tab')||'visitors';
+  let tab='visitors';
   const cache={};
   const filters={};
+  const tabKey=()=>'ik_hms_tab_'+currentView;
 
   async function api(path,opt){
     const r=await fetch(path,opt);
@@ -67,17 +68,19 @@
 
   function visibleTabs(){
     const ac=access();
-    return tabs.filter(([k])=>k==='report'?ac.report:(LOST_TABS.includes(k)?ac.lost!=='none':ac.guv!=='none'));
+    const perm=currentView==='lostfound'?ac.lost:ac.guv;
+    return perm==='none'?[]:TABDEFS[currentView];
   }
   function shellHtml(body){
     const vt=visibleTabs();
-    return `<div class="section-title"><div><h2>Güvenlik ve Kayıp Eşya</h2><span class="muted">Ziyaretçi, araç, çalışan takibi ve kayıp/bulunan eşya yönetimi</span></div></div>
+    const meta=VIEW_META[currentView];
+    return `<div class="section-title"><div><h2>${meta.title}</h2><span class="muted">${meta.subtitle}</span></div></div>
       <div class="leave-tabs" style="margin-bottom:16px;flex-wrap:wrap">${vt.map(([k,l])=>`<button class="btn ${tab===k?'':'secondary'}" data-hms-tab="${k}">${l}</button>`).join('')}</div>
       <div id="hms-body">${body}</div>`;
   }
   function mount(body){
     $('#app').innerHTML=shellHtml(body);
-    document.querySelectorAll('[data-hms-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.hmsTab;sessionStorage.setItem('ik_hms_tab',tab);render();});
+    document.querySelectorAll('[data-hms-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.hmsTab;sessionStorage.setItem(tabKey(),tab);render();});
   }
 
   // --- Genel tablo görünümü -------------------------------------------
@@ -243,24 +246,30 @@
   // --- Raporlar -----------------------------------------------------
   async function renderReport(){
     mount('<div class="card empty">Yükleniyor…</div>');
-    let lost,vehicles;
-    try{[lost,vehicles]=await Promise.all([load('lost_items'),load('vehicles')]);}
-    catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
-    if(tab!=='report')return;
-    const storages=[...new Set(lost.map(r=>r.storage).filter(Boolean))].sort(trSort);
-    const statuses=[...new Set(lost.map(r=>r.transferStatus||r.status).filter(Boolean))].sort(trSort);
+    if(currentView==='lostfound'){
+      let lost;
+      try{lost=await load('lost_items');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+      if(tab!=='report'||currentView!=='lostfound')return;
+      const storages=[...new Set(lost.map(r=>r.storage).filter(Boolean))].sort(trSort);
+      const statuses=[...new Set(lost.map(r=>r.transferStatus||r.status).filter(Boolean))].sort(trSort);
+      mount(`<div class="card">
+        <div class="card-head"><h2>Kayıp Eşya Raporu</h2></div>
+        <div class="form-grid">
+          <div class="field"><label>Başlangıç tarihi</label><input class="input" type="date" id="lr-from"></div>
+          <div class="field"><label>Bitiş tarihi</label><input class="input" type="date" id="lr-to"></div>
+          <div class="field"><label>Durum</label><select class="select" id="lr-status"><option value="">Tümü</option>${statuses.map(s=>`<option>${esc(s)}</option>`).join('')}</select></div>
+          <div class="field"><label>Saklandığı yer</label><select class="select" id="lr-storage"><option value="">Tümü</option>${storages.map(s=>`<option>${esc(s)}</option>`).join('')}</select></div>
+        </div>
+        <div style="margin-top:12px"><button class="btn" id="lr-go">PDF Raporu Al</button></div>
+      </div>`);
+      $('#lr-go').onclick=()=>lostReport(lost);
+      return;
+    }
+    let vehicles;
+    try{vehicles=await load('vehicles');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    if(tab!=='report'||currentView!=='security')return;
     const plates=[...new Set(vehicles.map(v=>v.plate).filter(Boolean))].sort(trSort);
-    mount(`<div class="card" style="margin-bottom:16px">
-      <div class="card-head"><h2>Kayıp Eşya Raporu</h2></div>
-      <div class="form-grid">
-        <div class="field"><label>Başlangıç tarihi</label><input class="input" type="date" id="lr-from"></div>
-        <div class="field"><label>Bitiş tarihi</label><input class="input" type="date" id="lr-to"></div>
-        <div class="field"><label>Durum</label><select class="select" id="lr-status"><option value="">Tümü</option>${statuses.map(s=>`<option>${esc(s)}</option>`).join('')}</select></div>
-        <div class="field"><label>Saklandığı yer</label><select class="select" id="lr-storage"><option value="">Tümü</option>${storages.map(s=>`<option>${esc(s)}</option>`).join('')}</select></div>
-      </div>
-      <div style="margin-top:12px"><button class="btn" id="lr-go">PDF Raporu Al</button></div>
-    </div>
-    <div class="card">
+    mount(`<div class="card">
       <div class="card-head"><h2>Araç Kullanım Raporu</h2></div>
       <div class="form-grid">
         <div class="field"><label>Ay</label><input class="input" type="month" id="vr-month"></div>
@@ -268,7 +277,6 @@
       </div>
       <div style="margin-top:12px"><button class="btn" id="vr-go">PDF Raporu Al</button></div>
     </div>`);
-    $('#lr-go').onclick=()=>lostReport(lost);
     $('#vr-go').onclick=()=>vehicleReport(vehicles);
   }
   const rDate=v=>{const m=String(v||'').match(/(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})/);return m?`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`:'';};
@@ -300,19 +308,21 @@
   }
 
   function render(){
-    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='security'));
-    $('#page-title').textContent='Güvenlik ve Kayıp Eşya';
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===currentView));
+    $('#page-title').textContent=VIEW_META[currentView].title;
     const vt=visibleTabs().map(t=>t[0]);
     if(!vt.length){mount('<div class="card empty">Bu modüle erişim yetkiniz yok.</div>');return;}
-    if(!vt.includes(tab)){tab=vt[0];sessionStorage.setItem('ik_hms_tab',tab);}
+    if(!vt.includes(tab)){tab=vt[0];sessionStorage.setItem(tabKey(),tab);}
     if(tab==='report')renderReport();
     else renderTable(tab);
   }
 
   const baseShell=shell;
   shell=function(){
-    if(state.view==='security'){
-      if(window.__ikCan&&!window.__ikCan('security')){state.view='dashboard';baseShell();return;}
+    if(state.view==='security'||state.view==='lostfound'){
+      if(window.__ikCan&&!window.__ikCan(state.view)){state.view='dashboard';baseShell();return;}
+      currentView=state.view;
+      tab=sessionStorage.getItem(tabKey())||TABDEFS[currentView][0][0];
       render();
     }else baseShell();
   };
