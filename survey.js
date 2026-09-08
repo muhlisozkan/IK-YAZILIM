@@ -695,6 +695,8 @@
     let done=false;
     const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/templates/'+opts.templateId+'/invites';
     const rkey=r=>((r.email||'').trim().toLowerCase())||((r.phone||'').replace(/\D/g,''))||((r.name||'').trim().toLowerCase());
+    const allActiveEmps=()=>(state.employees||[]).filter(e=>e.status!=='Pasif')
+      .map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
     function addRecipients(list){
       const seen=new Set(rows.map(rkey).filter(Boolean));
       let added=0;
@@ -702,7 +704,8 @@
         const k=rkey(r);if(!k||seen.has(k))return;
         seen.add(k);rows.push({name:r.name||'',email:r.email||'',phone:r.phone||'',employee_id:r.employee_id||null});added++;
       });
-      rows=rows.filter(r=>r.name||r.email||r.phone);
+      rows=rows.filter(r=>r.name||r.email||r.phone)
+        .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
       if(!rows.length)rows=[{name:'',email:'',phone:'',employee_id:null}];
       redraw();
       return added;
@@ -743,8 +746,8 @@
         </div>
         <div class="field"><label>Alıcılar (${filled})</label>
           <div class="inv-sources">
-            <select class="select" id="inv-group" data-no-combobox="1"><option value="">+ Gruptan ekle…</option>${groups.map(g=>`<option value="${esc(String(g.id))}">${esc(g.name)} (${g.member_count})</option>`).join('')}</select>
-            <select class="select" id="inv-dept" data-no-combobox="1"><option value="">+ Departmandan ekle…</option>${empDepartments().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
+            <select class="select" id="inv-group" data-no-combobox="1"><option value="">+ Gruptan ekle…</option>${groups.slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr')).map(g=>`<option value="${esc(String(g.id))}">${esc(g.name)} (${g.member_count})</option>`).join('')}</select>
+            <select class="select" id="inv-dept" data-no-combobox="1"><option value="">+ Departmandan ekle…</option><option value="__ALL__">▸ Tüm departmanlar (${allActiveEmps().length} kişi)</option>${empDepartments().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
             <button type="button" class="btn ghost" id="inv-add">+ Elle satır</button>
             <button type="button" class="btn ghost" id="inv-groups">Grupları yönet</button>
           </div>
@@ -778,8 +781,9 @@
       };
       box().querySelector('#inv-dept').onchange=e=>{
         const d=e.target.value;e.target.value='';if(!d)return;
-        const n=addRecipients(deptMembers(d));
-        toast(n?`${d}: ${n} çalışan eklendi · toplam ${rows.filter(r=>r.name||r.email||r.phone).length} alıcı`:`${d}: yeni çalışan yok (hepsi zaten listede)`);
+        const label=d==='__ALL__'?'Tüm departmanlar':d;
+        const n=addRecipients(d==='__ALL__'?allActiveEmps():deptMembers(d));
+        toast(n?`${label}: ${n} çalışan eklendi · toplam ${rows.filter(r=>r.name||r.email||r.phone).length} alıcı`:`${label}: yeni çalışan yok (hepsi zaten listede)`);
       };
       const cl=box().querySelector('#inv-clear');
       if(cl)cl.onclick=()=>{rows=[{name:'',email:'',phone:'',employee_id:null}];redraw();toast('Alıcı listesi temizlendi');};
