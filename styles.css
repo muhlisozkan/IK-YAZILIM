@@ -123,3 +123,5 @@ button.wk-chip{cursor:pointer}
 button.wk-chip:hover:not(.on){background:#f3f6fa}
 .wk-chip.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:650}
 .wk-chip.holiday{background:#fff5df;border-color:#f0d9a8;color:#ae6b00}
+
+.btn:disabled,.btn[disabled]{opacity:.5;cursor:not-allowed}

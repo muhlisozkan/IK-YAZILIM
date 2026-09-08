@@ -149,6 +149,7 @@ function leaveModal(){
     const start=$('#l-start').value,end=$('#l-end').value,employee=state.employees.find(item=>String(item.id)===String($('#l-employee').value)),type=$('#l-type').value;
     if(!employee||!start||!end||end<start)return toast('Çalışan ve tarihleri kontrol edin');
     if(Math.round((new Date(end)-new Date(start))/86400000)>40)return toast('Bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir');
+    if(weekOffActive&&!weeklyOff.length)return toast('Önce haftalık izin (of) gününü seçin');
     const offList=weekOffActive?weeklyOff:[];
     const days=leaveDays(start,end,offList,!weekOffActive);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
     if(type==='Yıllık izin'){
@@ -161,10 +162,11 @@ function leaveModal(){
     try{const created=await leaveApi('/api/leaves',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:employee.id,leave_type:type,start_date:start,end_date:end,days,weekly_off_dates:weekOffActive?weeklyOff:[]})});state.leaves.unshift({...created,employee:created.employee_name,type:created.leave_type,start:leaveDate(created.start_date),end:leaveDate(created.end_date)});__annualBalanceCache={};closeModal();renderLeaveRequests();toast(`İzin talebi ${created.current_approver} onayına gönderildi`)}catch(error){toast(error.message)}
   });
   const weekdayShort=iso=>['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'][new Date(iso).getDay()];
+  const setSubmitEnabled=ok=>{const s=document.querySelector('.modal .submit');if(s)s.disabled=!ok;};
   const renderWeekOff=()=>{
     const start=$('#l-start')?.value,end=$('#l-end')?.value,box=$('#leave-weekoff');
     if(!box)return;
-    if(!(start&&end&&end>=start)||businessDays(start,end)<=6){weekOffActive=false;weeklyOff=[];box.innerHTML='';return;}
+    if(!(start&&end&&end>=start)||businessDays(start,end)<=6){weekOffActive=false;weeklyOff=[];box.innerHTML='';setSubmitEnabled(true);return;}
     weekOffActive=true;
     const dates=daysInRange(start,end),key=start+'|'+end;
     if(key!==lastRangeKey){lastRangeKey=key;weeklyOff=[dates.find(iso=>new Date(iso).getDay()===0)].filter(Boolean);}
@@ -177,7 +179,8 @@ function leaveModal(){
         if(full||half)return `<span class="wk-chip holiday" title="Resmi tatil">${lbl}${half?' ½':''}</span>`;
         return `<button type="button" class="wk-chip${sel?' on':''}" data-off="${iso}">${lbl}</button>`;
       }).join('')}</div>
-      <div style="margin-top:8px;font-size:12px">${weeklyOff.length?'Seçili haftalık izin: <strong>'+weekdayShort(weeklyOff[0])+' '+weeklyOff[0].slice(8,10)+'.'+weeklyOff[0].slice(5,7)+'</strong>':'Henüz haftalık izin günü seçilmedi'}</div></div>`;
+      <div style="margin-top:8px;font-size:12px">${weeklyOff.length?'Seçili haftalık izin: <strong>'+weekdayShort(weeklyOff[0])+' '+weeklyOff[0].slice(8,10)+'.'+weeklyOff[0].slice(5,7)+'</strong>':'<span class="danger-text">Haftalık izin günü seçilene kadar onaya gönderilemez</span>'}</div></div>`;
+    setSubmitEnabled(weeklyOff.length>0);
     box.querySelectorAll('[data-off]').forEach(b=>b.onclick=()=>{
       const iso=b.dataset.off;
       if(weeklyOff.includes(iso))weeklyOff=[];
