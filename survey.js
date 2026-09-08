@@ -70,7 +70,8 @@
   }
 
   async function renderPersonel(){
-    mount('<div class="card empty">Yükleniyor…</div>');
+    // Canlı yenilemede (yeni yanıt geldiğinde) "Yükleniyor" titremesini önle
+    if(!document.querySelector('#survey-tmpl-card'))mount('<div class="card empty">Yükleniyor…</div>');
     let list,sent;
     try{
       list=await load('personel');
@@ -84,7 +85,7 @@
       <td><span class="badge ${s.active?'green':'orange'}">${s.active?'Aktif':'Pasif'}</span></td>
       <td class="row-actions"><button class="btn ghost" data-survey-preview="${s.id}">Önizle</button>${manage?`${s.active?`<button class="btn ghost" data-survey-send="${s.id}">Gönder</button>`:''}<button class="btn ghost" data-survey-edit="${s.id}">Düzenle</button><button class="btn ghost" data-survey-copy="${s.id}">Kopyala</button><button class="btn ghost danger-text" data-survey-del="${s.id}">Sil</button>`:''}</td>
     </tr>`).join('');
-    mount(`<div class="card">
+    mount(`<div class="card" id="survey-tmpl-card">
       <div class="toolbar">
         ${manage?`<button class="btn" id="survey-add">+ Yeni anket şablonu</button>`:''}
         <span class="muted">${list.length} şablon</span>
@@ -186,12 +187,36 @@
     </div>`;
   }
 
+  function repSig(rep){
+    const t=rep.totals||{};
+    return [t.sent,t.opened,t.responded,
+      (rep.questions||[]).map(q=>q.type==='text'?q.answered+'x'+((q.texts||[]).length):(q.distribution||[]).map(d=>d.count).join('.')).join('|')
+    ].join(';');
+  }
+  let repTimer=null;
   async function openSurveyReport(id){
     let rep;
     try{rep=await api('/api/surveys/'+id+'/report');}catch(err){return toast(err.message);}
     modal('Anket raporu · '+esc(rep.survey.title),reportHtml(rep),()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
+    // Rapor açıkken yeni yanıtları canlı yansıt
+    let lastSig=repSig(rep);
+    clearInterval(repTimer);
+    repTimer=setInterval(async()=>{
+      const body=document.querySelector('#rep-body');
+      if(!body||!document.body.contains(body)){clearInterval(repTimer);repTimer=null;return;}
+      let fresh;
+      try{fresh=await api('/api/surveys/'+id+'/report');}catch(_){return;}
+      const sig=repSig(fresh);
+      if(sig===lastSig)return;
+      lastSig=sig;
+      const scroll=body.scrollTop,recipsOpen=body.querySelector('.rep-recips')?.open;
+      body.outerHTML=reportHtml(fresh);
+      const nb=document.querySelector('#rep-body');
+      if(nb){nb.scrollTop=scroll;if(recipsOpen){const d=nb.querySelector('.rep-recips');if(d)d.open=true;}}
+      toast('Yeni yanıt geldi — rapor güncellendi');
+    },3000);
   }
 
   // --- Anket şablonu oluşturucu ------------------------------------
