@@ -274,7 +274,8 @@
         <div class="field"><label>Gönderici / başlık</label><input class="input" id="sms-sender" value="${esc(s.sender)}" placeholder="FIRMAADI"></div>
         <div class="field"><label>Başarı kontrolü (opsiyonel)</label><input class="input" id="sms-success" value="${esc(s.success_contains)}" placeholder="yanıtta bu metin varsa başarılı"></div>
         <div class="field" style="grid-column:1/-1"><label>Kimlik alanları (her satır <code>anahtar=değer</code>)</label><textarea class="input" id="sms-creds" placeholder="usercode=...\npassword=..."></textarea><small class="muted">${keyHint}</small></div>
-        <div class="field" style="grid-column:1/-1"><label>İstek gövdesi / sorgu şablonu *</label><textarea class="input" id="sms-body" placeholder='{"usercode":"{usercode}","password":"{password}","gsmno":"{phone}","message":"{message}","msgheader":"{sender}"}'>${esc(s.body_template)}</textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>Tekil gönderim gövde şablonu *</label><textarea class="input" id="sms-body" placeholder='{"usercode":"{usercode}","password":"{password}","gsmno":"{phone}","message":"{message}","msgheader":"{sender}"}'>${esc(s.body_template)}</textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>Kişiye özel toplu gövde şablonu (opsiyonel)</label><textarea class="input" id="sms-bulkbody" placeholder='{"sendingType":2,"numbers":{numbers},"sender":"{sender}","title":"IK Merkezi {ts}","encoding":1}'>${esc(s.bulk_body_template||'')}</textarea><small class="muted">Doluysa anket/oylama davetleri tek istekte gönderilir. <code>{numbers}</code> = <code>[{"nr","msg","xid"}]</code> dizisiyle değiştirilir.</small></div>
         <div class="field" style="grid-column:1/-1"><label>Ek başlıklar (opsiyonel, her satır <code>Ad: değer</code>)</label><textarea class="input" id="sms-headers" placeholder="Authorization: Bearer {apikey}">${esc(s.extra_headers)}</textarea></div>
         <div class="field"><label>Onay bildirimlerini SMS gönder</label><select class="select" id="sms-notify"><option value="true" ${s.notify_approvals?'selected':''}>Evet</option><option value="false" ${!s.notify_approvals?'selected':''}>Hayır</option></select></div>
         <div class="field"><label>Test numarası</label><input class="input" id="sms-test-recipient" type="tel" value="${esc(window.__ikCurrentUser?.()?.phone||'')}" placeholder="5xxxxxxxxx"></div>
@@ -291,6 +292,7 @@
       $('#sms-success').value='pkgID';
       $('#sms-headers').value='Authorization: Basic {basicauth}';
       $('#sms-body').value='{"type":1,"sendingType":1,"title":"IK Merkezi {ts}","content":"{message}","numbers":["{phone}"],"encoding":1,"sender":"{sender}","commercial":false,"skipAhsQuery":true,"recipientType":0}';
+      if($('#sms-bulkbody'))$('#sms-bulkbody').value='{"type":1,"sendingType":2,"numbers":{numbers},"sender":"{sender}","title":"IK Merkezi {ts}","encoding":1,"commercial":false,"skipAhsQuery":true,"recipientType":0}';
       $('#sms-creds').value='username=KULLANICI_ADI\npassword=API_SIFRESI';
       toast('Teknomart alanları dolduruldu — kimlik alanları ve gönderici başlığını yazıp kaydedin');
     };
@@ -308,6 +310,7 @@
         sender:$('#sms-sender').value.trim(),
         success_contains:$('#sms-success').value.trim(),
         body_template:$('#sms-body').value,
+        bulk_body_template:$('#sms-bulkbody')?$('#sms-bulkbody').value:'',
         extra_headers:$('#sms-headers').value
       };
       const creds=kvParse($('#sms-creds').value);

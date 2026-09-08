@@ -182,6 +182,7 @@ create table if not exists sms_settings(
   http_method text not null default 'POST' check(http_method in ('GET','POST')),
   content_type text not null default 'application/json',
   body_template text not null default '',
+  bulk_body_template text not null default '',
   extra_headers text not null default '',
   sender text not null default '',
   success_contains text not null default '',

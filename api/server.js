@@ -743,6 +743,55 @@ async function sendSms(phone, message, context) {
     [target, String(message || '').slice(0, 500), clean(context), ok, statusCode, responseText]).catch(() => {});
   return { ok, status: statusCode, response: responseText };
 }
+
+const smsTimestamp = () => {
+  const n = new Date(), p = x => String(x).padStart(2, '0');
+  return `${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())} ${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+};
+
+// Kişiye özel toplu SMS: items = [{phone, message, xid}]. Tek istekte gönderir.
+// Sağlayıcıda dinamik şablon yoksa tek tek sendSms'e düşer.
+async function sendSmsBulk(items, context) {
+  const list = (items || []).filter(it => it && it.phone && it.message);
+  if (!list.length) return { ok: false, error: 'Gönderilecek alıcı yok' };
+  const settings = await readSmsSettings();
+  if (!settings || !settings.enabled) return { ok: false, error: 'SMS entegrasyonu kapalı' };
+  const tpl = clean(settings.bulk_body_template);
+  if (!tpl || !/\{numbers\}/.test(tpl)) {
+    let fail = 0, lastErr = '';
+    for (const it of list) {
+      const s = await sendSms(it.phone, it.message, context);
+      if (!s.ok) { fail++; lastErr = s.error || s.response || 'SMS gönderilemedi'; }
+    }
+    return fail ? { ok: false, error: `${fail}/${list.length} gönderilemedi: ${lastErr}` } : { ok: true };
+  }
+  const cred = smsCredentials(settings);
+  const basicauth = (cred.username && cred.password) ? Buffer.from(`${cred.username}:${cred.password}`).toString('base64') : '';
+  const scalarVars = { ...cred, basicauth, ts: smsTimestamp(), sender: clean(settings.sender) };
+  const numbersJson = JSON.stringify(list.map(it => ({
+    nr: normalizeGsm(it.phone), msg: String(it.message || ''), xid: String(it.xid || '').slice(0, 32)
+  })));
+  const contentType = clean(settings.content_type) || 'application/json';
+  const body = fillTemplate(tpl, scalarVars, /json/i.test(contentType) ? 'json' : 'url').replace(/\{numbers\}/g, numbersJson);
+  const headers = { 'Content-Type': contentType };
+  clean(settings.extra_headers).split(/\r?\n/).map(l => l.trim()).filter(Boolean).forEach(line => {
+    const idx = line.indexOf(':');
+    if (idx > 0) headers[line.slice(0, idx).trim()] = fillTemplate(line.slice(idx + 1).trim(), scalarVars);
+  });
+  let ok = false, statusCode = null, responseText = '';
+  try {
+    const response = await fetch(settings.api_url, { method: (settings.http_method || 'POST').toUpperCase(), headers, body, signal: AbortSignal.timeout(25000) });
+    statusCode = response.status;
+    responseText = (await response.text()).slice(0, 2000);
+    ok = response.ok && (!clean(settings.success_contains) || responseText.includes(clean(settings.success_contains)));
+  } catch (cause) {
+    responseText = String(cause?.message || cause).slice(0, 1000);
+  }
+  pool.query('insert into sms_log(phone,message,context,ok,status_code,response) values($1,$2,$3,$4,$5,$6)',
+    [`${list.length} alıcı (dinamik)`, String(list[0].message || '').slice(0, 500), clean(context), ok, statusCode, responseText]).catch(() => {});
+  return ok ? { ok: true, response: responseText } : { ok: false, error: (responseText || 'SMS gönderilemedi').slice(0, 300) };
+}
+
 function userMatchesApproverRole(user, role, department) {
   if (!role) return false;
   if (role === 'Departman yöneticisi') return user.role === role && clean(user.department) === clean(department);
@@ -772,12 +821,12 @@ async function notifyApprovalSms(row, table) {
 app.get('/api/sms-settings', asyncRoute(async (req, res) => {
   if (!requireSystemAdmin(req, res)) return;
   const settings = await readSmsSettings();
-  if (!settings) return res.json({ configured: false, enabled: false, notify_approvals: false, provider_name: '', api_url: '', http_method: 'POST', content_type: 'application/json', body_template: '', extra_headers: '', sender: '', success_contains: '', credential_keys: [] });
+  if (!settings) return res.json({ configured: false, enabled: false, notify_approvals: false, provider_name: '', api_url: '', http_method: 'POST', content_type: 'application/json', body_template: '', bulk_body_template: '', extra_headers: '', sender: '', success_contains: '', credential_keys: [] });
   res.json({
     configured: true, enabled: settings.enabled, notify_approvals: settings.notify_approvals,
     provider_name: settings.provider_name, api_url: settings.api_url, http_method: settings.http_method,
-    content_type: settings.content_type, body_template: settings.body_template, extra_headers: settings.extra_headers,
-    sender: settings.sender, success_contains: settings.success_contains,
+    content_type: settings.content_type, body_template: settings.body_template, bulk_body_template: settings.bulk_body_template,
+    extra_headers: settings.extra_headers, sender: settings.sender, success_contains: settings.success_contains,
     credential_keys: Object.keys(smsCredentials(settings)), updated_at: settings.updated_at
   });
 }));
@@ -789,6 +838,7 @@ app.put('/api/sms-settings', asyncRoute(async (req, res) => {
   const method = clean(body.http_method).toUpperCase() === 'GET' ? 'GET' : 'POST';
   const contentType = clean(body.content_type) || 'application/json';
   const bodyTemplate = String(body.body_template || '').slice(0, 4000);
+  const bulkBodyTemplate = String(body.bulk_body_template || '').slice(0, 4000);
   if (!/^https:\/\//i.test(apiUrl)) return res.status(400).json({ error: 'API adresi https:// ile başlamalıdır' });
   if (!bodyTemplate.trim()) return res.status(400).json({ error: 'İstek gövdesi / sorgu şablonu zorunludur' });
   const current = await readSmsSettings();
@@ -799,15 +849,16 @@ app.put('/api/sms-settings', asyncRoute(async (req, res) => {
     credentialsEncrypted = Object.keys(merged).length ? encryptSmtpSecret(JSON.stringify(merged)) : null;
   }
   await pool.query(`
-    insert into sms_settings(id,enabled,notify_approvals,provider_name,api_url,http_method,content_type,body_template,extra_headers,sender,success_contains,credentials_encrypted,updated_by,updated_at)
-    values(1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+    insert into sms_settings(id,enabled,notify_approvals,provider_name,api_url,http_method,content_type,body_template,bulk_body_template,extra_headers,sender,success_contains,credentials_encrypted,updated_by,updated_at)
+    values(1,$1,$2,$3,$4,$5,$6,$7,$13,$8,$9,$10,$11,$12,now())
     on conflict(id) do update set enabled=excluded.enabled,notify_approvals=excluded.notify_approvals,provider_name=excluded.provider_name,
       api_url=excluded.api_url,http_method=excluded.http_method,content_type=excluded.content_type,body_template=excluded.body_template,
+      bulk_body_template=excluded.bulk_body_template,
       extra_headers=excluded.extra_headers,sender=excluded.sender,success_contains=excluded.success_contains,
       credentials_encrypted=excluded.credentials_encrypted,updated_by=excluded.updated_by,updated_at=now()`,
     [Boolean(body.enabled), Boolean(body.notify_approvals), clean(body.provider_name), apiUrl, method, contentType,
       bodyTemplate, String(body.extra_headers || '').slice(0, 2000), clean(body.sender), clean(body.success_contains),
-      credentialsEncrypted, req.user.name]);
+      credentialsEncrypted, req.user.name, bulkBodyTemplate]);
   res.json({ ok: true });
 }));
 
@@ -2444,29 +2495,54 @@ function parseInviteBody(body) {
 }
 
 async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject, greet = true }) {
+  const insertInvite = (token, r, phone, ok, err) => pool.query(
+    `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
+    [token, kind, surveyId, periodId, r.employee_id, r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name]);
   const results = [];
+  const summary = () => ({ sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results });
+
+  if (channel === 'sms') {
+    // Kişiye özel toplu (DynamicSms): tüm mesajlar tek istekte gönderilir
+    const prepared = recipients.map(r => {
+      const token = newInviteToken();
+      const link = inviteLink(req, token);
+      const phone = normalizeGsm(r.phone);
+      return { r, token, link, phone, valid: /^5\d{9}$/.test(phone), message: composeInviteMessage(message, r.name, link, greet, 'sms') };
+    });
+    for (const p of prepared) {
+      const row = await insertInvite(p.token, p.r, p.phone, p.valid ? null : false, p.valid ? '' : 'Geçersiz telefon numarası');
+      p.id = row.rows[0].id;
+    }
+    const valid = prepared.filter(p => p.valid);
+    let bulk = { ok: false, error: 'Geçerli telefon numarası yok' };
+    if (valid.length) {
+      bulk = await sendSmsBulk(valid.map(p => ({ phone: p.phone, message: p.message, xid: String(p.id) })), `invite:${kind}`)
+        .catch(e => ({ ok: false, error: clean(e?.message) || 'SMS gönderilemedi' }));
+      const ids = valid.map(p => p.id);
+      if (bulk.ok) await pool.query('update survey_invites set sent_ok=true where id = any($1::bigint[])', [ids]);
+      else await pool.query('update survey_invites set sent_ok=false, sent_error=$2 where id = any($1::bigint[])', [ids, clean(bulk.error || 'Gönderilemedi').slice(0, 500)]);
+    }
+    prepared.forEach(p => {
+      const ok = p.valid && bulk.ok;
+      results.push({ name: p.r.name, ok, error: ok ? '' : (p.valid ? (bulk.error || 'SMS gönderilemedi') : 'Geçersiz telefon numarası'), link: p.link });
+    });
+    return summary();
+  }
+
+  // E-posta: alıcı başına ayrı gönderim (kişiye özel içerik)
   for (const r of recipients) {
-    const name = r.name, email = r.email, phone = phoneNumber(r.phone) || '';
-    if (channel === 'email' && !emailAddress(email)) { results.push({ name, ok: false, error: 'Geçersiz e-posta adresi' }); continue; }
-    if (channel === 'sms' && !phone) { results.push({ name, ok: false, error: 'Geçersiz telefon numarası' }); continue; }
+    if (!emailAddress(r.email)) { results.push({ name: r.name, ok: false, error: 'Geçersiz e-posta adresi' }); continue; }
     const token = newInviteToken();
     const link = inviteLink(req, token);
-    const text = composeInviteMessage(message, name, link, greet, channel);
+    const text = composeInviteMessage(message, r.name, link, greet, 'email');
     let sendRes;
-    try {
-      sendRes = channel === 'email'
-        ? await sendInviteEmail(email, subject, text, link)
-        : await sendSms(phone, text, `invite:${kind}`).then(s => ({ ok: s.ok, error: s.ok ? '' : (s.error || (s.skipped ? 'SMS entegrasyonu kapalı' : (s.response || 'SMS gönderilemedi'))) }));
-    } catch (cause) {
-      sendRes = { ok: false, error: clean(cause?.message) || 'Gönderim hatası' };
-    }
-    await pool.query(
-      `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [token, kind, surveyId, periodId, r.employee_id, name, email, phone, channel, sendRes.ok, clean(sendRes.error).slice(0, 500), req.user.name]);
-    results.push({ name, ok: sendRes.ok, error: sendRes.ok ? '' : sendRes.error, link });
+    try { sendRes = await sendInviteEmail(r.email, subject, text, link); }
+    catch (cause) { sendRes = { ok: false, error: clean(cause?.message) || 'Gönderim hatası' }; }
+    await insertInvite(token, r, '', sendRes.ok, sendRes.ok ? '' : sendRes.error);
+    results.push({ name: r.name, ok: sendRes.ok, error: sendRes.ok ? '' : sendRes.error, link });
   }
-  return { sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results };
+  return summary();
 }
 
 const inviteListRow = r => ({
