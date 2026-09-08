@@ -615,40 +615,62 @@
     document.querySelector('.modal')?.classList.add('survey-modal');
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=()=>{closeModal();afterChange&&afterChange();};}
     const box=()=>$('#rg-body');
+    let editing=null;            // düzenlenen grup (yoksa: yeni grup)
+    let picked=new Set();        // seçili departmanlar
+    let gname='';
     async function reload(){try{groups=await api('/api/recipient-groups');}catch(_){}draw();afterChange&&afterChange();}
+    function resetForm(){editing=null;picked=new Set();gname='';}
     function draw(){
+      const depts=empDepartments();
       box().innerHTML=`
-        <table><thead><tr><th>GRUP</th><th>TÜR</th><th>ÜYE</th><th></th></tr></thead><tbody>
+        <div style="overflow:auto"><table><thead><tr><th>GRUP</th><th>DEPARTMANLAR</th><th>ÜYE</th><th></th></tr></thead><tbody>
         ${groups.map(g=>`<tr>
           <td><strong>${esc(g.name)}</strong></td>
-          <td>${g.dynamic?`Departman · ${esc(g.department)}`:'Statik liste'}</td>
+          <td style="max-width:260px">${g.departments&&g.departments.length?esc(g.departments.join(', ')):'<span class="muted">Statik liste</span>'}</td>
           <td>${g.member_count} kişi<small class="muted" style="display:block">${g.with_phone} tel · ${g.with_email} e-posta</small></td>
-          <td class="row-actions"><button class="btn ghost" data-rg-ren="${g.id}">Yeniden adlandır</button><button class="btn ghost danger-text" data-rg-del="${g.id}">Sil</button></td>
+          <td class="row-actions">${g.departments&&g.departments.length?`<button class="btn ghost" data-rg-edit="${g.id}">Düzenle</button>`:''}<button class="btn ghost danger-text" data-rg-del="${g.id}">Sil</button></td>
         </tr>`).join('')||'<tr><td colspan="4" class="empty">Henüz grup yok</td></tr>'}
-        </tbody></table>
-        <div class="field" style="margin-top:16px"><label>Departman grubu oluştur</label>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <input class="input" id="rg-name" placeholder="Grup adı">
-            <select class="select" id="rg-dept" data-no-combobox="1"><option value="">Departman seç…</option>${empDepartments().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
-            <button class="btn" id="rg-create">Oluştur</button>
+        </tbody></table></div>
+        <div class="field" style="margin-top:18px">
+          <label>${editing?'Grubu düzenle':'Yeni departman grubu'}</label>
+          <input class="input" id="rg-name" placeholder="Grup adı" value="${esc(gname)}" style="margin-bottom:10px">
+          <div class="muted" style="font-size:11px;margin-bottom:6px">Bir veya birden fazla departman seçin. Grup her gönderimde bu departmanların güncel çalışanlarını içerir.</div>
+          <div class="rg-depts">${depts.map(d=>`<label class="rg-dchip ${picked.has(d)?'on':''}"><input type="checkbox" value="${esc(d)}" ${picked.has(d)?'checked':''}> ${esc(d)}</label>`).join('')}</div>
+          <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn" id="rg-save">${editing?'Kaydet':'Oluştur'}</button>
+            ${editing?`<button class="btn ghost" id="rg-cancel">İptal</button>`:''}
+            <span class="muted" id="rg-cnt" style="align-self:center;font-size:12px">${picked.size} departman seçili</span>
           </div>
-          <small class="muted">Departman grupları her gönderimde o departmanın güncel çalışanlarını içerir. Serbest listeleri gönderim penceresinde "grup olarak kaydet" ile oluşturabilirsiniz.</small>
         </div>`;
-      box().querySelector('#rg-create').onclick=async()=>{
-        const name=($('#rg-name').value||'').trim(),department=$('#rg-dept').value;
+      box().querySelector('#rg-name').oninput=e=>{gname=e.target.value;};
+      box().querySelectorAll('.rg-depts input').forEach(cb=>cb.onchange=()=>{
+        if(cb.checked)picked.add(cb.value);else picked.delete(cb.value);
+        cb.closest('.rg-dchip').classList.toggle('on',cb.checked);
+        const cnt=box().querySelector('#rg-cnt');
+        if(cnt)cnt.textContent=picked.size+' departman seçili';
+      });
+      box().querySelector('#rg-save').onclick=async()=>{
+        const name=(gname||'').trim();
         if(!name)return toast('Grup adı girin');
-        if(!department)return toast('Departman seçin');
-        try{await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,department})});toast('Grup oluşturuldu');reload();}
-        catch(err){toast(err.message);}
+        if(!picked.size)return toast('En az bir departman seçin');
+        const payload={name,departments:[...picked]};
+        try{
+          if(editing)await api('/api/recipient-groups/'+editing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+          else await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+          toast(editing?'Grup güncellendi':'Grup oluşturuldu');resetForm();reload();
+        }catch(err){toast(err.message);}
       };
+      if($('#rg-cancel'))$('#rg-cancel').onclick=()=>{resetForm();draw();};
+      box().querySelectorAll('[data-rg-edit]').forEach(b=>b.onclick=async()=>{
+        try{const g=await api('/api/recipient-groups/'+b.dataset.rgEdit);
+          editing=g;gname=g.name;picked=new Set(g.departments||[]);draw();
+          box().querySelector('#rg-name')?.scrollIntoView({block:'center'});
+        }catch(err){toast(err.message);}
+      });
       box().querySelectorAll('[data-rg-del]').forEach(b=>b.onclick=async()=>{
         if(!confirm('Bu grubu silmek istediğinize emin misiniz?'))return;
-        try{await api('/api/recipient-groups/'+b.dataset.rgDel,{method:'DELETE'});toast('Grup silindi');reload();}catch(err){toast(err.message);}
-      });
-      box().querySelectorAll('[data-rg-ren]').forEach(b=>b.onclick=async()=>{
-        const g=groups.find(x=>String(x.id)===b.dataset.rgRen);
-        const name=prompt('Yeni grup adı:',g.name);if(!name||!name.trim())return;
-        try{await api('/api/recipient-groups/'+g.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim()})});reload();}catch(err){toast(err.message);}
+        try{await api('/api/recipient-groups/'+b.dataset.rgDel,{method:'DELETE'});toast('Grup silindi');if(editing&&String(editing.id)===b.dataset.rgDel)resetForm();reload();}
+        catch(err){toast(err.message);}
       });
     }
     draw();

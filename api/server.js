@@ -2553,11 +2553,20 @@ const inviteListRow = r => ({
 
 // --- Alıcı grupları (SMS / e-posta gönderiminde seçilir) -----------
 const canManageGroups = user => isHRUser(user);
+const groupDepartments = g => {
+  const d = Array.isArray(g.departments) ? g.departments : [];
+  const list = d.map(x => clean(x)).filter(Boolean);
+  if (!list.length && clean(g.department)) list.push(clean(g.department)); // eski kayıtlar
+  return [...new Set(list)];
+};
 async function resolveGroupMembers(group) {
-  if (clean(group.department)) {
+  const depts = groupDepartments(group);
+  if (depts.length) {
     const rows = (await pool.query(
-      "select id,name,email,phone from employees where status<>'Pasif' and btrim(lower(department))=btrim(lower($1)) order by name",
-      [group.department])).rows;
+      `select id,name,email,phone,department from employees
+       where status<>'Pasif' and btrim(lower(department)) = any($1::text[])
+       order by department, name`,
+      [depts.map(d => d.trim().toLowerCase())])).rows;
     return rows.map(e => ({ employee_id: e.id, name: clean(e.name), email: clean(e.email), phone: clean(e.phone) }));
   }
   return (Array.isArray(group.members) ? group.members : []).map(m => ({
@@ -2571,6 +2580,8 @@ function sanitizeGroupMembers(input) {
     name: clean(m?.name).slice(0, 160), email: clean(m?.email).slice(0, 200), phone: clean(m?.phone).slice(0, 40)
   })).filter(m => m.name || m.email || m.phone);
 }
+const parseDepartments = input => Array.isArray(input)
+  ? [...new Set(input.map(d => clean(d).slice(0, 120)).filter(Boolean))].slice(0, 60) : [];
 
 app.get('/api/recipient-groups', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageGroups, 'Yetkiniz yok')) return;
@@ -2578,9 +2589,9 @@ app.get('/api/recipient-groups', asyncRoute(async (req, res) => {
   const out = [];
   for (const g of groups) {
     const members = await resolveGroupMembers(g);
+    const depts = groupDepartments(g);
     out.push({
-      id: g.id, name: g.name, department: g.department,
-      dynamic: Boolean(clean(g.department)),
+      id: g.id, name: g.name, departments: depts, dynamic: depts.length > 0,
       member_count: members.length,
       with_email: members.filter(m => m.email).length,
       with_phone: members.filter(m => m.phone).length
@@ -2593,7 +2604,8 @@ app.get('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageGroups, 'Yetkiniz yok')) return;
   const g = (await pool.query('select * from recipient_groups where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!g) return res.status(404).json({ error: 'Grup bulunamadı' });
-  res.json({ id: g.id, name: g.name, department: g.department, dynamic: Boolean(clean(g.department)), members: await resolveGroupMembers(g) });
+  const depts = groupDepartments(g);
+  res.json({ id: g.id, name: g.name, departments: depts, dynamic: depts.length > 0, members: await resolveGroupMembers(g) });
 }));
 
 app.post('/api/recipient-groups', asyncRoute(async (req, res) => {
@@ -2601,13 +2613,15 @@ app.post('/api/recipient-groups', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const name = clean(body.name).slice(0, 120);
   if (!name) return res.status(400).json({ error: 'Grup adı zorunludur' });
-  const department = clean(body.department).slice(0, 120);
-  const members = department ? [] : sanitizeGroupMembers(body.members);
-  if (!department && !members.length) return res.status(400).json({ error: 'Grup için departman seçin veya en az bir üye ekleyin' });
+  const departments = parseDepartments(
+    Array.isArray(body.departments) && body.departments.length ? body.departments
+      : (body.department ? [body.department] : []));
+  const members = departments.length ? [] : sanitizeGroupMembers(body.members);
+  if (!departments.length && !members.length) return res.status(400).json({ error: 'Grup için en az bir departman seçin veya üye ekleyin' });
   const row = (await pool.query(
-    'insert into recipient_groups(name,department,members,created_by) values($1,$2,$3::jsonb,$4) returning *',
-    [name, department, JSON.stringify(members), req.user.name])).rows[0];
-  res.status(201).json({ id: row.id, name: row.name, department: row.department });
+    "insert into recipient_groups(name,department,departments,members,created_by) values($1,'',$2::jsonb,$3::jsonb,$4) returning *",
+    [name, JSON.stringify(departments), JSON.stringify(members), req.user.name])).rows[0];
+  res.status(201).json({ id: row.id, name: row.name, departments });
 }));
 
 app.patch('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
@@ -2616,12 +2630,13 @@ app.patch('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
   if (!g) return res.status(404).json({ error: 'Grup bulunamadı' });
   const body = req.body || {};
   const name = body.name != null ? (clean(body.name).slice(0, 120) || g.name) : g.name;
-  const department = body.department != null ? clean(body.department).slice(0, 120) : g.department;
-  const members = body.members != null && !department ? sanitizeGroupMembers(body.members) : (department ? [] : g.members);
+  const departments = body.departments != null ? parseDepartments(body.departments) : groupDepartments(g);
+  const members = departments.length ? [] : (body.members != null ? sanitizeGroupMembers(body.members) : (Array.isArray(g.members) ? g.members : []));
+  if (!departments.length && !members.length) return res.status(400).json({ error: 'Grup için en az bir departman seçin veya üye ekleyin' });
   const row = (await pool.query(
-    'update recipient_groups set name=$2,department=$3,members=$4::jsonb,updated_at=now() where id=$1 returning *',
-    [g.id, name, department, JSON.stringify(members)])).rows[0];
-  res.json({ id: row.id, name: row.name, department: row.department });
+    "update recipient_groups set name=$2,department='',departments=$3::jsonb,members=$4::jsonb,updated_at=now() where id=$1 returning *",
+    [g.id, name, JSON.stringify(departments), JSON.stringify(members)])).rows[0];
+  res.json({ id: row.id, name: row.name, departments });
 }));
 
 app.delete('/api/recipient-groups/:id', asyncRoute(async (req, res) => {

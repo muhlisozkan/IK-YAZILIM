@@ -416,6 +416,7 @@ create table if not exists recipient_groups(
   id bigserial primary key,
   name text not null,
   department text not null default '',
+  departments jsonb not null default '[]'::jsonb,
   members jsonb not null default '[]'::jsonb,
   created_by text,
   created_at timestamptz not null default now(),
