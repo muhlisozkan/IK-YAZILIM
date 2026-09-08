@@ -1,7 +1,7 @@
 (function () {
   const userKey = 'ik_users';
   const sessionKey = 'ik_current_user_id';
-  const allViews = ['dashboard','employees','departments','leave','payroll','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound'];
+  const allViews = ['dashboard','employees','departments','leave','payroll','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound','survey'];
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
