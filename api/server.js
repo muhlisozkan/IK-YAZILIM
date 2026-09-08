@@ -1626,10 +1626,14 @@ app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
   const employees=requestedDepartment?accessible.filter(employee=>employee.department===requestedDepartment):accessible;
   const ids=employees.map(employee=>Number(employee.id));
   if (!ids.length) return res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals:{entitled:0,used:0,remaining:0},rows:[]});
-  const rows=(await annualBalanceRows(employees,year))
+  // Yıllık izin hak edişi olmayan (henüz 1 hizmet yılını doldurmamış) çalışanlar
+  // listede gösterilmez; hak ettiklerinde otomatik görünür.
+  const allRows=await annualBalanceRows(employees,year);
+  const rows=allRows
+    .filter(row=>Number(row.total_days)>0.001 || Number(row.current_year_days)>0.001 || Number(row.used_days)>0.001)
     .sort((a,b)=>b.remaining_days-a.remaining_days||a.employee_name.localeCompare(b.employee_name,'tr'));
   const totals=rows.reduce((sum,row)=>({entitled:sum.entitled+row.total_days,used:sum.used+row.used_days,remaining:sum.remaining+row.remaining_days}),{entitled:0,used:0,remaining:0});
-  res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals,rows});
+  res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals,rows,not_entitled_count:allRows.length-rows.length});
 }));
 
 app.patch('/api/annual-leave-balances/:employeeId', asyncRoute(async (req,res)=>{
