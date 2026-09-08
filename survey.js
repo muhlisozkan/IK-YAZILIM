@@ -599,8 +599,14 @@
 
   // --- Alıcı grupları --------------------------------------------
   const isEmail=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim());
-  const empDepartments=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
-  const deptMembers=dept=>(state.employees||[]).filter(e=>e.status!=='Pasif'&&e.department===dept).map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
+  const empDepartments=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>String(e.department||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+  const deptMembers=dept=>{
+    const key=String(dept||'').trim().toLocaleLowerCase('tr-TR');
+    if(!key)return [];
+    return (state.employees||[])
+      .filter(e=>e.status!=='Pasif'&&String(e.department||'').trim().toLocaleLowerCase('tr-TR')===key)
+      .map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
+  };
 
   async function recipientGroupsModal(afterChange){
     let groups=[];
@@ -623,7 +629,7 @@
         <div class="field" style="margin-top:16px"><label>Departman grubu oluştur</label>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <input class="input" id="rg-name" placeholder="Grup adı">
-            <select class="select" id="rg-dept"><option value="">Departman seç…</option>${empDepartments().map(d=>`<option>${esc(d)}</option>`).join('')}</select>
+            <select class="select" id="rg-dept" data-no-combobox="1"><option value="">Departman seç…</option>${empDepartments().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
             <button class="btn" id="rg-create">Oluştur</button>
           </div>
           <small class="muted">Departman grupları her gönderimde o departmanın güncel çalışanlarını içerir. Serbest listeleri gönderim penceresinde "grup olarak kaydet" ile oluşturabilirsiniz.</small>
@@ -715,8 +721,8 @@
         </div>
         <div class="field"><label>Alıcılar (${filled})</label>
           <div class="inv-sources">
-            <select class="select" id="inv-group"><option value="">+ Gruptan ekle…</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)} (${g.member_count})</option>`).join('')}</select>
-            <select class="select" id="inv-dept"><option value="">+ Departmandan ekle…</option>${empDepartments().map(d=>`<option>${esc(d)}</option>`).join('')}</select>
+            <select class="select" id="inv-group" data-no-combobox="1"><option value="">+ Gruptan ekle…</option>${groups.map(g=>`<option value="${esc(String(g.id))}">${esc(g.name)} (${g.member_count})</option>`).join('')}</select>
+            <select class="select" id="inv-dept" data-no-combobox="1"><option value="">+ Departmandan ekle…</option>${empDepartments().map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
             <button type="button" class="btn ghost" id="inv-add">+ Elle satır</button>
             <button type="button" class="btn ghost" id="inv-groups">Grupları yönet</button>
           </div>
