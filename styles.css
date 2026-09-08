@@ -115,3 +115,11 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 #hms-body table tbody tr:nth-child(even) td{background:#f5f7fb}
 #hms-body table tbody tr:hover td{background:#eef1ff}
 #hms-body .row-actions{white-space:nowrap}
+
+/* İzin talebinde haftalık izin (of) günü seçici */
+.wk-grid{display:flex;flex-wrap:wrap;gap:6px}
+.wk-chip{border:1px solid var(--line);background:#fff;border-radius:7px;padding:6px 9px;font-size:12px;color:var(--ink);font:inherit;font-size:12px}
+button.wk-chip{cursor:pointer}
+button.wk-chip:hover:not(.on){background:#f3f6fa}
+.wk-chip.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:650}
+.wk-chip.holiday{background:#fff5df;border-color:#f0d9a8;color:#ae6b00}

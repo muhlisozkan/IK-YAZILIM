@@ -61,6 +61,26 @@ const istanbulDate = () => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 const dateDistance = (later, earlier) => Math.floor((Date.parse(`${later}T00:00:00Z`) - Date.parse(`${earlier}T00:00:00Z`)) / 86400000);
+
+// İzin gün hesabı: haftalık izin 1 gün; tam resmi tatil sayılmaz, yarım resmi tatil 0,5.
+// (İstemcideki listelerle aynı — dini bayram tarihleri kesinleşince güncelleyin.)
+const TR_FULL_HOLIDAYS = new Set(['2026-01-01', '2026-04-23', '2026-05-01', '2026-05-19', '2026-07-15', '2026-08-30', '2026-10-29',
+  '2026-03-20', '2026-03-21', '2026-03-22', '2026-05-27', '2026-05-28', '2026-05-29', '2026-05-30']);
+const TR_HALF_HOLIDAYS = new Set(['2026-10-28', '2026-03-19', '2026-05-26']);
+// weeklyOff verilirse yalnızca o günler haftalık izin; verilmezse otomatik Pazar.
+function leaveDayBreakdown(startISO, endISO, weeklyOff) {
+  const off = Array.isArray(weeklyOff) && weeklyOff.length ? new Set(weeklyOff) : null;
+  let days = 0, weekRest = 0, holiday = 0;
+  const end = Date.parse(`${endISO}T00:00:00Z`);
+  for (let t = Date.parse(`${startISO}T00:00:00Z`); t <= end; t += 86400000) {
+    const d = new Date(t), iso = d.toISOString().slice(0, 10);
+    if (off ? off.has(iso) : d.getUTCDay() === 0) { weekRest++; continue; }
+    if (TR_FULL_HOLIDAYS.has(iso)) { holiday += 1; continue; }
+    if (TR_HALF_HOLIDAYS.has(iso)) { holiday += 0.5; days += 0.5; continue; }
+    days += 1;
+  }
+  return { days, weekRest, holiday };
+}
 const istanbulClock = () => {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
@@ -1438,11 +1458,13 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus, 
     // hesabı onaylı yıllık izin taleplerini kullanılan gün olarak sayar.
     if (table === 'leave_requests' && result.rows[0].status === 'Onaylandı' && clean(result.rows[0].leave_type) === 'Yıllık izin') {
       const lr = result.rows[0];
+      const isoOf = value => { const x = new Date(value); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+      const bd = leaveDayBreakdown(isoOf(lr.start_date), isoOf(lr.end_date), Array.isArray(lr.weekly_off_dates) ? lr.weekly_off_dates : []);
       await client.query(`
-        insert into leave_usage_records(employee_id,start_date,end_date,used_days,source,leave_request_id)
-        select $1,$2,$3,$4,'İzin Talebi',$5
-        where not exists (select 1 from leave_usage_records where leave_request_id=$5)`,
-        [lr.employee_id, lr.start_date, lr.end_date, Number(lr.days || 0), lr.id]);
+        insert into leave_usage_records(employee_id,start_date,end_date,used_days,week_rest_days,official_holiday_days,source,leave_request_id)
+        select $1,$2,$3,$4,$5,$6,'İzin Talebi',$7
+        where not exists (select 1 from leave_usage_records where leave_request_id=$7)`,
+        [lr.employee_id, isoOf(lr.start_date), isoOf(lr.end_date), Number(lr.days || 0), bd.weekRest, bd.holiday, lr.id]);
     }
     await client.query('commit');
     return result.rows[0];
@@ -1653,14 +1675,20 @@ app.get('/api/leaves', asyncRoute(async (req, res) => {
 app.post('/api/leaves', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const employeeId = Number(body.employee_id);
-  const requestedDaysRaw = Number(body.days);
-  if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date
-    || !(requestedDaysRaw > 0) || Math.round(requestedDaysRaw * 2) !== requestedDaysRaw * 2) {
-    return res.status(400).json({ error: 'Çalışan, geçerli tarih aralığı ve izin süresi zorunludur' });
+  if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date) {
+    return res.status(400).json({ error: 'Çalışan ve geçerli tarih aralığı zorunludur' });
   }
   if (dateDistance(body.end_date, body.start_date) > 40) {
     return res.status(400).json({ error: 'İzin bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir' });
   }
+  const rangeDays = dateDistance(body.end_date, body.start_date) + 1;
+  const weeklyOff = [...new Set((Array.isArray(body.weekly_off_dates) ? body.weekly_off_dates : [])
+    .filter(v => dateOnly(v) && v >= body.start_date && v <= body.end_date))];
+  const maxOff = Math.ceil(rangeDays / 7);
+  if (weeklyOff.length > maxOff) return res.status(400).json({ error: `En fazla ${maxOff} haftalık izin günü seçilebilir` });
+  const breakdown = leaveDayBreakdown(body.start_date, body.end_date, weeklyOff);
+  const requestedDays = breakdown.days;
+  if (!(requestedDays > 0)) return res.status(400).json({ error: 'Seçilen izin aralığında çalışma günü yok' });
   const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
   if (!employee.rowCount) return res.status(404).json({ error: 'Aktif çalışan bulunamadı' });
   if (req.user.role !== 'Sistem yöneticisi' && (!req.user.employee_id || String(req.user.employee_id) !== String(employeeId))) {
@@ -1672,10 +1700,9 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
     const balYear = Number(String(body.start_date).slice(0, 4));
     const balance = (await annualBalanceRows([person], balYear))[0];
     const available = balance ? balance.available_days : 0;
-    const requestedDays = Number(body.days);
     if (requestedDays > available + 0.01) {
       return res.status(400).json({
-        error: `Yıllık izin bakiyesi yetersiz. ${balYear} için kalan kullanılabilir bakiye: ${available.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} gün (talep: ${body.days} gün).`
+        error: `Yıllık izin bakiyesi yetersiz. ${balYear} için kalan kullanılabilir bakiye: ${available.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} gün (talep: ${requestedDays} gün).`
       });
     }
     // 4857 s. m.56: hak ediş döneminde iznin bir bölümü kesintisiz en az 10 gün olmalı.
@@ -1696,9 +1723,9 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
   }
   const route = await approvalRouteFor('leave', person.department);
   const result = await pool.query(`insert into leave_requests(employee_id,employee_name,department,requester_user_id,requester_user_name,
-    leave_type,start_date,end_date,days,status,approval_route,approval_step,current_approver)
-    values($1,$2,$3,$4,$5,$6,$7,$8,$9,'Bekliyor',$10::jsonb,0,$11) returning *`,
-  [person.id, person.name, person.department, req.user.id, req.user.name, leaveType, body.start_date, body.end_date, Number(body.days), JSON.stringify(route), route[0]]);
+    leave_type,start_date,end_date,days,weekly_off_dates,status,approval_route,approval_step,current_approver)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'Bekliyor',$11::jsonb,0,$12) returning *`,
+  [person.id, person.name, person.department, req.user.id, req.user.name, leaveType, body.start_date, body.end_date, requestedDays, JSON.stringify(weeklyOff), JSON.stringify(route), route[0]]);
   res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
   notifyApprovalSms(result.rows[0], 'leave_requests');
 }));
