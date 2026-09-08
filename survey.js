@@ -71,8 +71,11 @@
 
   async function renderPersonel(){
     mount('<div class="card empty">Yükleniyor…</div>');
-    let list;
-    try{list=await load('personel');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    let list,sent;
+    try{
+      list=await load('personel');
+      sent=await api('/api/surveys/sent').catch(()=>[]);
+    }catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
     if(tab!=='personel')return;
     const manage=canManage();
     const rows=list.map(s=>`<tr data-id="${s.id}">
@@ -88,8 +91,10 @@
       </div>
       <div style="overflow:auto"><table><thead><tr><th>ANKET</th><th>SORU</th><th>DURUM</th><th></th></tr></thead>
       <tbody>${rows||`<tr><td colspan="4" class="empty">Henüz anket şablonu yok</td></tr>`}</tbody></table></div>
-    </div>`);
+    </div>
+    ${sentCardHtml(sent)}`);
     if($('#survey-add'))$('#survey-add').onclick=()=>openBuilder('personel',null);
+    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>openSurveyReport(b.dataset.surveyReport));
     document.querySelectorAll('[data-survey-preview]').forEach(b=>b.onclick=()=>previewSurvey(list.find(s=>String(s.id)===b.dataset.surveyPreview)));
     document.querySelectorAll('[data-survey-edit]').forEach(b=>b.onclick=()=>openBuilder('personel',list.find(s=>String(s.id)===b.dataset.surveyEdit)));
     document.querySelectorAll('[data-survey-send]').forEach(b=>b.onclick=()=>{
@@ -105,6 +110,88 @@
       try{await api('/api/surveys/'+b.dataset.surveyDel,{method:'DELETE'});await load('personel',true);renderPersonel();toast('Anket silindi');}
       catch(err){toast(err.message);}
     });
+  }
+
+  // --- Gönderilen anketler & rapor -------------------------------
+  const fmtDT=v=>{ if(!v)return '—'; const d=new Date(v); return isNaN(d)?'—':d.toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+  const PIE_COLORS=['#4967f4','#18a874','#f59e0b','#e55261','#8b5cf6','#0ea5e9','#ec4899','#64748b','#14b8a6','#f97316'];
+
+  function sentCardHtml(sent){
+    const rows=(sent||[]).map(s=>{
+      const rate=s.sent?Math.round(s.responded/s.sent*100):0;
+      return `<tr>
+        <td><button class="btn ghost" data-survey-report="${s.id}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
+          <small class="muted" style="display:block">Son gönderim: ${esc(fmtDT(s.last_sent_at))}</small></td>
+        <td>${s.sent}</td><td>${s.opened}</td><td>${s.responded}</td>
+        <td style="min-width:150px"><div class="bar"><i style="width:${rate}%"></i></div><small class="muted">%${rate} yanıt</small></td>
+      </tr>`;
+    }).join('');
+    return `<div class="card" style="margin-top:18px">
+      <div class="card-head"><div><h2>Gönderilen anketler</h2><span class="muted">Anket adına tıklayarak yanıt durumunu ve grafikleri görün</span></div></div>
+      <div style="overflow:auto"><table><thead><tr><th>ANKET</th><th>GÖNDERİLDİ</th><th>AÇILDI</th><th>YANITLADI</th><th>YANIT ORANI</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="5" class="empty">Henüz anket gönderilmedi</td></tr>`}</tbody></table></div>
+    </div>`;
+  }
+
+  function pieHtml(parts){
+    const p=parts.map((x,i)=>({...x,color:x.color||PIE_COLORS[i%PIE_COLORS.length]}));
+    const total=p.reduce((a,x)=>a+x.count,0);
+    let cur=0;
+    const stops=total
+      ? p.filter(x=>x.count>0).map(x=>{const st=cur;cur+=x.count/total*100;return `${x.color} ${st}% ${cur}%`}).join(',')
+      : '#e9edf4 0 100%';
+    const legend=p.map(x=>`<li><span class="rep-dot" style="background:${x.color}"></span><span>${esc(x.label)}</span><strong>${x.count}</strong><em>${total?Math.round(x.count/total*100):0}%</em></li>`).join('');
+    return `<div class="rep-chart"><div class="rep-pie" style="background:conic-gradient(${stops})" role="img"></div><ul class="rep-legend">${legend}</ul></div>`;
+  }
+
+  function reportHtml(rep){
+    const t=rep.totals, notResp=Math.max(0,t.sent-t.responded);
+    const statusParts=[
+      {label:'Yanıtladı',count:t.responded,color:'#18a874'},
+      {label:'Açtı, yanıtlamadı',count:Math.max(0,t.opened-t.responded),color:'#f59e0b'},
+      {label:'Hiç açmadı',count:Math.max(0,t.sent-t.opened),color:'#c3cad6'}
+    ];
+    const qHtml=(rep.questions||[]).map((q,i)=>{
+      let inner;
+      if(q.type==='text'){
+        inner=q.texts&&q.texts.length
+          ? `<ul class="rep-texts">${q.texts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`
+          : `<div class="muted" style="font-size:13px">Henüz yazılı yanıt yok</div>`;
+      }else{
+        inner=pieHtml((q.distribution||[]).map(d=>({label:d.label,count:d.count})));
+      }
+      return `<div class="rep-q">
+        <div class="rep-q-h">${i+1}. ${esc(q.title||'')}</div>
+        <div class="muted" style="font-size:12px">${q.answered} kişi yanıtladı</div>
+        ${inner}
+      </div>`;
+    }).join('');
+    return `<div id="rep-body">
+      <div class="rep-stats">
+        <div class="rep-stat"><b>${t.sent}</b><span>Gönderildi</span></div>
+        <div class="rep-stat"><b>${t.opened}</b><span>Açıldı (tıkladı)</span></div>
+        <div class="rep-stat"><b>${t.responded}</b><span>Yanıtladı</span></div>
+        <div class="rep-stat"><b>${notResp}</b><span>Yanıtlamadı</span></div>
+      </div>
+      <div class="rep-q"><div class="rep-q-h">Yanıt durumu</div>${pieHtml(statusParts)}</div>
+      ${qHtml||'<div class="empty">Bu ankette soru yok</div>'}
+      <details class="rep-recips"><summary>Alıcı listesi (${(rep.invites||[]).length})</summary>
+        <div style="overflow:auto"><table><thead><tr><th>ALICI</th><th>KANAL</th><th>DURUM</th><th>AÇILMA</th><th>YANIT</th></tr></thead><tbody>
+        ${(rep.invites||[]).map(v=>{
+          const st=v.used_at?'<span class="badge green">Yanıtladı</span>':(v.opened_at?'<span class="badge orange">Açtı</span>':(v.sent_ok?'<span class="badge blue">Gönderildi</span>':'<span class="badge red">Gönderilemedi</span>'));
+          return `<tr><td>${esc(v.name||'—')}${v.sent_error?`<small class="muted" style="display:block">${esc(v.sent_error)}</small>`:''}</td><td>${v.channel==='sms'?'SMS':'E-posta'}</td><td>${st}</td><td>${esc(fmtDT(v.opened_at))}</td><td>${esc(fmtDT(v.used_at))}</td></tr>`;
+        }).join('')||'<tr><td colspan="5" class="empty">Alıcı yok</td></tr>'}
+        </tbody></table></div>
+      </details>
+    </div>`;
+  }
+
+  async function openSurveyReport(id){
+    let rep;
+    try{rep=await api('/api/surveys/'+id+'/report');}catch(err){return toast(err.message);}
+    modal('Anket raporu · '+esc(rep.survey.title),reportHtml(rep),()=>closeModal());
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
   }
 
   // --- Anket şablonu oluşturucu ------------------------------------

@@ -2465,6 +2465,66 @@ app.get('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
   res.json(rows.map(inviteListRow));
 }));
 
+// Gönderilmiş anketlerin özeti (şablon listesinin altında gösterilir)
+app.get('/api/surveys/sent', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const rows = (await pool.query(`
+    select s.id, s.title, s.active,
+      count(i.id)::int as sent,
+      count(i.id) filter (where i.opened_at is not null or i.used_at is not null)::int as opened,
+      count(i.id) filter (where i.used_at is not null)::int as responded,
+      max(i.created_at) as last_sent_at
+    from survey_templates s
+    join survey_invites i on i.survey_id = s.id
+    where s.kind = 'personel'
+    group by s.id
+    order by max(i.created_at) desc`)).rows;
+  res.json(rows);
+}));
+
+// Tek bir anketin ayrıntılı raporu: yanıt durumu + soru bazlı dağılımlar
+app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
+  const invites = (await pool.query(
+    'select recipient_name,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
+    [survey.id])).rows;
+  const sent = invites.length;
+  const opened = invites.filter(i => i.opened_at || i.used_at).length;
+  const responded = invites.filter(i => i.used_at).length;
+  const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
+  const questions = (Array.isArray(survey.questions) ? survey.questions : []).map((q, idx) => {
+    const vals = answered.map(r => r[idx]).filter(a => a && a.value != null).map(a => a.value);
+    if (q.type === 'text') {
+      const texts = vals.filter(v => typeof v === 'string' && v.trim()).map(v => String(v).slice(0, 2000));
+      return { title: q.title, type: q.type, answered: texts.length, texts };
+    }
+    const lo = Math.round(Number(q.scale_min)) || 1, hi = Math.round(Number(q.scale_max)) || 5;
+    const seed = q.type === 'yesno' ? ['Evet', 'Hayır']
+      : q.type === 'scale' ? Array.from({ length: Math.max(1, hi - lo + 1) }, (_, k) => String(lo + k))
+        : (Array.isArray(q.options) ? q.options.map(o => o.label).filter(Boolean) : []);
+    const counts = new Map(seed.map(l => [l, 0]));
+    let answeredCount = 0;
+    vals.forEach(v => {
+      const arr = Array.isArray(v) ? v : [v];
+      let any = false;
+      arr.forEach(x => { const k = String(x); if (k === '') return; counts.set(k, (counts.get(k) || 0) + 1); any = true; });
+      if (any) answeredCount++;
+    });
+    return { title: q.title, type: q.type, answered: answeredCount, distribution: [...counts.entries()].map(([label, count]) => ({ label, count })) };
+  });
+  res.json({
+    survey: { id: survey.id, title: survey.title, description: survey.description, active: survey.active },
+    totals: { sent, opened, responded },
+    questions,
+    invites: invites.map(i => ({
+      name: i.recipient_name, channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
+      opened_at: i.opened_at, used_at: i.used_at
+    }))
+  });
+}));
+
 app.post('/api/eom/invites', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageEom, 'Gönderme yetkiniz yok')) return;
   const period = await latestPeriod();
@@ -2498,6 +2558,9 @@ function sanitizePublicAnswers(questions, raw) {
 app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
   const inv = (await pool.query('select * from survey_invites where token=$1', [clean(req.params.token)])).rows[0];
   if (!inv) return res.status(404).json({ status: 'invalid' });
+  if (!inv.used_at && !inv.opened_at) {
+    pool.query('update survey_invites set opened_at=now() where id=$1 and opened_at is null', [inv.id]).catch(() => {});
+  }
   const out = {
     status: inv.used_at ? 'used' : 'pending', kind: inv.kind, org: 'Hilton Dalaman',
     recipient_name: inv.recipient_name, used_at: inv.used_at, response: inv.response || null

@@ -262,6 +262,7 @@ create table if not exists survey_invites(
   sent_ok boolean,
   sent_error text not null default '',
   response jsonb,
+  opened_at timestamptz,
   used_at timestamptz,
   created_by text,
   created_at timestamptz not null default now()

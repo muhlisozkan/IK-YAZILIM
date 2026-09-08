@@ -191,3 +191,25 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .inv-link{display:flex;gap:6px;align-items:center;margin-top:5px}
 .inv-link .input{flex:1;min-width:0;font-size:11px;padding:6px 8px;color:var(--muted)}
 .inv-link .btn.ghost{flex:0 0 auto;padding:4px 8px;font-size:12px}
+
+/* Anket raporu */
+#rep-body{max-height:64vh;overflow:auto;padding-right:4px}
+.rep-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px}
+.rep-stat{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fbfcfe}
+.rep-stat b{display:block;font-size:22px;font-weight:750;line-height:1.1}
+.rep-stat span{color:var(--muted);font-size:11.5px}
+.rep-q{border-top:1px solid var(--line);padding:16px 0}
+.rep-q-h{font-weight:650;font-size:14px;margin-bottom:2px}
+.rep-chart{display:flex;gap:22px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.rep-pie{width:132px;height:132px;border-radius:50%;flex:0 0 auto;box-shadow:0 0 0 1px var(--line) inset}
+.rep-legend{list-style:none;margin:0;padding:0;flex:1;min-width:220px}
+.rep-legend li{display:grid;grid-template-columns:12px 1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #f0f2f6;font-size:13px}
+.rep-legend li:last-child{border-bottom:0}
+.rep-legend em{color:var(--muted);font-style:normal;min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
+.rep-dot{width:12px;height:12px;border-radius:3px}
+.rep-texts{margin:10px 0 0;padding-left:18px;font-size:13px}
+.rep-texts li{padding:3px 0}
+.rep-recips{margin-top:16px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.rep-recips summary{cursor:pointer;font-weight:650;font-size:13px}
+.rep-recips table{margin-top:10px}
+@media(max-width:620px){.rep-stats{grid-template-columns:repeat(2,1fr)}}
