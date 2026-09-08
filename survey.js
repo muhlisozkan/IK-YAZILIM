@@ -4,6 +4,32 @@
   const QTYPES=[['text','Açık uçlu (yazı)'],['single','Tek seçim'],['multi','Çok seçim'],['scale','Puanlama (ölçek)'],['yesno','Evet / Hayır']];
   const qtypeLabel=t=>(QTYPES.find(x=>x[0]===t)||['',''])[1];
 
+  function previewControl(q,i){
+    if(q.type==='text')return `<textarea class="input" rows="2" placeholder="Cevabınız…" disabled></textarea>`;
+    if(q.type==='yesno')return ['Evet','Hayır'].map(o=>`<label class="sv-pv-opt"><input type="radio" name="pv${i}" disabled> ${o}</label>`).join('');
+    if(q.type==='single')return (q.options||[]).filter(o=>o.label).map(o=>`<label class="sv-pv-opt"><input type="radio" name="pv${i}" disabled> ${esc(o.label)}</label>`).join('')||'<span class="muted">Seçenek eklenmedi</span>';
+    if(q.type==='multi')return (q.options||[]).filter(o=>o.label).map(o=>`<label class="sv-pv-opt"><input type="checkbox" disabled> ${esc(o.label)}</label>`).join('')||'<span class="muted">Seçenek eklenmedi</span>';
+    if(q.type==='scale'){
+      const min=Math.round(Number(q.scale_min)||1),max=Math.round(Number(q.scale_max)||5);
+      const nums=[];for(let n=min;n<=max&&nums.length<21;n++)nums.push(n);
+      return `<div class="sv-pv-scale">${nums.map(n=>`<label><input type="radio" name="pv${i}" disabled><span>${n}</span></label>`).join('')}</div>${(q.scale_min_label||q.scale_max_label)?`<div class="sv-pv-scale-lbl"><span>${esc(q.scale_min_label||'')}</span><span>${esc(q.scale_max_label||'')}</span></div>`:''}`;
+    }
+    return '';
+  }
+  function surveyPreviewHtml(title,description,questions){
+    return `<div class="sv-preview">
+      <h2 style="margin:0 0 4px;font-size:18px">${esc(title||'(anket başlığı)')}</h2>
+      ${description?`<p class="muted" style="margin:0 0 16px">${esc(description)}</p>`:''}
+      ${(questions||[]).map((q,i)=>`<div class="sv-pv-q"><div class="sv-pv-title">${i+1}. ${esc(q.title||'(başlıksız soru)')}${q.required?' <span class="danger-text">*</span>':''}</div>${q.detail?`<div class="muted" style="font-size:12px;margin:2px 0 8px">${esc(q.detail)}</div>`:''}${previewControl(q,i)}</div>`).join('')||'<div class="empty">Henüz soru yok</div>'}
+      <button class="btn" type="button" disabled style="margin-top:14px">Anketi gönder</button>
+    </div>`;
+  }
+  function previewSurvey(s){
+    modal('Önizleme · '+(s.title||'Anket'),surveyPreviewHtml(s.title,s.description,s.questions),()=>closeModal());
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const submit=document.querySelector('.modal .submit');if(submit){submit.textContent='Kapat';submit.onclick=closeModal;}
+  }
+
   const tabs=[['personel','Personel Anketi'],['makeitright','Make It Right']];
   let tab=sessionStorage.getItem('ik_survey_tab')||'personel';
   const cache={};
@@ -39,7 +65,7 @@
       <td><strong>${esc(s.title)}</strong>${s.description?`<small class="muted" style="display:block">${esc(s.description)}</small>`:''}</td>
       <td>${(s.questions||[]).length} soru</td>
       <td><span class="badge ${s.active?'green':'orange'}">${s.active?'Aktif':'Pasif'}</span></td>
-      <td class="row-actions">${manage?`<button class="btn ghost" data-survey-edit="${s.id}">Düzenle</button><button class="btn ghost" data-survey-copy="${s.id}">Kopyala</button><button class="btn ghost danger-text" data-survey-del="${s.id}">Sil</button>`:''}</td>
+      <td class="row-actions"><button class="btn ghost" data-survey-preview="${s.id}">Önizle</button>${manage?`<button class="btn ghost" data-survey-edit="${s.id}">Düzenle</button><button class="btn ghost" data-survey-copy="${s.id}">Kopyala</button><button class="btn ghost danger-text" data-survey-del="${s.id}">Sil</button>`:''}</td>
     </tr>`).join('');
     mount(`<div class="card">
       <div class="toolbar">
@@ -50,6 +76,7 @@
       <tbody>${rows||`<tr><td colspan="4" class="empty">Henüz anket şablonu yok</td></tr>`}</tbody></table></div>
     </div>`);
     if($('#survey-add'))$('#survey-add').onclick=()=>openBuilder('personel',null);
+    document.querySelectorAll('[data-survey-preview]').forEach(b=>b.onclick=()=>previewSurvey(list.find(s=>String(s.id)===b.dataset.surveyPreview)));
     document.querySelectorAll('[data-survey-edit]').forEach(b=>b.onclick=()=>openBuilder('personel',list.find(s=>String(s.id)===b.dataset.surveyEdit)));
     document.querySelectorAll('[data-survey-copy]').forEach(b=>b.onclick=()=>{
       const src=list.find(s=>String(s.id)===b.dataset.surveyCopy);
@@ -91,7 +118,7 @@
       const b=box();if(!b)return;
       const toggle=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn secondary" type="button" id="sv-preview-toggle">${previewMode?'✎ Düzenlemeye dön':'👁 Önizleme'}</button></div>`;
       if(previewMode){
-        b.innerHTML=toggle+previewHtml();
+        b.innerHTML=toggle+surveyPreviewHtml(title,description,questions);
         b.querySelector('#sv-preview-toggle').onclick=()=>{previewMode=false;redraw();};
         return;
       }
@@ -105,26 +132,6 @@
         <div id="sv-questions">${questions.map((q,i)=>questionCard(q,i)).join('')}</div>
         <button class="btn secondary" type="button" id="sv-addq" style="margin-top:10px">+ Soru ekle</button>`;
       bind();
-    }
-    function previewControl(q,i){
-      if(q.type==='text')return `<textarea class="input" rows="2" placeholder="Cevabınız…" disabled></textarea>`;
-      if(q.type==='yesno')return ['Evet','Hayır'].map(o=>`<label class="sv-pv-opt"><input type="radio" name="pv${i}" disabled> ${o}</label>`).join('');
-      if(q.type==='single')return (q.options||[]).filter(o=>o.label).map(o=>`<label class="sv-pv-opt"><input type="radio" name="pv${i}" disabled> ${esc(o.label)}</label>`).join('')||'<span class="muted">Seçenek eklenmedi</span>';
-      if(q.type==='multi')return (q.options||[]).filter(o=>o.label).map(o=>`<label class="sv-pv-opt"><input type="checkbox" disabled> ${esc(o.label)}</label>`).join('')||'<span class="muted">Seçenek eklenmedi</span>';
-      if(q.type==='scale'){
-        const min=Math.round(Number(q.scale_min)||1),max=Math.round(Number(q.scale_max)||5);
-        const nums=[];for(let n=min;n<=max&&nums.length<21;n++)nums.push(n);
-        return `<div class="sv-pv-scale">${nums.map(n=>`<label><input type="radio" name="pv${i}" disabled><span>${n}</span></label>`).join('')}</div>${(q.scale_min_label||q.scale_max_label)?`<div class="sv-pv-scale-lbl"><span>${esc(q.scale_min_label||'')}</span><span>${esc(q.scale_max_label||'')}</span></div>`:''}`;
-      }
-      return '';
-    }
-    function previewHtml(){
-      return `<div class="sv-preview">
-        <h2 style="margin:0 0 4px;font-size:18px">${esc(title||'(anket başlığı)')}</h2>
-        ${description?`<p class="muted" style="margin:0 0 16px">${esc(description)}</p>`:''}
-        ${questions.map((q,i)=>`<div class="sv-pv-q"><div class="sv-pv-title">${i+1}. ${esc(q.title||'(başlıksız soru)')}${q.required?' <span class="danger-text">*</span>':''}</div>${q.detail?`<div class="muted" style="font-size:12px;margin:2px 0 8px">${esc(q.detail)}</div>`:''}${previewControl(q,i)}</div>`).join('')||'<div class="empty">Henüz soru yok</div>'}
-        <button class="btn" type="button" disabled style="margin-top:14px">Anketi gönder</button>
-      </div>`;
     }
     function questionCard(q,i){
       const opts=(q.type==='single'||q.type==='multi')?`
