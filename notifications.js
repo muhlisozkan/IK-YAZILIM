@@ -28,16 +28,6 @@
         list.push({id:'leave:'+l.id,cat:'İzin onayı',kind:'orange',view:'leave',section:'requests',
           text:`${esc(l.employee||l.employee_name||'Çalışan')} · ${esc(l.type||l.leave_type||'izin')} talebi onayınızı bekliyor`});
     });
-    (state.expenses||[]).forEach(x=>{
-      if(x.can_approve)
-        list.push({id:'expense:'+x.id,cat:'Masraf onayı',kind:'orange',view:'expenses',
-          text:`${esc(x.employee_name||'Çalışan')} · ${fmt(x.amount)} masraf onayınızı bekliyor`});
-    });
-    (state.advances||[]).forEach(a=>{
-      if(a.can_approve)
-        list.push({id:'advance:'+a.id,cat:'Avans onayı',kind:'orange',view:'advances',
-          text:`${esc(a.employee_name||'Çalışan')} · ${fmt(a.amount)} avans onayınızı bekliyor`});
-    });
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
 

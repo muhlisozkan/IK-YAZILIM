@@ -1,19 +1,19 @@
 (function () {
   const userKey = 'ik_users';
   const sessionKey = 'ik_current_user_id';
-  const allViews = ['dashboard','employees','departments','leave','payroll','expenses','advances','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound'];
+  const allViews = ['dashboard','employees','departments','leave','payroll','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound'];
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
-    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','shifts','recruitment','performance','training'], create: true, approve: false },
-    'Mali İşler': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
-    'Finans yöneticisi': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
-    'Genel müdür': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
-    'Genel müdür yardımcısı': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
-    'Bölge yöneticisi': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
-    'Bordro yetkilisi': { views: ['dashboard','payroll','expenses','advances','reports','attendance'], create: true, approve: true },
+    'Departman yöneticisi': { views: ['dashboard','leave','reports','shifts','recruitment','performance','training'], create: true, approve: false },
+    'Mali İşler': { views: ['dashboard','reports'], create: false, approve: true },
+    'Finans yöneticisi': { views: ['dashboard','reports'], create: false, approve: true },
+    'Genel müdür': { views: ['dashboard','leave','reports'], create: false, approve: true },
+    'Genel müdür yardımcısı': { views: ['dashboard','leave','reports'], create: false, approve: true },
+    'Bölge yöneticisi': { views: ['dashboard','leave','reports'], create: false, approve: true },
+    'Bordro yetkilisi': { views: ['dashboard','payroll','reports','attendance'], create: true, approve: true },
     'Güvenlik': { views: ['dashboard','security'], create: true, approve: true },
-    'Personel': { views: ['dashboard','leave','expenses','advances','documents'], create: true, approve: false },
+    'Personel': { views: ['dashboard','leave','documents'], create: true, approve: false },
     'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security' && v !== 'lostfound'), create: false, approve: false }
   };
   const LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ','KAT HİZMETLERİ'];

@@ -1,13 +1,12 @@
 (function(){
   const key='ik_approval_routes';
   const processInfo={
-    leave:{label:'İzin',defaults:['Departman yöneticisi','İK yöneticisi']},
-    expense:{label:'Masraf',defaults:['Departman yöneticisi','Mali İşler']},
-    advance:{label:'Avans',defaults:['Departman yöneticisi','İK yöneticisi','Mali İşler']}
+    leave:{label:'İzin',defaults:['Departman yöneticisi','İK yöneticisi']}
+    // Masraf/Avans modülleri kaldırıldı
   };
   const approvers=['Departman yöneticisi','İK yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi'];
   const stored=JSON.parse(localStorage.getItem(key)||'{}');
-  const routes={leave:{},expense:{},advance:{}};
+  const routes={leave:{}};
   Object.keys(processInfo).forEach(type=>{
     if(stored[type]&&typeof stored[type]==='object'&&!Array.isArray(stored[type]))routes[type]={...stored[type]};
   });
