@@ -7,15 +7,13 @@ const fullHolidays = ['2026-01-01','2026-04-23','2026-05-01','2026-05-19','2026-
 const halfHolidays = ['2026-10-28',                    // Cumhuriyet Bayramı arifesi (yarım gün)
   '2026-03-19','2026-05-26'];                          // Ramazan / Kurban Bayramı arifeleri (yarım gün)
 const nationalHolidays = [...fullHolidays, ...halfHolidays];
-// offList verilmezse kısa izin: haftalık izin otomatik Pazar.
-// offList verilirse (uzun izin): yalnızca listedeki günler haftalık izin sayılır.
-function leaveDays(start,end,offList){
-  const off=offList?new Set(offList):null;
+// autoSunday true ise Pazar otomatik haftalık izin sayılır; offList'teki günler her zaman.
+function leaveDays(start,end,offList,autoSunday){
+  const off=new Set(offList||[]);
   let n=0,d=new Date(start),last=new Date(end);
   while(d<=last){
     const day=d.getDay(),iso=d.toISOString().slice(0,10);
-    const isWeeklyOff=off?off.has(iso):day===0;
-    if(isWeeklyOff){/* haftalık izin, sayılmaz */}
+    if(off.has(iso)||(autoSunday&&day===0)){/* haftalık izin, sayılmaz */}
     else if(fullHolidays.includes(iso)){/* tam gün resmi tatil */}
     else if(halfHolidays.includes(iso))n+=0.5;
     else n+=1;
@@ -23,7 +21,7 @@ function leaveDays(start,end,offList){
   }
   return n;
 }
-function businessDays(start,end){return leaveDays(start,end,null);}
+function businessDays(start,end){return leaveDays(start,end,[],true);}
 function daysInRange(start,end){
   const out=[],d=new Date(start),last=new Date(end);
   while(d<=last){out.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);}
@@ -151,8 +149,8 @@ function leaveModal(){
     const start=$('#l-start').value,end=$('#l-end').value,employee=state.employees.find(item=>String(item.id)===String($('#l-employee').value)),type=$('#l-type').value;
     if(!employee||!start||!end||end<start)return toast('Çalışan ve tarihleri kontrol edin');
     if(Math.round((new Date(end)-new Date(start))/86400000)>40)return toast('Bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir');
-    const offList=weekOffActive?weeklyOff:null;
-    const days=leaveDays(start,end,offList);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
+    const offList=weekOffActive?weeklyOff:[];
+    const days=leaveDays(start,end,offList,!weekOffActive);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
     if(type==='Yıllık izin'){
       const yr=Number(start.slice(0,4));
       const bal=await annualBalanceFor(employee.id,yr);
@@ -169,23 +167,21 @@ function leaveModal(){
     if(!(start&&end&&end>=start)||businessDays(start,end)<=6){weekOffActive=false;weeklyOff=[];box.innerHTML='';return;}
     weekOffActive=true;
     const dates=daysInRange(start,end),key=start+'|'+end;
-    if(key!==lastRangeKey){lastRangeKey=key;weeklyOff=dates.filter(iso=>new Date(iso).getDay()===0);}
+    if(key!==lastRangeKey){lastRangeKey=key;weeklyOff=[dates.find(iso=>new Date(iso).getDay()===0)].filter(Boolean);}
     weeklyOff=weeklyOff.filter(iso=>dates.includes(iso));
-    const maxOff=Math.ceil(dates.length/7);
-    box.innerHTML=`<div class="formula"><strong>Haftalık izin (of) günlerini işaretleyin</strong><br>
-      <small class="muted">6 günden uzun izinlerde her hafta için 1 haftalık izin günü seçilir. Seçilen günler izinden düşülmez.</small>
+    box.innerHTML=`<div class="formula"><strong>Haftalık izin (of) gününü seçin</strong><br>
+      <small class="muted">6 günden uzun izinlerde haftalık izin günü tek bir gün olarak işaretlenir; bu gün izinden düşülmez.</small>
       <div class="wk-grid" style="margin-top:10px">${dates.map(iso=>{
         const dd=new Date(iso),lbl=`${weekdayShort(iso)} ${String(dd.getDate()).padStart(2,'0')}.${String(dd.getMonth()+1).padStart(2,'0')}`;
         const full=fullHolidays.includes(iso),half=halfHolidays.includes(iso),sel=weeklyOff.includes(iso);
         if(full||half)return `<span class="wk-chip holiday" title="Resmi tatil">${lbl}${half?' ½':''}</span>`;
         return `<button type="button" class="wk-chip${sel?' on':''}" data-off="${iso}">${lbl}</button>`;
       }).join('')}</div>
-      <div style="margin-top:8px;font-size:12px"><strong>${weeklyOff.length}</strong> / ${maxOff} haftalık izin günü seçildi</div></div>`;
+      <div style="margin-top:8px;font-size:12px">${weeklyOff.length?'Seçili haftalık izin: <strong>'+weekdayShort(weeklyOff[0])+' '+weeklyOff[0].slice(8,10)+'.'+weeklyOff[0].slice(5,7)+'</strong>':'Henüz haftalık izin günü seçilmedi'}</div></div>`;
     box.querySelectorAll('[data-off]').forEach(b=>b.onclick=()=>{
       const iso=b.dataset.off;
-      if(weeklyOff.includes(iso))weeklyOff=weeklyOff.filter(x=>x!==iso);
-      else if(weeklyOff.length>=maxOff)return toast(`En fazla ${maxOff} haftalık izin günü seçebilirsiniz`);
-      else weeklyOff.push(iso);
+      if(weeklyOff.includes(iso))weeklyOff=[];
+      else weeklyOff=[iso];
       renderWeekOff();preview();
     });
   };
@@ -193,7 +189,7 @@ function leaveModal(){
     const start=$('#l-start').value,end=$('#l-end').value,type=$('#l-type').value,empId=$('#l-employee').value;
     const box=$('#leave-preview');if(!box)return;
     if(!(start&&end&&end>=start)){box.innerHTML='Tarihleri seçtiğinizde çalışma günü hesaplanır.';return;}
-    const days=leaveDays(start,end,weekOffActive?weeklyOff:null);
+    const days=leaveDays(start,end,weekOffActive?weeklyOff:[],!weekOffActive);
     let html=`Hesaplanan izin süresi: <strong>${leaveNumber(days)} çalışma günü</strong>`;
     if(weekOffActive)html+=` (${weeklyOff.length} haftalık izin günü hariç)`;
     if(type==='Yıllık izin'&&empId){

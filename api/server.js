@@ -67,14 +67,15 @@ const dateDistance = (later, earlier) => Math.floor((Date.parse(`${later}T00:00:
 const TR_FULL_HOLIDAYS = new Set(['2026-01-01', '2026-04-23', '2026-05-01', '2026-05-19', '2026-07-15', '2026-08-30', '2026-10-29',
   '2026-03-20', '2026-03-21', '2026-03-22', '2026-05-27', '2026-05-28', '2026-05-29', '2026-05-30']);
 const TR_HALF_HOLIDAYS = new Set(['2026-10-28', '2026-03-19', '2026-05-26']);
-// weeklyOff verilirse yalnızca o günler haftalık izin; verilmezse otomatik Pazar.
-function leaveDayBreakdown(startISO, endISO, weeklyOff) {
-  const off = Array.isArray(weeklyOff) && weeklyOff.length ? new Set(weeklyOff) : null;
+// autoSunday true ise Pazar günleri otomatik haftalık izin sayılır.
+// weeklyOff listesindeki günler her durumda haftalık izin sayılır.
+function leaveDayBreakdown(startISO, endISO, weeklyOff, autoSunday = true) {
+  const off = new Set(Array.isArray(weeklyOff) ? weeklyOff : []);
   let days = 0, weekRest = 0, holiday = 0;
   const end = Date.parse(`${endISO}T00:00:00Z`);
   for (let t = Date.parse(`${startISO}T00:00:00Z`); t <= end; t += 86400000) {
     const d = new Date(t), iso = d.toISOString().slice(0, 10);
-    if (off ? off.has(iso) : d.getUTCDay() === 0) { weekRest++; continue; }
+    if (off.has(iso) || (autoSunday && d.getUTCDay() === 0)) { weekRest++; continue; }
     if (TR_FULL_HOLIDAYS.has(iso)) { holiday += 1; continue; }
     if (TR_HALF_HOLIDAYS.has(iso)) { holiday += 0.5; days += 0.5; continue; }
     days += 1;
@@ -1459,7 +1460,10 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus, 
     if (table === 'leave_requests' && result.rows[0].status === 'Onaylandı' && clean(result.rows[0].leave_type) === 'Yıllık izin') {
       const lr = result.rows[0];
       const isoOf = value => { const x = new Date(value); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
-      const bd = leaveDayBreakdown(isoOf(lr.start_date), isoOf(lr.end_date), Array.isArray(lr.weekly_off_dates) ? lr.weekly_off_dates : []);
+      const s = isoOf(lr.start_date), e = isoOf(lr.end_date);
+      const woList = Array.isArray(lr.weekly_off_dates) ? lr.weekly_off_dates : [];
+      const auto = leaveDayBreakdown(s, e, [], true).days <= 6;
+      const bd = leaveDayBreakdown(s, e, woList, auto);
       await client.query(`
         insert into leave_usage_records(employee_id,start_date,end_date,used_days,week_rest_days,official_holiday_days,source,leave_request_id)
         select $1,$2,$3,$4,$5,$6,'İzin Talebi',$7
@@ -1681,12 +1685,16 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
   if (dateDistance(body.end_date, body.start_date) > 40) {
     return res.status(400).json({ error: 'İzin bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir' });
   }
-  const rangeDays = dateDistance(body.end_date, body.start_date) + 1;
   const weeklyOff = [...new Set((Array.isArray(body.weekly_off_dates) ? body.weekly_off_dates : [])
     .filter(v => dateOnly(v) && v >= body.start_date && v <= body.end_date))];
-  const maxOff = Math.ceil(rangeDays / 7);
-  if (weeklyOff.length > maxOff) return res.status(400).json({ error: `En fazla ${maxOff} haftalık izin günü seçilebilir` });
-  const breakdown = leaveDayBreakdown(body.start_date, body.end_date, weeklyOff);
+  // 6 iş gününden uzun izinlerde çalışan haftalık izin gününü kendi işaretler (en fazla 1);
+  // kısa izinlerde Pazar otomatik düşülür.
+  const pickerActive = leaveDayBreakdown(body.start_date, body.end_date, [], true).days > 6;
+  const maxOff = pickerActive ? 1 : 0;
+  if (weeklyOff.length > maxOff) {
+    return res.status(400).json({ error: maxOff ? 'En fazla 1 haftalık izin günü seçilebilir' : 'Bu izin için haftalık izin günü seçilemez' });
+  }
+  const breakdown = leaveDayBreakdown(body.start_date, body.end_date, weeklyOff, !pickerActive);
   const requestedDays = breakdown.days;
   if (!(requestedDays > 0)) return res.status(400).json({ error: 'Seçilen izin aralığında çalışma günü yok' });
   const employee = await pool.query('select id,name,department from employees where id=$1 and status=$2', [employeeId, 'Aktif']);
