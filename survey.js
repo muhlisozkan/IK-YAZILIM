@@ -473,9 +473,16 @@
     function showResult(res){
       done=true;
       box().innerHTML=`<div class="inv-result">
-        <p><strong>${res.sent}</strong> gönderildi${res.failed?` · <strong class="danger-text">${res.failed}</strong> başarısız`:''}.</p>
-        <ul class="inv-result-list">${(res.results||[]).map(r=>`<li>${r.ok?'✅':'❌'} ${esc(r.name||'(isimsiz)')}${r.ok?'':' — '+esc(r.error||'')}</li>`).join('')}</ul>
+        <p><strong>${res.sent}</strong> gönderildi${res.failed?` · <strong class="danger-text">${res.failed}</strong> başarısız`:''}.
+        ${res.base_url?`<br><span class="muted" style="font-size:12px">Bağlantı adresi: ${esc(res.base_url)}</span>`:''}</p>
+        <ul class="inv-result-list">${(res.results||[]).map(r=>`<li>
+          <div>${r.ok?'✅':'❌'} ${esc(r.name||'(isimsiz)')}${r.ok?'':' — '+esc(r.error||'')}</div>
+          ${r.link?`<div class="inv-link"><input class="input" readonly value="${esc(r.link)}"><button type="button" class="btn ghost" data-copy="${esc(r.link)}">Kopyala</button></div>`:''}
+        </li>`).join('')}</ul>
       </div>`;
+      box().querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+        navigator.clipboard?.writeText(b.dataset.copy).then(()=>toast('Bağlantı kopyalandı'),()=>toast('Kopyalanamadı'));
+      });
       const submit=document.querySelector('.modal .submit');
       if(submit){submit.textContent='Kapat';submit.disabled=false;}
     }

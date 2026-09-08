@@ -2378,7 +2378,7 @@ app.delete('/api/eom/votes', asyncRoute(async (req, res) => {
 const newInviteToken = () => crypto.randomBytes(24).toString('base64url');
 const inviteBaseUrl = req => {
   const env = clean(process.env.PUBLIC_BASE_URL);
-  if (env) return env.replace(/\/+$/, '');
+  if (env) return (/^https?:\/\//i.test(env) ? env : `https://${env}`).replace(/\/+$/, '');
   const host = clean(req.headers['x-forwarded-host']).split(',')[0].trim() || clean(req.headers.host);
   return `${requestIsHttps(req) ? 'https' : 'http'}://${host}`;
 };
@@ -2438,9 +2438,9 @@ async function dispatchInvites(req, { kind, surveyId, periodId, recipients, chan
       `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by)
        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [token, kind, surveyId, periodId, r.employee_id, name, email, phone, channel, sendRes.ok, clean(sendRes.error).slice(0, 500), req.user.name]);
-    results.push({ name, ok: sendRes.ok, error: sendRes.ok ? '' : sendRes.error });
+    results.push({ name, ok: sendRes.ok, error: sendRes.ok ? '' : sendRes.error, link });
   }
-  return { sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, results };
+  return { sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results };
 }
 
 const inviteListRow = r => ({

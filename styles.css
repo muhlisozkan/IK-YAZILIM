@@ -186,5 +186,8 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .inv-row .input{min-width:0;flex:1}
 .inv-row .btn.ghost{flex:0 0 auto;padding:4px 8px;font-size:16px}
 .inv-result-list{list-style:none;margin:10px 0 0;padding:0;max-height:260px;overflow:auto;font-size:13px}
-.inv-result-list li{padding:5px 0;border-bottom:1px solid var(--line)}
+.inv-result-list li{padding:8px 0;border-bottom:1px solid var(--line)}
 .inv-result-list li:last-child{border-bottom:0}
+.inv-link{display:flex;gap:6px;align-items:center;margin-top:5px}
+.inv-link .input{flex:1;min-width:0;font-size:11px;padding:6px 8px;color:var(--muted)}
+.inv-link .btn.ghost{flex:0 0 auto;padding:4px 8px;font-size:12px}
