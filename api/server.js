@@ -2497,19 +2497,22 @@ app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
   const inv = (await pool.query('select * from survey_invites where token=$1', [clean(req.params.token)])).rows[0];
   if (!inv) return res.status(404).json({ status: 'invalid' });
   const out = {
-    status: inv.used_at ? 'used' : 'pending', kind: inv.kind,
+    status: inv.used_at ? 'used' : 'pending', kind: inv.kind, org: 'Hilton Dalaman',
     recipient_name: inv.recipient_name, used_at: inv.used_at, response: inv.response || null
   };
   if (inv.kind === 'personel') {
     const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];
     if (!s) return res.status(404).json({ status: 'invalid' });
     if (!s.active && !inv.used_at) out.status = 'closed';
-    out.title = s.title; out.description = s.description; out.questions = s.questions || [];
+    out.eyebrow = 'Personel Anketi';
+    out.title = s.title; out.subtitle = s.description; out.description = s.description; out.questions = s.questions || [];
   } else {
     const p = (await pool.query('select * from eom_periods where id=$1', [inv.period_id])).rows[0];
     if (!p) return res.status(404).json({ status: 'invalid' });
     if (p.status !== 'open' && !inv.used_at) out.status = 'closed';
-    out.title = 'Ayın Personeli · ' + p.title;
+    out.eyebrow = 'Make It Right';
+    out.title = 'Ayın Personeli';
+    out.subtitle = p.title;
     out.candidates = (await pool.query('select id,category,name,subtitle,photo from eom_candidates where period_id=$1 order by id', [inv.period_id])).rows
       .map(c => ({ id: c.id, category: c.category, name: c.name, subtitle: c.subtitle, photo: c.photo || '' }));
   }

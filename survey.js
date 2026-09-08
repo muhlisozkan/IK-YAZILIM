@@ -16,12 +16,18 @@
     }
     return '';
   }
+  function brandPreviewHead(eyebrow,title,subtitle){
+    return `<div class="brand-pv">
+      <div class="brand-pv-eyebrow">Hilton Dalaman · ${esc(eyebrow)}</div>
+      <div class="brand-pv-title">${esc(title||'')}</div>
+      ${subtitle?`<div class="brand-pv-sub">${esc(subtitle)}</div>`:''}
+    </div>`;
+  }
   function surveyPreviewHtml(title,description,questions){
     return `<div class="sv-preview">
-      <h2 style="margin:0 0 4px;font-size:18px">${esc(title||'(anket başlığı)')}</h2>
-      ${description?`<p class="muted" style="margin:0 0 16px">${esc(description)}</p>`:''}
+      ${brandPreviewHead('Personel Anketi',title||'(anket başlığı)',description)}
       ${(questions||[]).map((q,i)=>`<div class="sv-pv-q"><div class="sv-pv-title">${i+1}. ${esc(q.title||'(başlıksız soru)')}${q.required?' <span class="danger-text">*</span>':''}</div>${q.detail?`<div class="muted" style="font-size:12px;margin:2px 0 8px">${esc(q.detail)}</div>`:''}${previewControl(q,i)}</div>`).join('')||'<div class="empty">Henüz soru yok</div>'}
-      <button class="btn" type="button" disabled style="margin-top:14px">Anketi gönder</button>
+      <button class="btn" type="button" disabled style="margin-top:14px">Yanıtları gönder</button>
     </div>`;
   }
   function previewSurvey(s){
@@ -309,9 +315,12 @@
   function eomPreview(data){
     if(!data||!data.period)return;
     modal('Önizleme · Oy verenlerin göreceği ekran',
-      `<p class="muted" style="margin:0 0 14px">Her sütundan yalnızca <strong>1</strong> aday seçilebilir.</p>
+      `<div class="sv-preview">
+       ${brandPreviewHead('Make It Right','Ayın Personeli',data.period.title)}
+       <p class="muted" style="margin:0 0 14px">Her sütundan yalnızca <strong>1</strong> aday seçilebilir.</p>
        <div class="eom-grid eom-preview">${eomColumnsHtml(data,{preview:true})}</div>
-       <button class="btn" type="button" disabled style="margin-top:16px">Oyumu gönder</button>`,
+       <button class="btn" type="button" disabled style="margin-top:16px">Oyumu gönder</button>
+       </div>`,
       ()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}

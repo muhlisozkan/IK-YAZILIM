@@ -137,6 +137,12 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .sv-opt .input{min-width:0}
 
 /* Anket önizlemesi */
+.brand-pv{border-radius:14px;padding:20px 22px;margin-bottom:18px;color:#fff;position:relative;overflow:hidden;
+  background:linear-gradient(135deg,#0c2340 0%,#16406b 62%,#1e4e80 100%)}
+.brand-pv:after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#b58150,transparent)}
+.brand-pv-eyebrow{font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#e9dcc9;font-weight:700;margin-bottom:8px}
+.brand-pv-title{font-size:20px;font-weight:700;line-height:1.2}
+.brand-pv-sub{margin-top:6px;font-size:13px;color:#c7d5e6}
 .sv-preview .sv-pv-q{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
 .sv-preview .sv-pv-q:last-of-type{border-bottom:0}
 .sv-pv-title{font-weight:650;font-size:13px;margin-bottom:4px}
