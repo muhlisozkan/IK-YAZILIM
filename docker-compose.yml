@@ -28,6 +28,11 @@ services:
     build: .
     container_name: ik-web
     restart: unless-stopped
+    # GÜVENLİK: bu portu yalnızca yerele bağlayın. Cloudflare Tunnel ingress
+    # kuralını "http://127.0.0.1:8080" yapıp aşağıyı "127.0.0.1:8080:80" olarak
+    # değiştirin; böylece uygulama LAN'dan (10.48.x:8080) doğrudan erişilemez,
+    # yalnızca Cloudflare üzerinden gelir. (Tünel şu an 10.48.1.60:8080'e
+    # baktığı için geçici olarak 0.0.0.0 bırakıldı.)
     ports:
       - "0.0.0.0:8080:80"
     read_only: true

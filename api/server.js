@@ -10,13 +10,28 @@ import { fileURLToPath } from 'node:url';
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://ik:ik@db:5432/ik' });
 const app = express();
-app.set('trust proxy', true); // nginx + Cloudflare Tunnel arkasında; gerçek istemci IP'si için
-app.use(express.json({ limit: '5mb' }));
+// Tek güvenilen atlama: ik-web (nginx). Gerçek istemci IP'si Cloudflare'in
+// yazdığı CF-Connecting-IP başlığından okunur (dışarıdan sahte gönderilemez).
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '2mb' }));
 app.disable('etag');
+app.disable('x-powered-by');
 app.use('/api', (_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.setHeader('Pragma', 'no-cache');
   next();
+});
+// CSRF savunma derinliği: tarayıcıdan gelen durum değiştiren isteklerde
+// Origin başlığındaki alan adı, istek alan adıyla aynı olmalı (SameSite=Lax'a ek katman).
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  const origin = req.headers.origin;
+  if (!origin) return next(); // tarayıcı dışı istemci (curl, sağlık kontrolü) — CSRF riski yok
+  let originHost;
+  try { originHost = new URL(origin).hostname.toLowerCase(); } catch { return res.status(403).json({ error: 'Geçersiz istek kaynağı' }); }
+  const reqHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].split(':')[0].trim().toLowerCase();
+  if (originHost && reqHost && originHost === reqHost) return next();
+  return res.status(403).json({ error: 'İstek kaynağı doğrulanamadı' });
 });
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -345,6 +360,10 @@ const sessionCookie = (req, token, maxAgeSeconds) => {
 const LOGIN_MAX_ATTEMPTS = Math.max(1, Number(process.env.LOGIN_MAX_ATTEMPTS) || 5);
 const LOGIN_LOCK_MS = Math.max(1, Number(process.env.LOGIN_LOCK_MINUTES) || 15) * 60000;
 const loginAttempts = new Map(); // "kullanıcı|ip" -> { count, lockedUntil }
+// Güvenlik kararları (kaba kuvvet kilidi) için istemci IP'si:
+//  - Cloudflare üzerinden: CF-Connecting-IP (Cloudflare yazar, sahte gönderilemez)
+//  - Doğrudan (LAN): req.ip — "trust proxy: 1" olduğu için nginx'in gördüğü
+//    gerçek eş adres; istemcinin gönderdiği X-Forwarded-For'a güvenilmez.
 const requestIp = req =>
   clean(req.headers['cf-connecting-ip']) || clean(req.ip) || clean(req.socket?.remoteAddress) || 'bilinmiyor';
 const loginKey = (username, ip) => `${String(username).toLowerCase()}|${ip}`;
@@ -397,6 +416,8 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     from app_users
     where lower(username)=lower($1) and status='Aktif' and password_hash=crypt($2,password_hash)`, [username, password]);
   if (!result.rowCount) {
+    // Kullanıcı adı numaralandırmasını önlemek için zamanlamayı eşitle
+    await pool.query("select crypt($1, gen_salt('bf', 10))", [password]).catch(() => {});
     registerLoginFailure(key);
     return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı' });
   }
@@ -420,6 +441,18 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
   res.status(204).end();
 }));
+
+// Oturumsuz (public) uçlar için kaba IP hız sınırı: 60 istek / dakika
+const publicHits = new Map();
+setInterval(() => { const t = Date.now() - 60000; for (const [k, v] of publicHits) if (v.t < t) publicHits.delete(k); }, 60000).unref();
+app.use('/api/public', (req, res, next) => {
+  const ip = requestIp(req), now = Date.now();
+  const e = publicHits.get(ip) || { t: now, n: 0 };
+  if (now - e.t > 60000) { e.t = now; e.n = 0; }
+  e.n += 1; publicHits.set(ip, e);
+  if (e.n > 60) { res.setHeader('Retry-After', '60'); return res.status(429).json({ error: 'Çok fazla istek. Lütfen biraz sonra tekrar deneyin.' }); }
+  next();
+});
 
 app.use('/api', asyncRoute(async (req, res, next) => {
   // /health ve tek kullanımlık davet bağlantıları oturum gerektirmez
@@ -886,7 +919,9 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 }));
 
 app.get('/api/shared-data', asyncRoute(async (_req, res) => {
-  const result = await pool.query('select data_key,value from shared_app_data order by data_key');
+  // Yalnızca tanımlı ortak alanlar döner (eski/artık kullanılmayan anahtarlar sızmasın)
+  const result = await pool.query('select data_key,value from shared_app_data where data_key = any($1) order by data_key',
+    [[...sharedDataKeys]]);
   res.json(Object.fromEntries(result.rows.map(row => [row.data_key, row.value])));
 }));
 
