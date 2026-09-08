@@ -1,4 +1,5 @@
 create table if not exists employees(id serial primary key,name text not null,email text default '',department text not null,title text default '',start_date date not null,salary numeric default 0,status text default 'Aktif',created_at timestamptz default now());
+alter table employees add column if not exists phone text not null default '';
 
 create table if not exists departments(
   id serial primary key,
@@ -246,16 +247,40 @@ create table if not exists eom_candidates(
   created_at timestamptz not null default now()
 );
 create index if not exists eom_candidates_period_idx on eom_candidates(period_id, category);
+create table if not exists survey_invites(
+  id bigserial primary key,
+  token text not null unique,
+  kind text not null check(kind in ('personel','makeitright')),
+  survey_id bigint references survey_templates(id) on delete cascade,
+  period_id bigint references eom_periods(id) on delete cascade,
+  employee_id bigint,
+  recipient_name text not null default '',
+  recipient_email text not null default '',
+  recipient_phone text not null default '',
+  channel text not null default '',
+  sent_ok boolean,
+  sent_error text not null default '',
+  response jsonb,
+  used_at timestamptz,
+  created_by text,
+  created_at timestamptz not null default now()
+);
+create index if not exists survey_invites_survey_idx on survey_invites(survey_id);
+create index if not exists survey_invites_period_idx on survey_invites(period_id);
+
 create table if not exists eom_votes(
+  id bigserial primary key,
   period_id bigint not null references eom_periods(id) on delete cascade,
   category text not null check(category in ('idari','operasyon')),
   candidate_id bigint not null references eom_candidates(id) on delete cascade,
-  voter_id bigint not null,
+  voter_id bigint,
   voter_name text not null default '',
-  created_at timestamptz not null default now(),
-  primary key(period_id, category, voter_id)
+  invite_id bigint references survey_invites(id) on delete cascade,
+  created_at timestamptz not null default now()
 );
 create index if not exists eom_votes_candidate_idx on eom_votes(candidate_id);
+create unique index if not exists eom_votes_voter_uq on eom_votes(period_id,category,voter_id) where voter_id is not null;
+create unique index if not exists eom_votes_invite_uq on eom_votes(period_id,category,invite_id) where invite_id is not null;
 
 create table if not exists auth_sessions(
   token_hash text primary key,

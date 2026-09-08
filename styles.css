@@ -171,3 +171,14 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .eom-photo-prev-ph{color:var(--muted);font-size:11px;text-align:center;padding:6px}
 .eom-preview{pointer-events:none}
 @media(max-width:760px){.eom-grid{grid-template-columns:1fr}}
+
+/* Anket / oylama linki gönderimi */
+.inv-channel{display:flex;gap:18px}
+.inv-channel label{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink)}
+.inv-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.inv-row{display:flex;gap:8px;align-items:center}
+.inv-row .input{min-width:0;flex:1}
+.inv-row .btn.ghost{flex:0 0 auto;padding:4px 8px;font-size:16px}
+.inv-result-list{list-style:none;margin:10px 0 0;padding:0;max-height:260px;overflow:auto;font-size:13px}
+.inv-result-list li{padding:5px 0;border-bottom:1px solid var(--line)}
+.inv-result-list li:last-child{border-bottom:0}

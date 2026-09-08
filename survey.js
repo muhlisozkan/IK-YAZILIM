@@ -73,7 +73,7 @@
       <td><strong>${esc(s.title)}</strong>${s.description?`<small class="muted" style="display:block">${esc(s.description)}</small>`:''}</td>
       <td>${(s.questions||[]).length} soru</td>
       <td><span class="badge ${s.active?'green':'orange'}">${s.active?'Aktif':'Pasif'}</span></td>
-      <td class="row-actions"><button class="btn ghost" data-survey-preview="${s.id}">Önizle</button>${manage?`<button class="btn ghost" data-survey-edit="${s.id}">Düzenle</button><button class="btn ghost" data-survey-copy="${s.id}">Kopyala</button><button class="btn ghost danger-text" data-survey-del="${s.id}">Sil</button>`:''}</td>
+      <td class="row-actions"><button class="btn ghost" data-survey-preview="${s.id}">Önizle</button>${manage?`${s.active?`<button class="btn ghost" data-survey-send="${s.id}">Gönder</button>`:''}<button class="btn ghost" data-survey-edit="${s.id}">Düzenle</button><button class="btn ghost" data-survey-copy="${s.id}">Kopyala</button><button class="btn ghost danger-text" data-survey-del="${s.id}">Sil</button>`:''}</td>
     </tr>`).join('');
     mount(`<div class="card">
       <div class="toolbar">
@@ -86,6 +86,10 @@
     if($('#survey-add'))$('#survey-add').onclick=()=>openBuilder('personel',null);
     document.querySelectorAll('[data-survey-preview]').forEach(b=>b.onclick=()=>previewSurvey(list.find(s=>String(s.id)===b.dataset.surveyPreview)));
     document.querySelectorAll('[data-survey-edit]').forEach(b=>b.onclick=()=>openBuilder('personel',list.find(s=>String(s.id)===b.dataset.surveyEdit)));
+    document.querySelectorAll('[data-survey-send]').forEach(b=>b.onclick=()=>{
+      const s=list.find(x=>String(x.id)===b.dataset.surveySend);
+      inviteModal('personel',{surveyId:s.id,title:s.title});
+    });
     document.querySelectorAll('[data-survey-copy]').forEach(b=>b.onclick=()=>{
       const src=list.find(s=>String(s.id)===b.dataset.surveyCopy);
       openBuilder('personel',{...src,id:null,title:src.title+' (kopya)'});
@@ -269,7 +273,7 @@
         <span class="badge ${open?'green':'orange'}">${open?'Oylama açık':'Oylama kapandı'}</span>
         ${manage?`<span style="flex:1"></span><span class="muted">${data.voter_count||0} kişi oy kullandı</span>
           <button class="btn secondary" id="eom-preview">👁 Önizleme</button>
-          ${open?`<button class="btn ghost" id="eom-close">Oylamayı kapat</button>`:`<button class="btn ghost" id="eom-reopen">Yeniden aç</button>`}
+          ${open?`<button class="btn secondary" id="eom-invite">✉ Link gönder</button><button class="btn ghost" id="eom-close">Oylamayı kapat</button>`:`<button class="btn ghost" id="eom-reopen">Yeniden aç</button>`}
           <button class="btn" id="eom-new">Yeni dönem</button>`:''}
       </div>
       <p class="muted" style="margin:4px 0 16px">Her sütundan yalnızca <strong>1</strong> aday seçebilirsiniz. Seçiminiz otomatik kaydedilir.${open?'':' Oylama kapandığı için değişiklik yapılamaz.'}</p>
@@ -297,6 +301,7 @@
     });
     if($('#eom-new'))$('#eom-new').onclick=eomNewPeriod;
     if($('#eom-preview'))$('#eom-preview').onclick=()=>eomPreview(eomData);
+    if($('#eom-invite'))$('#eom-invite').onclick=()=>inviteModal('makeitright',{title:data.period.title});
     if($('#eom-close'))$('#eom-close').onclick=()=>{if(confirm('Oylamayı kapatmak istediğinize emin misiniz?'))eomSetStatus(data.period.id,'closed');};
     if($('#eom-reopen'))$('#eom-reopen').onclick=()=>eomSetStatus(data.period.id,'open');
   }
@@ -394,6 +399,78 @@
       photoData=null;removePhoto=true;file.value='';
       prev.innerHTML='<span class="eom-photo-prev-ph">Fotoğraf yok</span>';
     };
+  }
+
+  // --- Kişiye özel tek kullanımlık link ile gönderim --------------
+  const isEmail=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim());
+  function inviteModal(kind,opts){
+    opts=opts||{};
+    let channel='email';
+    let rows=[{name:'',email:'',phone:''}];
+    let done=false;
+    const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/invites';
+    modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body"></div>',async()=>{
+      if(done){closeModal();if(kind!=='personel')renderMakeItRight();return;}
+      const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim()})).filter(r=>r.name||r.email||r.phone);
+      if(!recipients.length)return toast('En az bir alıcı girin');
+      if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresini girin');
+      if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarasını girin');
+      const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
+      try{
+        const res=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel,message:curMsg(),recipients})});
+        showResult(res);
+      }catch(err){toast(err.message);if(submit)submit.disabled=false;}
+    });
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const box=()=>$('#inv-body');
+    const curMsg=()=>($('#inv-msg')?$('#inv-msg').value:'');
+    function rowHtml(r,i){
+      return `<div class="inv-row" data-i="${i}">
+        <input class="input" data-k="name" placeholder="Ad Soyad" value="${esc(r.name)}">
+        <input class="input" data-k="email" placeholder="E-posta" value="${esc(r.email)}" ${channel==='sms'?'hidden':''}>
+        <input class="input" data-k="phone" placeholder="Telefon" value="${esc(r.phone)}" ${channel==='email'?'hidden':''}>
+        <button type="button" class="btn ghost danger-text" data-del="${i}" title="Sil">×</button>
+      </div>`;
+    }
+    function redraw(){
+      box().innerHTML=`
+        <div class="field"><label>Gönderim kanalı</label>
+          <div class="inv-channel">
+            <label><input type="radio" name="inv-ch" value="email" ${channel==='email'?'checked':''}> E-posta</label>
+            <label><input type="radio" name="inv-ch" value="sms" ${channel==='sms'?'checked':''}> SMS</label>
+          </div>
+        </div>
+        <div class="field"><label>Alıcılar</label>
+          <div class="inv-rows">${rows.map(rowHtml).join('')}</div>
+          <button type="button" class="btn ghost" id="inv-add">+ Alıcı ekle</button>
+        </div>
+        <div class="field"><label>Mesaj (opsiyonel)</label>
+          <textarea class="input" id="inv-msg" placeholder="Boş bırakılırsa standart metin gönderilir. {ad} ve {link} kullanılabilir.">${esc(curMsg())}</textarea>
+        </div>
+        <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. Bağlantı bir kez yanıtlandığında kapanır; düzeltme yapılamaz.</p>`;
+      bind();
+    }
+    function bind(){
+      box().querySelectorAll('[name="inv-ch"]').forEach(el=>el.onchange=()=>{channel=el.value;redraw();});
+      box().querySelector('#inv-add').onclick=()=>{rows.push({name:'',email:'',phone:''});redraw();};
+      box().querySelectorAll('.inv-row [data-k]').forEach(el=>{
+        const i=Number(el.closest('.inv-row').dataset.i),k=el.dataset.k;
+        el.oninput=()=>{rows[i][k]=el.value;};
+      });
+      box().querySelectorAll('[data-del]').forEach(el=>el.onclick=()=>{
+        rows.splice(Number(el.dataset.del),1);if(!rows.length)rows=[{name:'',email:'',phone:''}];redraw();
+      });
+    }
+    function showResult(res){
+      done=true;
+      box().innerHTML=`<div class="inv-result">
+        <p><strong>${res.sent}</strong> gönderildi${res.failed?` · <strong class="danger-text">${res.failed}</strong> başarısız`:''}.</p>
+        <ul class="inv-result-list">${(res.results||[]).map(r=>`<li>${r.ok?'✅':'❌'} ${esc(r.name||'(isimsiz)')}${r.ok?'':' — '+esc(r.error||'')}</li>`).join('')}</ul>
+      </div>`;
+      const submit=document.querySelector('.modal .submit');
+      if(submit){submit.textContent='Kapat';submit.disabled=false;}
+    }
+    redraw();
   }
 
   function render(){

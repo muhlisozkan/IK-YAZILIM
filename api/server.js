@@ -422,7 +422,8 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 }));
 
 app.use('/api', asyncRoute(async (req, res, next) => {
-  if (req.path === '/health') return next();
+  // /health ve tek kullanımlık davet bağlantıları oturum gerektirmez
+  if (req.path === '/health' || req.path.startsWith('/public/')) return next();
   const user = await authenticatedUser(req);
   if (!user) return res.status(401).json({ error: 'Oturum açmanız gerekiyor' });
   req.user = user;
@@ -2251,7 +2252,8 @@ app.get('/api/eom', asyncRoute(async (req, res) => {
     counts = {};
     (await pool.query('select candidate_id,count(*)::int n from eom_votes where period_id=$1 group by candidate_id', [period.id]))
       .rows.forEach(r => { counts[r.candidate_id] = r.n; });
-    voterCount = (await pool.query('select count(distinct voter_id)::int n from eom_votes where period_id=$1', [period.id])).rows[0].n;
+    voterCount = (await pool.query(
+      'select count(*)::int n from (select distinct voter_id, invite_id from eom_votes where period_id=$1) t', [period.id])).rows[0].n;
   }
   res.json({
     period: { id: period.id, title: period.title, status: period.status, created_at: period.created_at, closed_at: period.closed_at },
@@ -2355,7 +2357,8 @@ app.post('/api/eom/votes', asyncRoute(async (req, res) => {
   if (!cand) return res.status(404).json({ error: 'Aday bulunamadı' });
   await pool.query(
     `insert into eom_votes(period_id,category,candidate_id,voter_id,voter_name) values($1,$2,$3,$4,$5)
-     on conflict (period_id,category,voter_id) do update set candidate_id=excluded.candidate_id, created_at=now()`,
+     on conflict (period_id,category,voter_id) where voter_id is not null
+     do update set candidate_id=excluded.candidate_id, created_at=now()`,
     [period.id, category, candidateId, req.user.id, req.user.name]);
   res.status(204).end();
 }));
@@ -2367,6 +2370,185 @@ app.delete('/api/eom/votes', asyncRoute(async (req, res) => {
   if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
   await pool.query('delete from eom_votes where period_id=$1 and category=$2 and voter_id=$3', [period.id, category, req.user.id]);
   res.status(204).end();
+}));
+
+// --- Anket / oylama dağıtımı: kişiye özel tek kullanımlık linkler ----
+const newInviteToken = () => crypto.randomBytes(24).toString('base64url');
+const inviteBaseUrl = req => {
+  const env = clean(process.env.PUBLIC_BASE_URL);
+  if (env) return env.replace(/\/+$/, '');
+  const host = clean(req.headers['x-forwarded-host']).split(',')[0].trim() || clean(req.headers.host);
+  return `${requestIsHttps(req) ? 'https' : 'http'}://${host}`;
+};
+const inviteLink = (req, token) => `${inviteBaseUrl(req)}/anket.html?t=${encodeURIComponent(token)}`;
+
+function composeInviteMessage(message, name, link) {
+  const m = clean(message);
+  if (!m) return `İK Merkezi · Sayın ${name || 'ilgili'}, aşağıdaki bağlantıdan yanıtlayabilirsiniz:\n${link}\n(Bağlantı yalnızca bir kez kullanılabilir.)`;
+  const filled = m.replace(/\{ad\}/g, name || '').replace(/\{link\}/g, link);
+  return /\{link\}/.test(m) ? filled : `${filled}\n${link}`;
+}
+
+async function sendInviteEmail(to, subject, bodyText, link) {
+  const settings = await readSmtpSettings();
+  if (!settings) return { ok: false, error: 'SMTP ayarları yapılmamış' };
+  const transport = await smtpTransport(settings);
+  const h = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const htmlBody = h(bodyText).split(h(link)).join(`<a href="${h(link)}">${h(link)}</a>`).replace(/\n/g, '<br>');
+  await transport.sendMail({
+    from: { name: settings.from_name, address: settings.from_email }, to, subject,
+    text: bodyText,
+    html: `<div style="font-family:system-ui,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6">${htmlBody}</div>`
+  });
+  return { ok: true };
+}
+
+function parseInviteBody(body) {
+  const b = body || {};
+  const channel = clean(b.channel) === 'sms' ? 'sms' : 'email';
+  const recipients = (Array.isArray(b.recipients) ? b.recipients : []).map(r => ({
+    name: clean(r?.name).slice(0, 160),
+    email: clean(r?.email).slice(0, 200),
+    phone: clean(r?.phone).slice(0, 40),
+    employee_id: Number(r?.employee_id) || null
+  })).filter(r => r.name || r.email || r.phone).slice(0, 500);
+  return { channel, recipients, message: clean(b.message).slice(0, 1000) };
+}
+
+async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject }) {
+  const results = [];
+  for (const r of recipients) {
+    const name = r.name, email = r.email, phone = phoneNumber(r.phone) || '';
+    if (channel === 'email' && !emailAddress(email)) { results.push({ name, ok: false, error: 'Geçersiz e-posta adresi' }); continue; }
+    if (channel === 'sms' && !phone) { results.push({ name, ok: false, error: 'Geçersiz telefon numarası' }); continue; }
+    const token = newInviteToken();
+    const link = inviteLink(req, token);
+    const text = composeInviteMessage(message, name, link);
+    let sendRes;
+    try {
+      sendRes = channel === 'email'
+        ? await sendInviteEmail(email, subject, text, link)
+        : await sendSms(phone, text, `invite:${kind}`).then(s => ({ ok: s.ok, error: s.ok ? '' : (s.error || (s.skipped ? 'SMS entegrasyonu kapalı' : (s.response || 'SMS gönderilemedi'))) }));
+    } catch (cause) {
+      sendRes = { ok: false, error: clean(cause?.message) || 'Gönderim hatası' };
+    }
+    await pool.query(
+      `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [token, kind, surveyId, periodId, r.employee_id, name, email, phone, channel, sendRes.ok, clean(sendRes.error).slice(0, 500), req.user.name]);
+    results.push({ name, ok: sendRes.ok, error: sendRes.ok ? '' : sendRes.error });
+  }
+  return { sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, results };
+}
+
+const inviteListRow = r => ({
+  id: r.id, recipient_name: r.recipient_name, recipient_email: r.recipient_email, recipient_phone: r.recipient_phone,
+  channel: r.channel, sent_ok: r.sent_ok, sent_error: r.sent_error, used_at: r.used_at,
+  responded: Boolean(r.used_at), created_at: r.created_at
+});
+
+app.post('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Anket gönderme yetkiniz yok')) return;
+  const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
+  const { channel, recipients, message } = parseInviteBody(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
+  const summary = await dispatchInvites(req, { kind: 'personel', surveyId: survey.id, periodId: null, recipients, channel, message, subject: `İK Merkezi · ${survey.title}` });
+  res.json(summary);
+}));
+
+app.get('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const rows = (await pool.query('select * from survey_invites where survey_id=$1 order by id desc', [Number(req.params.id) || 0])).rows;
+  res.json(rows.map(inviteListRow));
+}));
+
+app.post('/api/eom/invites', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Gönderme yetkiniz yok')) return;
+  const period = await latestPeriod();
+  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Açık bir oylama dönemi yok' });
+  const { channel, recipients, message } = parseInviteBody(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
+  const summary = await dispatchInvites(req, { kind: 'makeitright', surveyId: null, periodId: period.id, recipients, channel, message, subject: 'İK Merkezi · Ayın Personeli oylaması' });
+  res.json(summary);
+}));
+
+app.get('/api/eom/invites', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const period = await latestPeriod();
+  if (!period) return res.json([]);
+  const rows = (await pool.query('select * from survey_invites where period_id=$1 order by id desc', [period.id])).rows;
+  res.json(rows.map(inviteListRow));
+}));
+
+// --- Genel (oturumsuz) davet bağlantısı ---
+function sanitizePublicAnswers(questions, raw) {
+  const a = raw && typeof raw === 'object' ? raw : {};
+  return (Array.isArray(questions) ? questions : []).map((q, i) => {
+    const v = a[i] ?? a[String(i)];
+    const value = q.type === 'multi'
+      ? (Array.isArray(v) ? v.map(x => clean(x).slice(0, 300)).filter(Boolean).slice(0, 50) : [])
+      : clean(v).slice(0, 4000);
+    return { q: q.title, type: q.type, value };
+  });
+}
+
+app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
+  const inv = (await pool.query('select * from survey_invites where token=$1', [clean(req.params.token)])).rows[0];
+  if (!inv) return res.status(404).json({ status: 'invalid' });
+  const out = {
+    status: inv.used_at ? 'used' : 'pending', kind: inv.kind,
+    recipient_name: inv.recipient_name, used_at: inv.used_at, response: inv.response || null
+  };
+  if (inv.kind === 'personel') {
+    const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];
+    if (!s) return res.status(404).json({ status: 'invalid' });
+    if (!s.active && !inv.used_at) out.status = 'closed';
+    out.title = s.title; out.description = s.description; out.questions = s.questions || [];
+  } else {
+    const p = (await pool.query('select * from eom_periods where id=$1', [inv.period_id])).rows[0];
+    if (!p) return res.status(404).json({ status: 'invalid' });
+    if (p.status !== 'open' && !inv.used_at) out.status = 'closed';
+    out.title = 'Ayın Personeli · ' + p.title;
+    out.candidates = (await pool.query('select id,category,name,subtitle,photo from eom_candidates where period_id=$1 order by id', [inv.period_id])).rows
+      .map(c => ({ id: c.id, category: c.category, name: c.name, subtitle: c.subtitle, photo: c.photo || '' }));
+  }
+  res.json(out);
+}));
+
+app.post('/api/public/invite/:token', asyncRoute(async (req, res) => {
+  const inv = (await pool.query('select * from survey_invites where token=$1', [clean(req.params.token)])).rows[0];
+  if (!inv) return res.status(404).json({ error: 'Bağlantı geçersiz' });
+  if (inv.used_at) return res.status(409).json({ error: 'Bu bağlantı zaten kullanıldı; değişiklik yapılamaz.' });
+  const body = req.body || {};
+  if (inv.kind === 'personel') {
+    const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];
+    if (!s) return res.status(404).json({ error: 'Anket bulunamadı' });
+    if (!s.active) return res.status(409).json({ error: 'Anket kapatılmış' });
+    const answers = sanitizePublicAnswers(s.questions, body.answers);
+    const missing = (s.questions || []).some((q, i) => q.required && (Array.isArray(answers[i]?.value) ? !answers[i].value.length : !clean(answers[i]?.value)));
+    if (missing) return res.status(400).json({ error: 'Zorunlu soruları yanıtlayın' });
+    await pool.query('update survey_invites set response=$2::jsonb, used_at=now() where id=$1', [inv.id, JSON.stringify(answers)]);
+  } else {
+    const p = (await pool.query('select * from eom_periods where id=$1', [inv.period_id])).rows[0];
+    if (!p || p.status !== 'open') return res.status(409).json({ error: 'Oylama kapalı' });
+    const picks = body.picks && typeof body.picks === 'object' ? body.picks : {};
+    const cats = (await pool.query('select distinct category from eom_candidates where period_id=$1', [p.id])).rows.map(r => r.category);
+    const chosen = {};
+    for (const cat of cats) {
+      const cid = Number(picks[cat]) || 0;
+      if (!cid) return res.status(400).json({ error: 'Her sütundan bir aday seçmelisiniz' });
+      const ok = (await pool.query('select 1 from eom_candidates where id=$1 and period_id=$2 and category=$3', [cid, p.id, cat])).rowCount;
+      if (!ok) return res.status(400).json({ error: 'Geçersiz aday seçimi' });
+      chosen[cat] = cid;
+    }
+    if (!Object.keys(chosen).length) return res.status(400).json({ error: 'Aday bulunmuyor' });
+    for (const cat of Object.keys(chosen)) {
+      await pool.query('insert into eom_votes(period_id,category,candidate_id,invite_id) values($1,$2,$3,$4) on conflict do nothing', [p.id, cat, chosen[cat], inv.id]);
+    }
+    await pool.query('update survey_invites set response=$2::jsonb, used_at=now() where id=$1', [inv.id, JSON.stringify(chosen)]);
+  }
+  res.json({ ok: true });
 }));
 
 app.use((error, _req, res, _next) => {
