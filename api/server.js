@@ -2227,6 +2227,113 @@ app.delete('/api/surveys/:id', asyncRoute(async (req, res) => {
   res.status(204).end();
 }));
 
+// --- Ayın Personeli (Make It Right) oylaması ------------------------
+const EOM_CATEGORIES = new Set(['idari', 'operasyon']);
+const canManageEom = user => isHRUser(user);
+
+const latestPeriod = async () => (await pool.query('select * from eom_periods order by id desc limit 1')).rows[0] || null;
+
+app.get('/api/eom', asyncRoute(async (req, res) => {
+  const manage = canManageEom(req.user);
+  const period = await latestPeriod();
+  if (!period) return res.json({ period: null, candidates: [], my_votes: {}, can_manage: manage });
+  const candidates = (await pool.query('select * from eom_candidates where period_id=$1 order by id', [period.id])).rows;
+  const mine = (await pool.query('select category,candidate_id from eom_votes where period_id=$1 and voter_id=$2', [period.id, req.user.id])).rows;
+  const myVotes = {};
+  mine.forEach(r => { myVotes[r.category] = Number(r.candidate_id); });
+  let counts = null, voterCount = null;
+  if (manage) {
+    counts = {};
+    (await pool.query('select candidate_id,count(*)::int n from eom_votes where period_id=$1 group by candidate_id', [period.id]))
+      .rows.forEach(r => { counts[r.candidate_id] = r.n; });
+    voterCount = (await pool.query('select count(distinct voter_id)::int n from eom_votes where period_id=$1', [period.id])).rows[0].n;
+  }
+  res.json({
+    period: { id: period.id, title: period.title, status: period.status, created_at: period.created_at, closed_at: period.closed_at },
+    candidates: candidates.map(c => ({
+      id: c.id, category: c.category, employee_id: c.employee_id, name: c.name, subtitle: c.subtitle,
+      votes: counts ? (counts[c.id] || 0) : null
+    })),
+    my_votes: myVotes,
+    voter_count: voterCount,
+    can_manage: manage
+  });
+}));
+
+app.post('/api/eom/periods', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Ayın Personeli dönemi açma yetkiniz yok')) return;
+  const title = clean(req.body?.title).slice(0, 120);
+  if (!title) return res.status(400).json({ error: 'Dönem başlığı zorunludur' });
+  await pool.query("update eom_periods set status='closed', closed_at=now() where status='open'");
+  const row = (await pool.query('insert into eom_periods(title,created_by) values($1,$2) returning *', [title, req.user.name])).rows[0];
+  res.status(201).json({ id: row.id, title: row.title, status: row.status });
+}));
+
+app.patch('/api/eom/periods/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Bu işlem için yetkiniz yok')) return;
+  const existing = (await pool.query('select * from eom_periods where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Dönem bulunamadı' });
+  const status = ['open', 'closed'].includes(clean(req.body?.status)) ? clean(req.body.status) : existing.status;
+  const title = req.body?.title != null ? (clean(req.body.title).slice(0, 120) || existing.title) : existing.title;
+  const row = (await pool.query(
+    "update eom_periods set status=$2, title=$3, closed_at=case when $2='closed' then coalesce(closed_at,now()) else null end where id=$1 returning *",
+    [existing.id, status, title])).rows[0];
+  res.json({ id: row.id, title: row.title, status: row.status });
+}));
+
+app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Aday ekleme yetkiniz yok')) return;
+  const period = await latestPeriod();
+  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Açık bir Ayın Personeli dönemi yok' });
+  const body = req.body || {};
+  const category = EOM_CATEGORIES.has(clean(body.category)) ? clean(body.category) : null;
+  if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
+  let name = clean(body.name).slice(0, 160);
+  let subtitle = clean(body.subtitle).slice(0, 160);
+  const employeeId = Number(body.employee_id) || null;
+  if (employeeId) {
+    const emp = (await pool.query('select name,title,department from employees where id=$1', [employeeId])).rows[0];
+    if (emp) { name = emp.name; if (!subtitle) subtitle = clean(emp.title) || clean(emp.department); }
+  }
+  if (!name) return res.status(400).json({ error: 'Aday adı zorunludur' });
+  const row = (await pool.query(
+    'insert into eom_candidates(period_id,category,employee_id,name,subtitle,created_by) values($1,$2,$3,$4,$5,$6) returning *',
+    [period.id, category, employeeId, name, subtitle, req.user.name])).rows[0];
+  res.status(201).json({ id: row.id, category: row.category, employee_id: row.employee_id, name: row.name, subtitle: row.subtitle, votes: 0 });
+}));
+
+app.delete('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Aday silme yetkiniz yok')) return;
+  const result = await pool.query('delete from eom_candidates where id=$1', [Number(req.params.id) || 0]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Aday bulunamadı' });
+  res.status(204).end();
+}));
+
+app.post('/api/eom/votes', asyncRoute(async (req, res) => {
+  const period = await latestPeriod();
+  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Oylama şu anda kapalı' });
+  const body = req.body || {};
+  const category = EOM_CATEGORIES.has(clean(body.category)) ? clean(body.category) : null;
+  if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
+  const candidateId = Number(body.candidate_id) || 0;
+  const cand = (await pool.query('select id from eom_candidates where id=$1 and period_id=$2 and category=$3', [candidateId, period.id, category])).rows[0];
+  if (!cand) return res.status(404).json({ error: 'Aday bulunamadı' });
+  await pool.query(
+    `insert into eom_votes(period_id,category,candidate_id,voter_id,voter_name) values($1,$2,$3,$4,$5)
+     on conflict (period_id,category,voter_id) do update set candidate_id=excluded.candidate_id, created_at=now()`,
+    [period.id, category, candidateId, req.user.id, req.user.name]);
+  res.status(204).end();
+}));
+
+app.delete('/api/eom/votes', asyncRoute(async (req, res) => {
+  const period = await latestPeriod();
+  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Oylama şu anda kapalı' });
+  const category = EOM_CATEGORIES.has(clean(req.query.category)) ? clean(req.query.category) : null;
+  if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
+  await pool.query('delete from eom_votes where period_id=$1 and category=$2 and voter_id=$3', [period.id, category, req.user.id]);
+  res.status(204).end();
+}));
+
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });

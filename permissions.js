@@ -55,6 +55,9 @@
   window.__ikCan = function (view, action = 'view') {
     if (view === 'security') return canSeeSecurity();
     if (view === 'lostfound') return canSeeLostFound();
+    // Anket modülü: Make It Right (Ayın Personeli) oylaması için tüm giriş yapan
+    // kullanıcılar erişebilir; Personel Anketi sekmesi survey.js içinde İK ile sınırlı.
+    if (view === 'survey') return action === 'view';
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;
     return action === 'view' ? true : Boolean(currentRule[action]);

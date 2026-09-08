@@ -145,3 +145,22 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .sv-pv-scale label{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px}
 .sv-pv-scale-lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px;max-width:360px}
 .sv-preview textarea.input{background:#f7f8fc}
+
+/* Ayın Personeli (Make It Right) oylaması */
+.eom-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.eom-col{border:1px solid var(--line);border-radius:12px;padding:16px;background:#fbfcfe;display:flex;flex-direction:column;gap:12px}
+.eom-col-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-weight:750;font-size:14px}
+.eom-col-head .muted{font-weight:600;font-size:11px}
+.eom-cards{display:flex;flex-direction:column;gap:8px}
+.eom-cand{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff}
+.eom-cand.picked{border-color:var(--blue);background:#f2f5ff;box-shadow:0 0 0 1px var(--blue) inset}
+.eom-cand-main{display:flex;align-items:center;gap:10px;flex:1;cursor:pointer;min-width:0}
+.eom-cand-main input{flex:0 0 auto}
+.eom-cand-body{min-width:0}
+.eom-cand-body strong{display:block;font-size:13px}
+.eom-cand-body small{display:block;margin-top:2px}
+.eom-votes{flex:0 0 auto;background:#edf0ff;color:var(--blue);font-weight:700;font-size:12px;padding:3px 9px;border-radius:20px}
+.eom-cand .btn.ghost{flex:0 0 auto;padding:4px 6px}
+.eom-col .eom-add{align-self:flex-start}
+.eom-col .eom-clear{align-self:flex-start;color:var(--muted)}
+@media(max-width:760px){.eom-grid{grid-template-columns:1fr}}
