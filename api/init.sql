@@ -200,6 +200,18 @@ create table if not exists sms_log(
 );
 create index if not exists sms_log_created_idx on sms_log(created_at desc);
 
+create table if not exists hms_records(
+  id bigserial primary key,
+  module text not null,
+  department text not null default '',
+  data jsonb not null default '{}'::jsonb,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists hms_records_module_idx on hms_records(module, id desc);
+create index if not exists hms_records_department_idx on hms_records(module, department);
+
 create table if not exists auth_sessions(
   token_hash text primary key,
   user_id bigint not null references app_users(id) on delete cascade,
