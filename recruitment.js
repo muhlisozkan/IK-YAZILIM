@@ -16,7 +16,7 @@
 
   function render(){
     document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='recruitment'));
-    $('#page-title').textContent='İşe Alım ve Aday Takip';
+    $('#page-title').textContent='CV Yönetimi';
     const mgr=isManager();
     const rows=candidates.map(c=>{
       const badge=c.status==='Olumsuz'?'red':c.status==='İşe alındı'?'green':'orange';
@@ -28,7 +28,7 @@
     }).join('');
     const head=`<tr><th>ADAY</th><th>POZİSYON / DEPARTMAN</th><th>DURUM</th><th>GÖRÜŞME / CV</th>${mgr?'<th>İK ONAYI</th>':''}<th></th></tr>`;
     const intro=mgr?'Aday ekleyin, departman atayın ve departmana açın.':'Departmanınız için İK tarafından onaylanmış adaylar. Durum ve notu güncelleyebilirsiniz.';
-    $('#app').innerHTML=`<div class="section-title"><div><h2>İşe alım ve aday takip</h2><span class="muted">${intro}</span></div>${mgr?'<button class="btn" id="add-candidate">+ Aday ekle</button>':''}</div><div class="card"><div class="card-head"><h2>Adaylar</h2><span class="muted">${candidates.length} kayıt</span></div><div style="overflow:auto"><table><thead>${head}</thead><tbody>${rows||`<tr><td colspan="${mgr?6:5}" class="empty">Henüz aday kaydı yok</td></tr>`}</tbody></table></div></div>`;
+    $('#app').innerHTML=`<div class="section-title"><div><h2>CV Yönetimi</h2><span class="muted">${intro}</span></div>${mgr?'<button class="btn" id="add-candidate">+ Aday ekle</button>':''}</div><div class="card"><div class="card-head"><h2>Adaylar</h2><span class="muted">${candidates.length} kayıt</span></div><div style="overflow:auto"><table><thead>${head}</thead><tbody>${rows||`<tr><td colspan="${mgr?6:5}" class="empty">Henüz aday kaydı yok</td></tr>`}</tbody></table></div></div>`;
     if(mgr&&$('#add-candidate'))$('#add-candidate').onclick=()=>editModal();
     document.querySelectorAll('[data-cand-edit]').forEach(b=>b.onclick=()=>editModal(candidates.find(c=>String(c.id)===b.dataset.candEdit)));
     document.querySelectorAll('[data-cand-approve]').forEach(b=>b.onclick=()=>toggleApprove(candidates.find(c=>String(c.id)===b.dataset.candApprove)));
