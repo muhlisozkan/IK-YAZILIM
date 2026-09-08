@@ -260,9 +260,11 @@ create table if not exists leave_usage_records(
   official_holiday_days numeric(5,1) not null default 0,
   used_days numeric(6,2) not null default 0,
   source text not null default 'Çizelge',
+  leave_request_id bigint,
   created_at timestamptz not null default now()
 );
 create index if not exists leave_usage_records_employee_idx on leave_usage_records(employee_id, start_date);
+create unique index if not exists leave_usage_records_request_idx on leave_usage_records(leave_request_id) where leave_request_id is not null;
 
 create table if not exists leave_requests(
   id bigserial primary key,

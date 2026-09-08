@@ -64,7 +64,7 @@ function renderAnnualDashboard(data){
       <article class="card dashboard-chart"><div class="card-head"><div><h2>Departman izin özeti</h2><span class="muted">${leaveEsc(annualDepartment||'Tüm departmanlar')} · ${rows.length} çalışan</span></div></div><div class="chart-body"><div class="large-donut" style="background:${chartTotal?`conic-gradient(#e55261 0 ${usedPercent}%,#18a874 ${usedPercent}% 100%)`:'conic-gradient(#e9edf4 0 100%)'}"><div><strong>${leaveNumber(positiveRemaining)}</strong><span>kalan gün</span></div></div><ul class="chart-legend"><li><span class="legend-color" style="background:#4967f4"></span><span>Toplam hak</span><strong>${leaveNumber(totals.entitled)}</strong></li><li><span class="legend-color" style="background:#e55261"></span><span>Kullanılan</span><strong>${leaveNumber(totals.used)}</strong></li><li><span class="legend-color" style="background:#18a874"></span><span>Kalan</span><strong>${leaveNumber(totals.remaining)}</strong></li></ul></div></article>
       <article class="card"><div class="card-head"><div><h2>Kalan izne göre çalışanlar</h2><span class="muted">En çok izni kalandan aşağı doğru</span></div></div><div class="leave-bars">${bars||'<div class="empty">Gösterilecek çalışan yok</div>'}</div></article>
     </div>
-    <div class="card" style="margin-top:18px"><div class="card-head"><div><h2>Çalışan yıllık izinleri</h2><span class="muted">Toplam hak edilen − kullanılan (çizelge + puantajdaki Y günleri)</span></div></div><div class="annual-leave-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>TOPLAM HAK EDİLEN</th><th>BU YIL HAK EDİLEN</th><th>KULLANILAN</th><th>KALAN</th><th></th></tr></thead><tbody>${tableRows||'<tr><td colspan="7" class="empty">Gösterilecek çalışan yok</td></tr>'}</tbody></table></div></div>`;
+    <div class="card" style="margin-top:18px"><div class="card-head"><div><h2>Çalışan yıllık izinleri</h2><span class="muted">Kalan = Toplam hak − kullanılan (çizelge + puantajdaki Y günleri + onaylı yıllık izin talepleri)</span></div></div><div class="annual-leave-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>TOPLAM HAK EDİLEN</th><th>BU YIL HAK EDİLEN</th><th>KULLANILAN</th><th>KALAN</th><th></th></tr></thead><tbody>${tableRows||'<tr><td colspan="7" class="empty">Gösterilecek çalışan yok</td></tr>'}</tbody></table></div></div>`;
   bindLeaveTabs();
   $('#annual-year').onchange=event=>{annualYear=Number(event.target.value);renderAnnualLeave()};
   $('#annual-department').onchange=event=>{annualDepartment=event.target.value;renderAnnualLeave()};
@@ -79,8 +79,8 @@ async function showLeaveUsage(employeeId,row){
   try{
     const data=await leaveApi(`/api/annual-leave-balances/${employeeId}/usage`);
     const recs=data.records||[];
-    const body=recs.map(r=>`<tr><td>${leaveDate(r.start_date)||'—'}</td><td>${leaveDate(r.end_date)||'—'}</td><td style="text-align:right">${leaveNumber(r.week_rest_days)}</td><td style="text-align:right">${leaveNumber(r.official_holiday_days)}</td><td style="text-align:right"><strong>${leaveNumber(r.used_days)}</strong></td></tr>`).join('');
-    const html=`<div class="formula" style="margin-bottom:12px">Yıllık İzin Takip Çizelgesi · İzin Kayıt · ${recs.length} kayıt · toplam <strong>${leaveNumber(data.total_used)}</strong> gün</div><div style="max-height:52vh;overflow:auto"><table><thead><tr><th>BAŞLAMA</th><th>BİTİŞ</th><th style="text-align:right">HAFTA T.</th><th style="text-align:right">RESMİ T.</th><th style="text-align:right">KULLANILAN</th></tr></thead><tbody>${body||'<tr><td colspan="5" class="empty">Bu çalışan için çizelgede izin kaydı bulunmuyor</td></tr>'}</tbody></table></div>`;
+    const body=recs.map(r=>`<tr><td>${leaveDate(r.start_date)||'—'}</td><td>${leaveDate(r.end_date)||'—'}</td><td>${leaveEsc(r.source||'Çizelge')}</td><td style="text-align:right">${leaveNumber(r.week_rest_days)}</td><td style="text-align:right">${leaveNumber(r.official_holiday_days)}</td><td style="text-align:right"><strong>${leaveNumber(r.used_days)}</strong></td></tr>`).join('');
+    const html=`<div class="formula" style="margin-bottom:12px">İzin kullanım geçmişi · ${recs.length} kayıt · toplam <strong>${leaveNumber(data.total_used)}</strong> gün<br><small>Kaynak: Çizelge = ilk aktarım · İzin Talebi = onaylanmış izin talebi</small></div><div style="max-height:52vh;overflow:auto"><table><thead><tr><th>BAŞLAMA</th><th>BİTİŞ</th><th>KAYNAK</th><th style="text-align:right">HAFTA T.</th><th style="text-align:right">RESMİ T.</th><th style="text-align:right">KULLANILAN</th></tr></thead><tbody>${body||'<tr><td colspan="6" class="empty">Bu çalışan için izin kaydı bulunmuyor</td></tr>'}</tbody></table></div>`;
     const slot=document.querySelector('#usage-slot');if(slot)slot.outerHTML=html;
   }catch(error){
     const slot=document.querySelector('#usage-slot');if(slot)slot.textContent=error.message;
@@ -122,9 +122,28 @@ function leaveModal(){
     if(!employee||!start||!end||end<start)return toast('Çalışan ve tarihleri kontrol edin');
     if(Math.round((new Date(end)-new Date(start))/86400000)>40)return toast('Bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir');
     const days=businessDays(start,end);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
-    try{const created=await leaveApi('/api/leaves',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:employee.id,leave_type:type,start_date:start,end_date:end,days})});state.leaves.unshift({...created,employee:created.employee_name,type:created.leave_type,start:leaveDate(created.start_date),end:leaveDate(created.end_date)});closeModal();renderLeaveRequests();toast(`İzin talebi ${created.current_approver} onayına gönderildi`)}catch(error){toast(error.message)}
+    if(type==='Yıllık izin'){
+      const bal=await annualBalanceFor(employee.id,Number(start.slice(0,4)));
+      if(bal&&days>bal.available+0.01)return toast(`Yıllık izin bakiyesi yetersiz. Kalan kullanılabilir bakiye: ${leaveNumber(bal.available)} gün (talep: ${days} gün).`);
+    }
+    try{const created=await leaveApi('/api/leaves',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:employee.id,leave_type:type,start_date:start,end_date:end,days})});state.leaves.unshift({...created,employee:created.employee_name,type:created.leave_type,start:leaveDate(created.start_date),end:leaveDate(created.end_date)});__annualBalanceCache={};closeModal();renderLeaveRequests();toast(`İzin talebi ${created.current_approver} onayına gönderildi`)}catch(error){toast(error.message)}
   });
-  const preview=()=>{const start=$('#l-start').value,end=$('#l-end').value;if(start&&end&&end>=start)$('#leave-preview').innerHTML=`Hesaplanan izin süresi: <strong>${businessDays(start,end)} çalışma günü</strong>`};
+  const preview=async()=>{
+    const start=$('#l-start').value,end=$('#l-end').value,type=$('#l-type').value,empId=$('#l-employee').value;
+    const box=$('#leave-preview');if(!box)return;
+    if(!(start&&end&&end>=start)){box.innerHTML='Tarihleri seçtiğinizde çalışma günü hesaplanır.';return;}
+    const days=businessDays(start,end);
+    let html=`Hesaplanan izin süresi: <strong>${days} çalışma günü</strong>`;
+    if(type==='Yıllık izin'&&empId){
+      const bal=await annualBalanceFor(empId,Number(start.slice(0,4)));
+      if(bal){
+        const yeter=days<=bal.available+0.01;
+        html+=`<br>Kullanılabilir yıllık izin bakiyesi: <strong>${leaveNumber(bal.available)} gün</strong>`;
+        if(!yeter)html+=`<br><span class="danger-text"><strong>Bakiye yetersiz</strong> — bu talep bakiyeyi ${leaveNumber(days-bal.available)} gün aşıyor.</span>`;
+      }
+    }
+    box.innerHTML=html;
+  };
   const applyEndLimits=()=>{
     const start=$('#l-start').value,end=$('#l-end');
     if(!start){end.removeAttribute('min');end.removeAttribute('max');return;}
@@ -135,14 +154,25 @@ function leaveModal(){
   };
   $('#l-start').onchange=()=>{applyEndLimits();preview();};
   $('#l-end').onchange=preview;$('#l-type').onchange=preview;
+  if($('#l-employee'))$('#l-employee').onchange=preview;
   applyEndLimits();
+}
+
+let __annualBalanceCache={};
+async function annualBalanceFor(employeeId,year){
+  if(!__annualBalanceCache[year]){
+    __annualBalanceCache[year]=leaveApi('/api/annual-leave-balances?year='+year).then(d=>d.rows||[]).catch(()=>[]);
+  }
+  const rows=await __annualBalanceCache[year];
+  const r=rows.find(x=>String(x.employee_id)===String(employeeId));
+  return r?{available:Number(r.available_days),remaining:Number(r.remaining_days),used:Number(r.used_days)}:null;
 }
 
 async function decideLeave(id,decision){
   const item=state.leaves.find(row=>String(row.id)===String(id));if(!item)return;
   let reason='';if(decision==='reject'){reason=prompt('Ret nedenini yazın:')||'';if(!reason)return toast('Ret nedeni zorunludur')}
   const escalate=decision==='approve'&&Boolean(document.querySelector(`[data-gm-escalate="${id}"]`)?.checked);
-  try{Object.assign(item,await leaveApi(`/api/leaves/${id}/decision`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,escalate})}));renderLeaveRequests();toast(decision==='approve'?(item.status==='Onaylandı'?'İzin tamamen onaylandı':`Talep ${item.current_approver} onayına gönderildi`):'İzin reddedildi')}catch(error){toast(error.message)}
+  try{Object.assign(item,await leaveApi(`/api/leaves/${id}/decision`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision,reason,escalate})}));__annualBalanceCache={};renderLeaveRequests();toast(decision==='approve'?(item.status==='Onaylandı'?'İzin tamamen onaylandı':`Talep ${item.current_approver} onayına gönderildi`):'İzin reddedildi')}catch(error){toast(error.message)}
 }
 
 async function deleteLeave(id){if(!confirm('İzin talebini silmek istediğinize emin misiniz?'))return;try{await leaveApi(`/api/leaves/${id}`,{method:'DELETE'});state.leaves=state.leaves.filter(item=>String(item.id)!==String(id));renderLeaveRequests();toast('İzin talebi silindi')}catch(error){toast(error.message)}}

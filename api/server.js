@@ -1434,6 +1434,16 @@ async function decideApproval(table, id, user, decision, reason, pendingStatus, 
         [updated.status === 'Onaylandı' ? 'approved' : updated.status === 'Reddedildi' ? 'rejected' : approvalStageKey(updated.current_approver), id]);
       result = await client.query('select * from advances where id=$1', [id]);
     }
+    // Yıllık izin onay süreci tamamlanınca izin geçmişine işlenir; bakiye
+    // hesabı onaylı yıllık izin taleplerini kullanılan gün olarak sayar.
+    if (table === 'leave_requests' && result.rows[0].status === 'Onaylandı' && clean(result.rows[0].leave_type) === 'Yıllık izin') {
+      const lr = result.rows[0];
+      await client.query(`
+        insert into leave_usage_records(employee_id,start_date,end_date,used_days,source,leave_request_id)
+        select $1,$2,$3,$4,'İzin Talebi',$5
+        where not exists (select 1 from leave_usage_records where leave_request_id=$5)`,
+        [lr.employee_id, lr.start_date, lr.end_date, Number(lr.days || 0), lr.id]);
+    }
     await client.query('commit');
     return result.rows[0];
   } catch (error) {
@@ -1530,6 +1540,56 @@ async function ensureAnnualLeaveEntitlements(year, employees, actor='Sistem') {
     where annual_leave_entitlements.manual_override=false`, [year,JSON.stringify(allocations),actor]);
 }
 
+// Bir grup çalışan için yıllık izin bakiyesi satırları.
+// used_days = çizelge (manual) + puantajdaki Y günleri + onaylı yıllık izin talepleri
+// available_days = remaining_days - bekleyen yıllık izin talepleri (yeni talep için)
+async function annualBalanceRows(employees, year) {
+  const ids = employees.map(e => Number(e.id));
+  if (!ids.length) return [];
+  const entitlementRows = (await pool.query(
+    'select * from annual_leave_entitlements where entitlement_year=$1 and employee_id=any($2::int[])', [year, ids])).rows;
+  const attendanceRows = (await pool.query(`
+    select employee_id, count(distinct work_date)::numeric as used_days
+    from attendance_entries
+    where employee_id=any($1::int[]) and work_type='normal' and upper(trim(value))='Y'
+      and work_date>=make_date($2,1,1) and work_date<make_date($2+1,1,1)
+      and work_date<=(now() at time zone 'Europe/Istanbul')::date
+    group by employee_id`, [ids, year])).rows;
+  const leaveRows = (await pool.query(`
+    select employee_id,
+      sum(case when status='Onaylandı' then days else 0 end)::numeric as approved_days,
+      sum(case when status='Bekliyor' then days else 0 end)::numeric as pending_days
+    from leave_requests
+    where employee_id=any($1::int[]) and leave_type='Yıllık izin'
+      and extract(year from start_date)=$2
+    group by employee_id`, [ids, year])).rows;
+  const entitlementMap = new Map(entitlementRows.map(r => [Number(r.employee_id), r]));
+  const attendanceMap = new Map(attendanceRows.map(r => [Number(r.employee_id), Number(r.used_days)]));
+  const leaveMap = new Map(leaveRows.map(r => [Number(r.employee_id), r]));
+  return employees.map(employee => {
+    const record = entitlementMap.get(Number(employee.id)) || {};
+    const entitled = Number(record.entitled_days || 0), adjustment = Number(record.manual_adjustment || 0);
+    const total = entitled + adjustment;
+    const manualUsed = Number(record.manual_used_days || 0);
+    const attendanceUsed = attendanceMap.get(Number(employee.id)) || 0;
+    const lr = leaveMap.get(Number(employee.id)) || {};
+    const approvedUsed = Number(lr.approved_days || 0), pendingDays = Number(lr.pending_days || 0);
+    const used = manualUsed + attendanceUsed + approvedUsed;
+    const remaining = total - used;
+    const currentYearDays = record.current_year_days != null
+      ? Number(record.current_year_days)
+      : currentYearLeaveDays(employee.leave_entitlement_start_date || employee.start_date, employee.birth_date, year);
+    return {
+      employee_id: employee.id, employee_name: employee.name, department: employee.department, year,
+      entitled_days: entitled, manual_adjustment: adjustment, total_days: total, current_year_days: currentYearDays,
+      manual_used_days: manualUsed, attendance_used_days: attendanceUsed, approved_used_days: approvedUsed,
+      used_days: used, remaining_days: remaining, pending_days: pendingDays, available_days: remaining - pendingDays,
+      manual_override: Boolean(record.manual_override), adjustment_note: record.adjustment_note || '',
+      updated_by: record.updated_by || null, updated_at: record.updated_at || null
+    };
+  });
+}
+
 app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
   const year=Number(req.query.year || new Date().getFullYear());
   if (!Number.isInteger(year) || year<2000 || year>2100) return res.status(400).json({error:'Geçerli bir izin yılı seçin'});
@@ -1540,34 +1600,8 @@ app.get('/api/annual-leave-balances', asyncRoute(async (req,res)=>{
   const employees=requestedDepartment?accessible.filter(employee=>employee.department===requestedDepartment):accessible;
   const ids=employees.map(employee=>Number(employee.id));
   if (!ids.length) return res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals:{entitled:0,used:0,remaining:0},rows:[]});
-  const entitlementRows=(await pool.query(`select * from annual_leave_entitlements where entitlement_year=$1 and employee_id=any($2::int[])`,[year,ids])).rows;
-  const usedRows=(await pool.query(`
-    select employee_id,count(distinct work_date)::numeric as used_days
-    from attendance_entries
-    where employee_id=any($1::int[])
-      and work_type='normal'
-      and upper(trim(value))='Y'
-      and work_date>=make_date($2,1,1)
-      and work_date<make_date($2+1,1,1)
-      and work_date<=(now() at time zone 'Europe/Istanbul')::date
-    group by employee_id`,[ids,year])).rows;
-  const entitlementMap=new Map(entitlementRows.map(row=>[Number(row.employee_id),row]));
-  const usedMap=new Map(usedRows.map(row=>[Number(row.employee_id),Number(row.used_days)]));
-  const rows=employees.map(employee=>{
-    const record=entitlementMap.get(Number(employee.id))||{};
-    const entitled=Number(record.entitled_days||0),adjustment=Number(record.manual_adjustment||0);
-    const manualUsed=Number(record.manual_used_days||0),attendanceUsed=usedMap.get(Number(employee.id))||0;
-    const used=manualUsed+attendanceUsed;
-    const currentYearDays=record.current_year_days!=null
-      ? Number(record.current_year_days)
-      : currentYearLeaveDays(employee.leave_entitlement_start_date||employee.start_date,employee.birth_date,year);
-    return {employee_id:employee.id,employee_name:employee.name,department:employee.department,year,
-      entitled_days:entitled,manual_adjustment:adjustment,total_days:entitled+adjustment,
-      current_year_days:currentYearDays,
-      manual_used_days:manualUsed,attendance_used_days:attendanceUsed,used_days:used,
-      remaining_days:entitled+adjustment-used,manual_override:Boolean(record.manual_override),
-      adjustment_note:record.adjustment_note||'',updated_by:record.updated_by||null,updated_at:record.updated_at||null};
-  }).sort((a,b)=>b.remaining_days-a.remaining_days||a.employee_name.localeCompare(b.employee_name,'tr'));
+  const rows=(await annualBalanceRows(employees,year))
+    .sort((a,b)=>b.remaining_days-a.remaining_days||a.employee_name.localeCompare(b.employee_name,'tr'));
   const totals=rows.reduce((sum,row)=>({entitled:sum.entitled+row.total_days,used:sum.used+row.used_days,remaining:sum.remaining+row.remaining_days}),{entitled:0,used:0,remaining:0});
   res.json({year,department:requestedDepartment,departments,can_edit:annualLeaveEditor(req.user),totals,rows});
 }));
@@ -1631,11 +1665,22 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
     return res.status(403).json({ error: 'Yalnızca kendi adınıza izin talebi oluşturabilirsiniz' });
   }
   const person = employee.rows[0];
+  const leaveType = clean(body.leave_type) || 'Yıllık izin';
+  if (leaveType === 'Yıllık izin') {
+    const balYear = Number(String(body.start_date).slice(0, 4));
+    const balance = (await annualBalanceRows([person], balYear))[0];
+    const available = balance ? balance.available_days : 0;
+    if (Number(body.days) > available + 0.01) {
+      return res.status(400).json({
+        error: `Yıllık izin bakiyesi yetersiz. ${balYear} için kalan kullanılabilir bakiye: ${available.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} gün (talep: ${body.days} gün).`
+      });
+    }
+  }
   const route = await approvalRouteFor('leave', person.department);
   const result = await pool.query(`insert into leave_requests(employee_id,employee_name,department,requester_user_id,requester_user_name,
     leave_type,start_date,end_date,days,status,approval_route,approval_step,current_approver)
     values($1,$2,$3,$4,$5,$6,$7,$8,$9,'Bekliyor',$10::jsonb,0,$11) returning *`,
-  [person.id, person.name, person.department, req.user.id, req.user.name, clean(body.leave_type) || 'Yıllık izin', body.start_date, body.end_date, Number(body.days), JSON.stringify(route), route[0]]);
+  [person.id, person.name, person.department, req.user.id, req.user.name, leaveType, body.start_date, body.end_date, Number(body.days), JSON.stringify(route), route[0]]);
   res.status(201).json(decorateApproval(result.rows[0], req.user, 'Bekliyor'));
   notifyApprovalSms(result.rows[0], 'leave_requests');
 }));
