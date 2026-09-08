@@ -696,12 +696,25 @@ function smsCredentials(settings) {
   if (!settings?.credentials_encrypted) return {};
   try { return JSON.parse(decryptSmtpSecret(settings.credentials_encrypted)) || {}; } catch { return {}; }
 }
+// 0090..., 90..., 0... -> 5xxxxxxxxx (Türk GSM, ulusal biçim)
+function normalizeGsm(phone) {
+  let d = String(phone || '').replace(/\D/g, '');
+  if (d.startsWith('0090')) d = d.slice(4);
+  else if (d.startsWith('90') && d.length === 12) d = d.slice(2);
+  else if (d.startsWith('0') && d.length === 11) d = d.slice(1);
+  return d;
+}
 async function sendSms(phone, message, context) {
   const settings = await readSmsSettings();
   if (!settings || !settings.enabled) return { ok: false, skipped: true };
-  const target = phoneNumber(phone);
-  if (!target) return { ok: false, error: 'Geçersiz telefon' };
-  const vars = { ...smsCredentials(settings), phone: target, message: String(message || ''), sender: clean(settings.sender) };
+  const target = normalizeGsm(phone);
+  if (!/^5\d{9}$/.test(target)) return { ok: false, error: 'Geçersiz telefon' };
+  const cred = smsCredentials(settings);
+  const basicauth = (cred.username && cred.password)
+    ? Buffer.from(`${cred.username}:${cred.password}`).toString('base64') : '';
+  const now = new Date();
+  const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+  const vars = { ...cred, basicauth, ts, phone: target, phone90: '90' + target, message: String(message || ''), sender: clean(settings.sender) };
   const method = (settings.http_method || 'POST').toUpperCase();
   const headers = {};
   clean(settings.extra_headers).split(/\r?\n/).map(line => line.trim()).filter(Boolean).forEach(line => {
@@ -2383,16 +2396,20 @@ function salutationName(name) {
   return [...parts.map(titleTr), last.toLocaleUpperCase('tr-TR')].join(' ');
 }
 
-function composeInviteMessage(message, name, link, greet = true) {
+function composeInviteMessage(message, name, link, greet = true, channel = 'email') {
   const salut = salutationName(name);
   const m = clean(message);
-  let body;
-  if (!m) {
-    body = `İK Merkezi olarak görüşünüz bizim için değerli. Aşağıdaki bağlantıdan yanıtınızı paylaşabilirsiniz:\n${link}\n(Bağlantı size özeldir ve yalnızca bir kez kullanılabilir.)`;
-  } else {
+  if (m) {
     const filled = m.replace(/\{ad\}/g, salut || name).replace(/\{link\}/g, link);
-    body = /\{link\}/.test(m) ? filled : `${filled}\n${link}`;
+    const body = /\{link\}/.test(m) ? filled : `${filled}\n${link}`;
+    if (!(greet && salut)) return body;
+    return channel === 'sms' ? `Sayın ${salut}, ${body}` : `Sayın ${salut},\n\n${body}`;
   }
+  if (channel === 'sms') {
+    const lead = (greet && salut) ? `Sayın ${salut}, ` : '';
+    return `${lead}İK Merkezi anketimizi yanıtlamak için (size özel, tek kullanımlık bağlantı): ${link}`;
+  }
+  const body = `İK Merkezi olarak görüşünüz bizim için değerli. Aşağıdaki bağlantıdan yanıtınızı paylaşabilirsiniz:\n${link}\n(Bağlantı size özeldir ve yalnızca bir kez kullanılabilir.)`;
   return (greet && salut) ? `Sayın ${salut},\n\n${body}` : body;
 }
 
@@ -2434,7 +2451,7 @@ async function dispatchInvites(req, { kind, surveyId, periodId, recipients, chan
     if (channel === 'sms' && !phone) { results.push({ name, ok: false, error: 'Geçersiz telefon numarası' }); continue; }
     const token = newInviteToken();
     const link = inviteLink(req, token);
-    const text = composeInviteMessage(message, name, link, greet);
+    const text = composeInviteMessage(message, name, link, greet, channel);
     let sendRes;
     try {
       sendRes = channel === 'email'

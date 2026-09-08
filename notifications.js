@@ -264,7 +264,7 @@
     card.id='sms-settings-card';card.className='card';card.style.marginTop='18px';
     const keyHint=s.credential_keys?.length?`Kayıtlı kimlik alanları: <strong>${s.credential_keys.map(esc).join(', ')}</strong> · değiştirmek için yeniden yazın`:'Örn: <code>usercode=1234</code> ve alt satıra <code>password=••••</code>';
     card.innerHTML=`<div class="card-head"><div><h2>SMS Entegrasyonu</h2><span class="muted">Sağlayıcı bağımsız HTTP SMS API'si; onay bildirimlerini SMS ile de gönderin</span></div><span class="badge ${s.configured?(s.enabled?'green':'orange'):'orange'}">${s.configured?(s.enabled?'Etkin':'Kapalı'):'Yapılandırılmadı'}</span></div>
-      <div class="formula">Şablonlarda kullanılabilir yer tutucular: <code>{phone}</code> <code>{message}</code> <code>{sender}</code> ve kimlik alanlarınız (örn. <code>{usercode}</code>). Değerler içerik tipine göre otomatik JSON/URL kodlanır.</div>
+      <div class="formula">Şablonlarda kullanılabilir yer tutucular: <code>{phone}</code> (5xxxxxxxxx) <code>{phone90}</code> <code>{message}</code> <code>{sender}</code> <code>{ts}</code> (tarih-saat) <code>{basicauth}</code> (kimlik alanlarından base64) ve kimlik alanlarınız (örn. <code>{usercode}</code>). Değerler içerik tipine göre otomatik JSON/URL kodlanır.</div>
       <div class="form-grid" style="margin-top:16px">
         <div class="field"><label>Sağlayıcı adı</label><input class="input" id="sms-provider" value="${esc(s.provider_name)}" placeholder="NetGSM / Twilio / …"></div>
         <div class="field"><label>Gönderimi etkinleştir</label><select class="select" id="sms-enabled"><option value="true" ${s.enabled?'selected':''}>Etkin</option><option value="false" ${!s.enabled?'selected':''}>Kapalı</option></select></div>
@@ -279,10 +279,21 @@
         <div class="field"><label>Onay bildirimlerini SMS gönder</label><select class="select" id="sms-notify"><option value="true" ${s.notify_approvals?'selected':''}>Evet</option><option value="false" ${!s.notify_approvals?'selected':''}>Hayır</option></select></div>
         <div class="field"><label>Test numarası</label><input class="input" id="sms-test-recipient" type="tel" value="${esc(window.__ikCurrentUser?.()?.phone||'')}" placeholder="5xxxxxxxxx"></div>
       </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn secondary" id="sms-test">Test SMS gönder</button><button class="btn" id="sms-save">Ayarları kaydet</button></div>`;
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn ghost" id="sms-preset-tm">Teknomart ön ayarı</button><button class="btn secondary" id="sms-test">Test SMS gönder</button><button class="btn" id="sms-save">Ayarları kaydet</button></div>`;
     $('#app').appendChild(card);
     $('#sms-save').onclick=saveSmsSettings;
     $('#sms-test').onclick=testSmsSettings;
+    $('#sms-preset-tm').onclick=()=>{
+      $('#sms-provider').value='Teknomart';
+      $('#sms-url').value='https://app.teknomart.com.tr:9588/sms/create';
+      $('#sms-method').value='POST';
+      $('#sms-ctype').value='application/json';
+      $('#sms-success').value='pkgID';
+      $('#sms-headers').value='Authorization: Basic {basicauth}';
+      $('#sms-body').value='{"type":1,"sendingType":1,"title":"IK Merkezi {ts}","content":"{message}","numbers":["{phone}"],"encoding":1,"sender":"{sender}","commercial":false,"skipAhsQuery":true,"recipientType":0}';
+      $('#sms-creds').value='username=KULLANICI_ADI\npassword=API_SIFRESI';
+      toast('Teknomart alanları dolduruldu — kimlik alanları ve gönderici başlığını yazıp kaydedin');
+    };
   }
   async function saveSmsSettings(){
     const button=$('#sms-save');button.disabled=true;
