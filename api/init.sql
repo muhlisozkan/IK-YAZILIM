@@ -212,6 +212,19 @@ create table if not exists hms_records(
 create index if not exists hms_records_module_idx on hms_records(module, id desc);
 create index if not exists hms_records_department_idx on hms_records(module, department);
 
+create table if not exists survey_templates(
+  id bigserial primary key,
+  kind text not null default 'personel',
+  title text not null,
+  description text not null default '',
+  questions jsonb not null default '[]'::jsonb,
+  active boolean not null default true,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists survey_templates_kind_idx on survey_templates(kind, id desc);
+
 create table if not exists auth_sessions(
   token_hash text primary key,
   user_id bigint not null references app_users(id) on delete cascade,

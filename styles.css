@@ -125,3 +125,13 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .wk-chip.holiday{background:#fff5df;border-color:#f0d9a8;color:#ae6b00}
 
 .btn:disabled,.btn[disabled]{opacity:.5;cursor:not-allowed}
+
+/* Anket şablonu oluşturucu */
+.modal.survey-modal .modal-box{width:min(780px,100%)}
+#survey-builder{max-height:64vh;overflow:auto;padding-right:4px}
+.sv-qcard{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:12px;background:#fbfcfe}
+.sv-qhead{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.sv-qhead .btn.ghost{padding:4px 6px}
+.sv-options{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.sv-opt{display:flex;gap:6px;align-items:center}
+.sv-opt .input{min-width:0}

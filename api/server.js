@@ -2150,6 +2150,83 @@ async function seedHmsIfEmpty() {
   console.log(`HMS örnek verisi yüklendi: ${seed.length} kayıt`);
 }
 
+// --- Anket şablonları -------------------------------------------------
+const SURVEY_KINDS = new Set(['personel', 'makeitright']);
+const SURVEY_QTYPES = new Set(['text', 'single', 'multi', 'scale', 'yesno']);
+const canManageSurveys = user => isHRUser(user);
+function sanitizeSurveyQuestions(input) {
+  if (!Array.isArray(input)) return [];
+  return input.slice(0, 100).map(raw => {
+    const q = raw && typeof raw === 'object' ? raw : {};
+    const type = SURVEY_QTYPES.has(q.type) ? q.type : 'text';
+    const out = {
+      title: clean(q.title).slice(0, 300),
+      detail: clean(q.detail).slice(0, 1000),
+      type,
+      required: Boolean(q.required)
+    };
+    if (type === 'single' || type === 'multi') {
+      out.scored = Boolean(q.scored);
+      out.options = (Array.isArray(q.options) ? q.options : []).slice(0, 30).map(o => {
+        const opt = o && typeof o === 'object' ? o : { label: o };
+        return { label: clean(opt.label).slice(0, 200), score: out.scored ? Number(opt.score) || 0 : 0 };
+      }).filter(o => o.label);
+    }
+    if (type === 'scale') {
+      out.scale_min = Number.isFinite(Number(q.scale_min)) ? Math.round(Number(q.scale_min)) : 1;
+      out.scale_max = Number.isFinite(Number(q.scale_max)) ? Math.round(Number(q.scale_max)) : 5;
+      if (out.scale_max <= out.scale_min) out.scale_max = out.scale_min + 4;
+      out.scale_min_label = clean(q.scale_min_label).slice(0, 60);
+      out.scale_max_label = clean(q.scale_max_label).slice(0, 60);
+    }
+    return out;
+  }).filter(q => q.title);
+}
+const surveyRow = r => ({ id: r.id, kind: r.kind, title: r.title, description: r.description, questions: r.questions, active: r.active, created_by: r.created_by, updated_at: r.updated_at });
+
+app.get('/api/surveys', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Anketleri görüntüleme yetkiniz yok')) return;
+  const kind = SURVEY_KINDS.has(clean(req.query.kind)) ? clean(req.query.kind) : 'personel';
+  const rows = (await pool.query('select * from survey_templates where kind=$1 order by id desc', [kind])).rows;
+  res.json(rows.map(surveyRow));
+}));
+
+app.post('/api/surveys', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Anket oluşturma yetkiniz yok')) return;
+  const body = req.body || {};
+  const kind = SURVEY_KINDS.has(clean(body.kind)) ? clean(body.kind) : 'personel';
+  const title = clean(body.title).slice(0, 200);
+  if (!title) return res.status(400).json({ error: 'Anket başlığı zorunludur' });
+  const questions = sanitizeSurveyQuestions(body.questions);
+  const row = (await pool.query(
+    `insert into survey_templates(kind,title,description,questions,active,created_by)
+     values($1,$2,$3,$4::jsonb,$5,$6) returning *`,
+    [kind, title, clean(body.description).slice(0, 2000), JSON.stringify(questions), body.active !== false, req.user.name])).rows[0];
+  res.status(201).json(surveyRow(row));
+}));
+
+app.patch('/api/surveys/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Anket düzenleme yetkiniz yok')) return;
+  const existing = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Anket bulunamadı' });
+  const body = req.body || {};
+  const title = body.title != null ? clean(body.title).slice(0, 200) : existing.title;
+  if (!title) return res.status(400).json({ error: 'Anket başlığı zorunludur' });
+  const questions = body.questions != null ? sanitizeSurveyQuestions(body.questions) : existing.questions;
+  const row = (await pool.query(
+    `update survey_templates set title=$2,description=$3,questions=$4::jsonb,active=$5,updated_at=now() where id=$1 returning *`,
+    [existing.id, title, body.description != null ? clean(body.description).slice(0, 2000) : existing.description,
+      JSON.stringify(questions), body.active != null ? Boolean(body.active) : existing.active])).rows[0];
+  res.json(surveyRow(row));
+}));
+
+app.delete('/api/surveys/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Anket silme yetkiniz yok')) return;
+  const result = await pool.query('delete from survey_templates where id=$1', [Number(req.params.id) || 0]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Anket bulunamadı' });
+  res.status(204).end();
+}));
+
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });
