@@ -5,7 +5,7 @@
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
-    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','shifts','recruitment','performance','training','security'], create: true, approve: false },
+    'Departman yöneticisi': { views: ['dashboard','leave','expenses','advances','reports','shifts','recruitment','performance','training'], create: true, approve: false },
     'Mali İşler': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
     'Finans yöneticisi': { views: ['dashboard','advances','expenses','reports'], create: false, approve: true },
     'Genel müdür': { views: ['dashboard','leave','expenses','advances','reports'], create: false, approve: true },
@@ -14,8 +14,23 @@
     'Bordro yetkilisi': { views: ['dashboard','payroll','expenses','advances','reports','attendance'], create: true, approve: true },
     'Güvenlik': { views: ['dashboard','security'], create: true, approve: true },
     'Personel': { views: ['dashboard','leave','expenses','advances','documents'], create: true, approve: false },
-    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance'), create: false, approve: false }
+    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security'), create: false, approve: false }
   };
+  const LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ','KAT HİZMETLERİ'];
+  const normDept = value => String(value || '').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
+  // Güvenlik ve Kayıp Eşya modülü: rol + departman bazlı özel erişim
+  function securityAccess() {
+    const u = currentUser() || {};
+    const dept = normDept(u.department);
+    return {
+      admin: u.role === 'Sistem yöneticisi',
+      hr: u.role === 'İK yöneticisi' || dept === 'İNSAN KAYNAKLARI',
+      security: u.role === 'Güvenlik',
+      lostDept: LOST_DEPARTMENTS.includes(dept)
+    };
+  }
+  window.__ikSecurityAccess = securityAccess;
+  const canSeeSecurity = () => { const a = securityAccess(); return a.admin || a.hr || a.security || a.lostDept; };
 
   function users() {
     return JSON.parse(localStorage.getItem(userKey) || 'null') || [{ id: 1, name: 'Sistem yöneticisi', email: 'admin@firma.com', role: 'Sistem yöneticisi', status: 'Aktif' }];
@@ -37,6 +52,7 @@
       || null;
   };
   window.__ikCan = function (view, action = 'view') {
+    if (view === 'security') return canSeeSecurity();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;
     return action === 'view' ? true : Boolean(currentRule[action]);

@@ -1854,8 +1854,21 @@ app.delete('/api/candidates/:id', asyncRoute(async (req, res) => {
 // --- Güvenlik ve Kayıp/Bulunan Eşyalar (HMS modülü) ------------------
 const normalizeDepartmentValue = value => clean(value).toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
 const HMS_MODULES = new Set(['visitors', 'vehicles', 'fleet', 'staff_status', 'lost_items', 'lost_approvals']);
-const hmsSeesAll = user => ['Sistem yöneticisi', 'İK yöneticisi', 'Güvenlik'].includes(user.role) || clean(user.department) === 'İnsan Kaynakları';
-const canUseHms = user => hmsSeesAll(user) || isDepartmentManager(user);
+const HMS_GUV_MODULES = new Set(['visitors', 'vehicles', 'fleet', 'staff_status']);
+const HMS_LOST_MODULES = new Set(['lost_items', 'lost_approvals']);
+const HMS_LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ', 'KAT HİZMETLERİ'];
+const hmsIsHr = user => user.role === 'İK yöneticisi' || normalizeDepartmentValue(user.department) === 'İNSAN KAYNAKLARI';
+const hmsInLostDept = user => HMS_LOST_DEPARTMENTS.includes(normalizeDepartmentValue(user.department));
+// Yetki seviyesi: 'full' (sil dahil) | 'operate' (ekle/düzenle, sil yok) | 'read' (görüntüle+rapor) | 'none'
+function hmsPerm(user, module) {
+  if (user.role === 'Sistem yöneticisi') return 'full';
+  if (hmsIsHr(user)) return 'read';
+  if (HMS_GUV_MODULES.has(module)) return user.role === 'Güvenlik' ? 'operate' : 'none';
+  if (HMS_LOST_MODULES.has(module)) return hmsInLostDept(user) ? 'operate' : 'none';
+  return 'none';
+}
+const hmsCanWrite = (user, module) => ['full', 'operate'].includes(hmsPerm(user, module));
+const hmsScoped = (user, module) => HMS_LOST_MODULES.has(module) && hmsPerm(user, module) === 'operate';
 const hmsNow = () => new Date().toLocaleString('tr-TR');
 const hmsRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
 const hmsGet = async id => (await pool.query('select * from hms_records where id=$1', [Number(id) || 0])).rows[0] || null;
@@ -1875,22 +1888,28 @@ const hmsCleanBody = body => {
 const hmsImageOk = data => !data.image || String(data.image).length <= 900000;
 
 app.get('/api/hms/:module', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Bu modüle erişim yetkiniz yok')) return;
   const module = clean(req.params.module);
   if (!HMS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
+  if (hmsPerm(req.user, module) === 'none') return res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' });
   const params = [module];
   let scope = '';
-  if (!hmsSeesAll(req.user)) { params.push(clean(req.user.department)); scope = ' and department=$2'; }
+  if (hmsScoped(req.user, module)) {
+    params.push(normalizeDepartmentValue(req.user.department));
+    scope = module === 'lost_approvals'
+      ? " and trim(data->>'targetDepartment') = $2"
+      : ' and trim(department) = $2';
+  }
   const rows = (await pool.query(`select * from hms_records where module=$1${scope} order by id desc`, params)).rows;
   res.json(rows.map(hmsRow));
 }));
 
 app.post('/api/hms/:module', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Kayıt ekleme yetkiniz yok')) return;
   const module = clean(req.params.module);
   if (!HMS_MODULES.has(module) || module === 'lost_approvals') return res.status(400).json({ error: 'Bu modüle kayıt eklenemez' });
+  if (!hmsCanWrite(req.user, module)) return res.status(403).json({ error: 'Kayıt ekleme yetkiniz yok' });
   const body = req.body || {};
-  const department = hmsSeesAll(req.user) ? (clean(body.department) || clean(req.user.department)) : clean(req.user.department);
+  let department = hmsPerm(req.user, module) === 'full' ? (clean(body.department) || clean(req.user.department)) : clean(req.user.department);
+  if (HMS_LOST_MODULES.has(module) || module === 'staff_status' || module === 'visitors') department = normalizeDepartmentValue(department);
   const data = hmsCleanBody(body);
   if (!hmsImageOk(data)) return res.status(400).json({ error: 'Resim çok büyük (en fazla ~600 KB)' });
   if (module === 'lost_items') {
@@ -1906,41 +1925,42 @@ app.post('/api/hms/:module', asyncRoute(async (req, res) => {
   res.status(201).json(await hmsInsert(module, department, data, req.user));
 }));
 
+const hmsRecordInScope = (user, module, existing) =>
+  !hmsScoped(user, module) || normalizeDepartmentValue(existing.department) === normalizeDepartmentValue(user.department);
+
 app.patch('/api/hms/:module/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Kayıt düzenleme yetkiniz yok')) return;
   const module = clean(req.params.module);
+  if (!hmsCanWrite(req.user, module)) return res.status(403).json({ error: 'Kayıt düzenleme yetkiniz yok' });
   const existing = await hmsGet(req.params.id);
   if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
-  if (!hmsSeesAll(req.user) && clean(existing.department) !== clean(req.user.department)) {
+  if (!hmsRecordInScope(req.user, module, existing)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızın kayıtlarını düzenleyebilirsiniz' });
   }
   const body = req.body || {};
   const data = { ...existing.data, ...hmsCleanBody(body) };
   if (!hmsImageOk(data)) return res.status(400).json({ error: 'Resim çok büyük (en fazla ~600 KB)' });
-  const department = hmsSeesAll(req.user) && body.department != null ? clean(body.department) : existing.department;
+  const department = hmsPerm(req.user, module) === 'full' && body.department != null ? clean(body.department) : existing.department;
   res.json(await hmsUpdate(existing.id, department, data));
 }));
 
 app.delete('/api/hms/:module/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Kayıt silme yetkiniz yok')) return;
+  const module = clean(req.params.module);
+  if (hmsPerm(req.user, module) !== 'full') return res.status(403).json({ error: 'Silme yetkiniz yok; yalnızca Sistem yöneticisi silebilir' });
   const existing = await hmsGet(req.params.id);
-  if (!existing || existing.module !== clean(req.params.module)) return res.status(404).json({ error: 'Kayıt bulunamadı' });
-  if (!hmsSeesAll(req.user) && clean(existing.department) !== clean(req.user.department)) {
-    return res.status(403).json({ error: 'Yalnızca kendi departmanınızın kayıtlarını silebilirsiniz' });
-  }
+  if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
   await pool.query('delete from hms_records where id=$1', [existing.id]);
   res.status(204).end();
 }));
 
 app.post('/api/hms/lost-items/:id/transfer', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Transfer yetkiniz yok')) return;
+  if (!hmsCanWrite(req.user, 'lost_items')) return res.status(403).json({ error: 'Transfer yetkiniz yok' });
   const item = await hmsGet(req.params.id);
   if (!item || item.module !== 'lost_items') return res.status(404).json({ error: 'Eşya bulunamadı' });
-  if (!hmsSeesAll(req.user) && clean(item.department) !== clean(req.user.department)) {
+  if (!hmsRecordInScope(req.user, 'lost_items', item)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızın eşyasını transfer edebilirsiniz' });
   }
   const b = req.body || {};
-  const target = clean(b.targetDepartment), sender = clean(b.sender), receiver = clean(b.receiver);
+  const target = normalizeDepartmentValue(b.targetDepartment), sender = clean(b.sender), receiver = clean(b.receiver);
   if (!target || !sender || !receiver) return res.status(400).json({ error: 'Hedef departman, teslim eden ve teslim alan zorunludur' });
   const from = clean(item.data.storage || item.department);
   if (normalizeDepartmentValue(target) === normalizeDepartmentValue(from)) return res.status(400).json({ error: 'Hedef departman kaynakla aynı olamaz' });
@@ -1958,14 +1978,14 @@ app.post('/api/hms/lost-items/:id/transfer', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/hms/lost-approvals/:id/decision', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canUseHms, 'Yetkiniz yok')) return;
+  if (!hmsCanWrite(req.user, 'lost_approvals')) return res.status(403).json({ error: 'Yetkiniz yok' });
   const decision = clean(req.body?.decision);
   if (!['Onaylandı', 'Reddedildi'].includes(decision)) return res.status(400).json({ error: 'Geçerli bir karar seçin' });
   const appr = await hmsGet(req.params.id);
   if (!appr || appr.module !== 'lost_approvals') return res.status(404).json({ error: 'Onay kaydı bulunamadı' });
   if (appr.data.status !== 'Beklemede') return res.status(409).json({ error: 'Bu transfer zaten sonuçlanmış' });
-  const target = clean(appr.data.targetDepartment);
-  if (!hmsSeesAll(req.user) && !(isDepartmentManager(req.user) && normalizeDepartmentValue(req.user.department) === normalizeDepartmentValue(target))) {
+  const target = normalizeDepartmentValue(appr.data.targetDepartment);
+  if (hmsPerm(req.user, 'lost_approvals') === 'operate' && normalizeDepartmentValue(req.user.department) !== target) {
     return res.status(403).json({ error: 'Bu transferi yalnızca hedef departman sonuçlandırabilir' });
   }
   const item = await hmsGet(appr.data.sourceLostId);
@@ -2015,10 +2035,13 @@ async function seedHmsIfEmpty() {
     ['İpekyol marka hasır şapka', 'Tekstil', 'plaj'],
     ['Beyaz renk crocs terlik', 'Ayakkabı/Terlik', 'havuz başı']
   ];
-  lost.forEach(([item, category, location], i) => seed.push(['lost_items', 'KAT HİZMETLERİ', {
-    foundDate: `0${6 + i % 3}.09.2026 10:${String(45 - i * 3).padStart(2, '0')}:00`, processDate: `0${6 + i % 3}.09.2026 10:${String(50 - i * 3).padStart(2, '0')}:00`,
-    item, category, location, storage: 'KAT HİZMETLERİ', status: 'Beklemede', approval: 'Onaylandı', transferStatus: '—', receiver: '—', history: []
-  }]));
+  lost.forEach(([item, category, location], i) => {
+    const dept = i % 3 === 0 ? 'MİSAFİR İLİŞKİLERİ' : 'KAT HİZMETLERİ';
+    seed.push(['lost_items', dept, {
+      foundDate: `0${6 + i % 3}.09.2026 10:${String(45 - i * 3).padStart(2, '0')}:00`, processDate: `0${6 + i % 3}.09.2026 10:${String(50 - i * 3).padStart(2, '0')}:00`,
+      item, category, location, storage: dept, status: 'Beklemede', approval: 'Onaylandı', transferStatus: '—', receiver: '—', history: []
+    }]);
+  });
   for (const [module, dept, data] of seed) {
     await pool.query('insert into hms_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4)', [module, dept, JSON.stringify(data), 'Örnek veri']);
   }

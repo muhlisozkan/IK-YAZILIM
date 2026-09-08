@@ -7,11 +7,21 @@
 
   const lostCategories=['Ayakkabı/Terlik','Bebek Malzemeleri','Çanta','Değerli Eşya','Deniz/Havuz Malzemeleri','Diğer','Elektronik','Gözlük','Kozmetik','Kitap','Oyuncak','Takı','Tekstil','Termos','Toplu Kayıp'];
   const HMS_DEPTS=['ÖN BÜRO','KAT HİZMETLERİ','TEKNİK SERVİS','MİSAFİR İLİŞKİLERİ','GÜVENLİK','MALİ İŞLER'];
-  const deptList=()=>[...new Set([...(state.employees||[]).map(e=>e.department).filter(Boolean),...HMS_DEPTS])].sort(trSort);
-  const deptEmployees=d=>(state.employees||[]).filter(e=>String(e.department||'').toLocaleUpperCase('tr-TR')===String(d||'').toLocaleUpperCase('tr-TR')).map(e=>e.name).sort(trSort);
+  const normDept=d=>String(d||'').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g,' ');
+  const deptList=()=>[...new Set([...(state.employees||[]).map(e=>normDept(e.department)).filter(Boolean),...HMS_DEPTS])].sort(trSort);
+  const deptEmployees=d=>(state.employees||[]).filter(e=>normDept(e.department)===normDept(d)).map(e=>e.name).sort(trSort);
 
-  const user=()=>window.__ikCurrentUser?.()||{};
-  const seesAll=()=>['Sistem yöneticisi','İK yöneticisi','Güvenlik'].includes(user().role)||user().department==='İnsan Kaynakları';
+  const GUV_TABS=['visitors','vehicles','fleet','staff_status'];
+  const LOST_TABS=['lost_items','lost_approvals'];
+  function access(){
+    const a=window.__ikSecurityAccess?.()||{};
+    const guv=a.admin?'full':(a.hr?'read':(a.security?'operate':'none'));
+    const lost=a.admin?'full':(a.hr?'read':(a.lostDept?'operate':'none'));
+    return {guv,lost,report:(guv!=='none'||lost!=='none')};
+  }
+  const permFor=module=>{const ac=access();if(module==='report')return 'read';return LOST_TABS.includes(module)?ac.lost:ac.guv;};
+  const canWrite=module=>['full','operate'].includes(permFor(module));
+  const canDelete=module=>permFor(module)==='full';
 
   const tabs=[
     ['visitors','Ziyaretçiler'],
@@ -55,9 +65,14 @@
     return cache[module];
   }
 
+  function visibleTabs(){
+    const ac=access();
+    return tabs.filter(([k])=>k==='report'?ac.report:(LOST_TABS.includes(k)?ac.lost!=='none':ac.guv!=='none'));
+  }
   function shellHtml(body){
+    const vt=visibleTabs();
     return `<div class="section-title"><div><h2>Güvenlik ve Kayıp Eşya</h2><span class="muted">Ziyaretçi, araç, çalışan takibi ve kayıp/bulunan eşya yönetimi</span></div></div>
-      <div class="leave-tabs" style="margin-bottom:16px;flex-wrap:wrap">${tabs.map(([k,l])=>`<button class="btn ${tab===k?'':'secondary'}" data-hms-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="leave-tabs" style="margin-bottom:16px;flex-wrap:wrap">${vt.map(([k,l])=>`<button class="btn ${tab===k?'':'secondary'}" data-hms-tab="${k}">${l}</button>`).join('')}</div>
       <div id="hms-body">${body}</div>`;
   }
   function mount(body){
@@ -76,14 +91,14 @@
     const q=f.q.toLocaleLowerCase('tr-TR');
     const shown=rows.filter(row=>!q||cols.some(([k])=>String(row[k]??'').toLocaleLowerCase('tr-TR').includes(q))
       ||String(row.name??'').toLocaleLowerCase('tr-TR').includes(q));
-    const canAdd=fields[module];
     const isApprovals=module==='lost_approvals';
+    const canAdd=fields[module]&&canWrite(module)&&!isApprovals;
     const list=isApprovals?shown.filter(r=>r.status==='Beklemede'):shown;
     const body=`<div class="card">
       <div class="toolbar">
         <input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}">
         ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
-        <span class="muted">${list.length} kayıt</span>
+        <span class="muted">${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}</span>
       </div>
       <div style="overflow:auto"><table><thead><tr>
         ${cols.map(([,l])=>`<th>${l}</th>`).join('')}<th></th>
@@ -96,7 +111,7 @@
     $('#hms-q').oninput=()=>{f.q=$('#hms-q').value;clearTimeout(window.__hmsT);window.__hmsT=setTimeout(()=>renderTable(module),250);};
     if($('#hms-add'))$('#hms-add').onclick=()=>openEditor(module,null);
     document.querySelectorAll('#hms-body tbody tr[data-id]').forEach(tr=>{
-      tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[module])openEditor(module,row);};
+      tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[module]&&canWrite(module))openEditor(module,row);};
     });
     document.querySelectorAll('[data-hms-toggle]').forEach(b=>b.onclick=()=>toggleStatus(module,b.dataset.hmsToggle));
     document.querySelectorAll('[data-hms-del]').forEach(b=>b.onclick=()=>del(module,b.dataset.hmsDel));
@@ -105,11 +120,13 @@
   }
 
   function rowActions(module,row){
-    if(module==='lost_approvals')return `<button class="btn ghost" data-hms-approve="${row.id}">Onayla</button><button class="btn ghost danger-text" data-hms-reject="${row.id}">Reddet</button>`;
+    if(module==='lost_approvals')
+      return canWrite(module)?`<button class="btn ghost" data-hms-approve="${row.id}">Onayla</button><button class="btn ghost danger-text" data-hms-reject="${row.id}">Reddet</button>`:'';
     let html='';
-    if(module==='visitors'||module==='staff_status')
+    if((module==='visitors'||module==='staff_status')&&canWrite(module))
       html+=`<button class="btn ghost" data-hms-toggle="${row.id}">${row.status==='İçeride'?'Çıkış':'Giriş'}</button>`;
-    html+=`<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
+    if(canDelete(module))
+      html+=`<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
     return html;
   }
 
@@ -153,7 +170,7 @@
       return `<div class="field"${wide}><label>${label}</label>${ctrl}</div>`;
     };
     const imageBlock=isLost?`<div class="field" style="grid-column:1/-1"><label>Resim</label><input class="input" type="file" accept="image/*" id="hms-image">${row?.image?`<img src="${esc(row.image)}" alt="" style="max-height:120px;margin-top:8px;border-radius:8px">`:''}</div>`:'';
-    const transferBlock=(isLost&&editing)?transferPanel(row):'';
+    const transferBlock=(isLost&&editing&&canWrite('lost_items'))?transferPanel(row):(isLost&&editing?historyList(row):'');
     modal(editing?'Kaydı düzenle':'Yeni kayıt',
       `<div class="form-grid">${cfg.map(inputFor).join('')}</div>${imageBlock}${transferBlock}`,
       async()=>{
@@ -183,7 +200,7 @@
           const reader=new FileReader();reader.onload=()=>send({image:reader.result});reader.readAsDataURL(img);
         }else send({});
       });
-    if(isLost&&editing)bindTransfer(row);
+    if(isLost&&editing&&canWrite('lost_items'))bindTransfer(row);
   }
 
   // --- Kayıp eşya transfer paneli -----------------------------------
@@ -285,6 +302,9 @@
   function render(){
     document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='security'));
     $('#page-title').textContent='Güvenlik ve Kayıp Eşya';
+    const vt=visibleTabs().map(t=>t[0]);
+    if(!vt.length){mount('<div class="card empty">Bu modüle erişim yetkiniz yok.</div>');return;}
+    if(!vt.includes(tab)){tab=vt[0];sessionStorage.setItem('ik_hms_tab',tab);}
     if(tab==='report')renderReport();
     else renderTable(tab);
   }

@@ -110,3 +110,8 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 
 .gm-escalate{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);margin-left:6px;white-space:nowrap;cursor:pointer}
 .gm-escalate input{cursor:pointer}
+
+/* Güvenlik / Kayıp Eşya modülü tabloları: birer satır arayla zebra */
+#hms-body table tbody tr:nth-child(even) td{background:#f5f7fb}
+#hms-body table tbody tr:hover td{background:#eef1ff}
+#hms-body .row-actions{white-space:nowrap}
