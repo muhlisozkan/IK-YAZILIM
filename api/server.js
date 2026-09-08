@@ -2298,6 +2298,10 @@ app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
     if (emp) { name = emp.name; if (!subtitle) subtitle = clean(emp.title) || clean(emp.department); }
   }
   if (!name) return res.status(400).json({ error: 'Aday adı zorunludur' });
+  if (employeeId && (await pool.query('select 1 from eom_candidates where period_id=$1 and employee_id=$2', [period.id, employeeId])).rowCount)
+    return res.status(409).json({ error: 'Bu çalışan bu dönemde zaten aday olarak eklenmiş' });
+  if ((await pool.query('select 1 from eom_candidates where period_id=$1 and lower(btrim(name))=lower(btrim($2))', [period.id, name])).rowCount)
+    return res.status(409).json({ error: 'Bu isimde bir aday bu dönemde zaten var' });
   let photo = '';
   if (body.photo != null && String(body.photo)) {
     if (!isEomPhoto(body.photo)) return res.status(400).json({ error: 'Geçersiz fotoğraf (jpg/png/webp, en fazla ~600 KB)' });
@@ -2315,6 +2319,10 @@ app.patch('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Aday bulunamadı' });
   const body = req.body || {};
   const name = body.name != null ? (clean(body.name).slice(0, 160) || existing.name) : existing.name;
+  if (name !== existing.name && (await pool.query(
+    'select 1 from eom_candidates where period_id=$1 and id<>$2 and lower(btrim(name))=lower(btrim($3))',
+    [existing.period_id, existing.id, name])).rowCount)
+    return res.status(409).json({ error: 'Bu isimde bir aday bu dönemde zaten var' });
   const subtitle = body.subtitle != null ? clean(body.subtitle).slice(0, 160) : existing.subtitle;
   let photo = existing.photo;
   if (body.photo != null) {

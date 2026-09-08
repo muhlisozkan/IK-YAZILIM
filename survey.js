@@ -332,7 +332,12 @@
 
   function eomCandidateModal(cat,existing){
     const editing=!!existing;
-    const emps=(state.employees||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
+    const taken=(eomData?.candidates||[]);
+    const takenEmp=new Set(taken.map(c=>String(c.employee_id)).filter(x=>x&&x!=='null'));
+    const takenName=new Set(taken.map(c=>String(c.name||'').trim().toLocaleLowerCase('tr-TR')));
+    const emps=(state.employees||[])
+      .filter(e=>!takenEmp.has(String(e.id))&&!takenName.has(String(e.name||'').trim().toLocaleLowerCase('tr-TR')))
+      .slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
     let photoData=null;   // yeni seçilen fotoğrafın data URL'i
     let removePhoto=false;
     modal(editing?('Aday düzenle · '+esc(existing.name)):('Aday ekle · '+eomCatLabel(cat)),
