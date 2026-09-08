@@ -181,8 +181,11 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 /* Anket / oylama linki gönderimi */
 .inv-channel{display:flex;gap:18px}
 .inv-channel label{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink)}
-.inv-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.inv-sources{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.inv-sources .select{min-width:0;max-width:210px;font-size:13px}
+.inv-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:8px;max-height:300px;overflow:auto}
 .inv-row{display:flex;gap:8px;align-items:center}
+.inv-row-miss .input{border-color:var(--red)}
 .inv-row .input{min-width:0;flex:1}
 .inv-row .btn.ghost{flex:0 0 auto;padding:4px 8px;font-size:16px}
 .inv-result-list{list-style:none;margin:10px 0 0;padding:0;max-height:260px;overflow:auto;font-size:13px}

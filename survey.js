@@ -597,20 +597,85 @@
     };
   }
 
-  // --- Kişiye özel tek kullanımlık link ile gönderim --------------
+  // --- Alıcı grupları --------------------------------------------
   const isEmail=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim());
+  const empDepartments=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+  const deptMembers=dept=>(state.employees||[]).filter(e=>e.status!=='Pasif'&&e.department===dept).map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
+
+  async function recipientGroupsModal(afterChange){
+    let groups=[];
+    try{groups=await api('/api/recipient-groups');}catch(err){return toast(err.message);}
+    modal('Alıcı grupları','<div id="rg-body"></div>',()=>closeModal());
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=()=>{closeModal();afterChange&&afterChange();};}
+    const box=()=>$('#rg-body');
+    async function reload(){try{groups=await api('/api/recipient-groups');}catch(_){}draw();afterChange&&afterChange();}
+    function draw(){
+      box().innerHTML=`
+        <table><thead><tr><th>GRUP</th><th>TÜR</th><th>ÜYE</th><th></th></tr></thead><tbody>
+        ${groups.map(g=>`<tr>
+          <td><strong>${esc(g.name)}</strong></td>
+          <td>${g.dynamic?`Departman · ${esc(g.department)}`:'Statik liste'}</td>
+          <td>${g.member_count} kişi<small class="muted" style="display:block">${g.with_phone} tel · ${g.with_email} e-posta</small></td>
+          <td class="row-actions"><button class="btn ghost" data-rg-ren="${g.id}">Yeniden adlandır</button><button class="btn ghost danger-text" data-rg-del="${g.id}">Sil</button></td>
+        </tr>`).join('')||'<tr><td colspan="4" class="empty">Henüz grup yok</td></tr>'}
+        </tbody></table>
+        <div class="field" style="margin-top:16px"><label>Departman grubu oluştur</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input class="input" id="rg-name" placeholder="Grup adı">
+            <select class="select" id="rg-dept"><option value="">Departman seç…</option>${empDepartments().map(d=>`<option>${esc(d)}</option>`).join('')}</select>
+            <button class="btn" id="rg-create">Oluştur</button>
+          </div>
+          <small class="muted">Departman grupları her gönderimde o departmanın güncel çalışanlarını içerir. Serbest listeleri gönderim penceresinde "grup olarak kaydet" ile oluşturabilirsiniz.</small>
+        </div>`;
+      box().querySelector('#rg-create').onclick=async()=>{
+        const name=($('#rg-name').value||'').trim(),department=$('#rg-dept').value;
+        if(!name)return toast('Grup adı girin');
+        if(!department)return toast('Departman seçin');
+        try{await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,department})});toast('Grup oluşturuldu');reload();}
+        catch(err){toast(err.message);}
+      };
+      box().querySelectorAll('[data-rg-del]').forEach(b=>b.onclick=async()=>{
+        if(!confirm('Bu grubu silmek istediğinize emin misiniz?'))return;
+        try{await api('/api/recipient-groups/'+b.dataset.rgDel,{method:'DELETE'});toast('Grup silindi');reload();}catch(err){toast(err.message);}
+      });
+      box().querySelectorAll('[data-rg-ren]').forEach(b=>b.onclick=async()=>{
+        const g=groups.find(x=>String(x.id)===b.dataset.rgRen);
+        const name=prompt('Yeni grup adı:',g.name);if(!name||!name.trim())return;
+        try{await api('/api/recipient-groups/'+g.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim()})});reload();}catch(err){toast(err.message);}
+      });
+    }
+    draw();
+  }
+
+  // --- Kişiye özel tek kullanımlık link ile gönderim --------------
   function inviteModal(kind,opts){
     opts=opts||{};
     let channel='email';
-    let rows=[{name:'',email:'',phone:''}];
+    let rows=[{name:'',email:'',phone:'',employee_id:null}];
+    let groups=[];
     let done=false;
     const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/templates/'+opts.templateId+'/invites';
-    modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body"></div>',async()=>{
+    const rkey=r=>((r.email||'').trim().toLowerCase())||((r.phone||'').replace(/\D/g,''))||((r.name||'').trim().toLowerCase());
+    function addRecipients(list){
+      const seen=new Set(rows.map(rkey).filter(Boolean));
+      let added=0;
+      (list||[]).forEach(r=>{
+        const k=rkey(r);if(!k||seen.has(k))return;
+        seen.add(k);rows.push({name:r.name||'',email:r.email||'',phone:r.phone||'',employee_id:r.employee_id||null});added++;
+      });
+      rows=rows.filter(r=>r.name||r.email||r.phone);
+      if(!rows.length)rows=[{name:'',email:'',phone:'',employee_id:null}];
+      redraw();
+      return added;
+    }
+    const loadGroups=async()=>{try{groups=await api('/api/recipient-groups');}catch(_){groups=[];}};
+    modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body">Yükleniyor…</div>',async()=>{
       if(done){closeModal();if(kind!=='personel')renderMakeItRight();return;}
-      const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim()})).filter(r=>r.name||r.email||r.phone);
+      const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim(),employee_id:r.employee_id||undefined})).filter(r=>r.name||r.email||r.phone);
       if(!recipients.length)return toast('En az bir alıcı girin');
-      if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresini girin');
-      if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarasını girin');
+      if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresi olmalı (e-postası olmayanları çıkarın)');
+      if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarası olmalı (numarası olmayanları çıkarın)');
       const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
       try{
         const res=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel,message:curMsg(),recipients})});
@@ -621,7 +686,8 @@
     const box=()=>$('#inv-body');
     const curMsg=()=>($('#inv-msg')?$('#inv-msg').value:'');
     function rowHtml(r,i){
-      return `<div class="inv-row" data-i="${i}">
+      const miss=(channel==='email'&&!isEmail(r.email))||(channel==='sms'&&!r.phone);
+      return `<div class="inv-row ${miss?'inv-row-miss':''}" data-i="${i}">
         <input class="input" data-k="name" placeholder="Ad Soyad" value="${esc(r.name)}">
         <input class="input" data-k="email" placeholder="E-posta" value="${esc(r.email)}" ${channel==='sms'?'hidden':''}>
         <input class="input" data-k="phone" placeholder="Telefon" value="${esc(r.phone)}" ${channel==='email'?'hidden':''}>
@@ -629,6 +695,7 @@
       </div>`;
     }
     function redraw(){
+      const filled=rows.filter(r=>r.name||r.email||r.phone).length;
       box().innerHTML=`
         <div class="field"><label>Gönderim kanalı</label>
           <div class="inv-channel">
@@ -636,27 +703,52 @@
             <label><input type="radio" name="inv-ch" value="sms" ${channel==='sms'?'checked':''}> SMS</label>
           </div>
         </div>
-        <div class="field"><label>Alıcılar</label>
+        <div class="field"><label>Alıcılar (${filled})</label>
+          <div class="inv-sources">
+            <select class="select" id="inv-group"><option value="">+ Gruptan ekle…</option>${groups.map(g=>`<option value="${g.id}">${esc(g.name)} (${g.member_count})</option>`).join('')}</select>
+            <select class="select" id="inv-dept"><option value="">+ Departmandan ekle…</option>${empDepartments().map(d=>`<option>${esc(d)}</option>`).join('')}</select>
+            <button type="button" class="btn ghost" id="inv-add">+ Elle satır</button>
+            <button type="button" class="btn ghost" id="inv-groups">Grupları yönet</button>
+          </div>
           <div class="inv-rows">${rows.map(rowHtml).join('')}</div>
-          <button type="button" class="btn ghost" id="inv-add">+ Alıcı ekle</button>
+          ${filled?`<button type="button" class="btn ghost" id="inv-savegroup">💾 Bu listeyi grup olarak kaydet</button>`:''}
         </div>
         <div class="field"><label>Mesaj (opsiyonel)</label>
           <textarea class="input" id="inv-msg" placeholder="Boş bırakılırsa standart metin gönderilir. {ad} ve {link} kullanılabilir.">${esc(curMsg())}</textarea>
         </div>
-        <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. Bağlantı bir kez yanıtlandığında kapanır; düzeltme yapılamaz.</p>`;
+        <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. ${channel==='sms'?'Telefon':'E-posta'}sı olmayan satırlar kırmızı gösterilir; göndermeden önce çıkarın.</p>`;
       bind();
     }
     function bind(){
       box().querySelectorAll('[name="inv-ch"]').forEach(el=>el.onchange=()=>{channel=el.value;redraw();});
-      box().querySelector('#inv-add').onclick=()=>{rows.push({name:'',email:'',phone:''});redraw();};
+      box().querySelector('#inv-add').onclick=()=>{rows.push({name:'',email:'',phone:'',employee_id:null});redraw();};
+      box().querySelector('#inv-groups').onclick=()=>recipientGroupsModal(async()=>{await loadGroups();redraw();});
+      box().querySelector('#inv-group').onchange=async e=>{
+        const id=e.target.value;e.target.value='';if(!id)return;
+        try{const g=await api('/api/recipient-groups/'+id);const n=addRecipients(g.members);toast(n?`${n} alıcı eklendi`:'Yeni alıcı yok (zaten listede)');}
+        catch(err){toast(err.message);}
+      };
+      box().querySelector('#inv-dept').onchange=e=>{
+        const d=e.target.value;e.target.value='';if(!d)return;
+        const n=addRecipients(deptMembers(d));
+        toast(n?`${d}: ${n} çalışan eklendi`:'Yeni çalışan yok (zaten listede)');
+      };
+      const sg=box().querySelector('#inv-savegroup');
+      if(sg)sg.onclick=async()=>{
+        const name=prompt('Grup adı:');if(!name||!name.trim())return;
+        const members=rows.filter(r=>r.name||r.email||r.phone).map(r=>({name:r.name,email:r.email,phone:r.phone,employee_id:r.employee_id||undefined}));
+        try{await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),members})});await loadGroups();redraw();toast('Grup kaydedildi');}
+        catch(err){toast(err.message);}
+      };
       box().querySelectorAll('.inv-row [data-k]').forEach(el=>{
         const i=Number(el.closest('.inv-row').dataset.i),k=el.dataset.k;
         el.oninput=()=>{rows[i][k]=el.value;};
       });
       box().querySelectorAll('[data-del]').forEach(el=>el.onclick=()=>{
-        rows.splice(Number(el.dataset.del),1);if(!rows.length)rows=[{name:'',email:'',phone:''}];redraw();
+        rows.splice(Number(el.dataset.del),1);if(!rows.length)rows=[{name:'',email:'',phone:'',employee_id:null}];redraw();
       });
     }
+    loadGroups().then(redraw);
     function showResult(res){
       done=true;
       box().innerHTML=`<div class="inv-result">
@@ -673,7 +765,6 @@
       const submit=document.querySelector('.modal .submit');
       if(submit){submit.textContent='Kapat';submit.disabled=false;}
     }
-    redraw();
   }
 
   function render(){

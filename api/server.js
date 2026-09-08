@@ -1153,13 +1153,13 @@ app.get('/api/employees/:id/payroll-details', asyncRoute(async (req, res) => {
 app.post('/api/employees', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isHRUser, 'Çalışan ekleme yetkiniz yok')) return;
   const e = req.body;
-  const result = await pool.query("insert into employees(name,email,department,title,start_date,salary,status,source,payroll_sync_protected) values($1,$2,$3,$4,$5,$6,$7,'Manuel',true) returning *", [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
+  const result = await pool.query("insert into employees(name,email,phone,department,title,start_date,salary,status,source,payroll_sync_protected) values($1,$2,$3,$4,$5,$6,$7,$8,'Manuel',true) returning *", [e.name, e.email || '', phoneNumber(e.phone) || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
   res.status(201).json(result.rows[0]);
 }));
 app.put('/api/employees/:id', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isHRUser, 'Çalışan düzenleme yetkiniz yok')) return;
   const e = req.body;
-  const result = await pool.query('update employees set name=$1,email=$2,department=$3,title=$4,start_date=$5,salary=$6,status=$7 where id=$8 returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif', req.params.id]);
+  const result = await pool.query('update employees set name=$1,email=$2,department=$3,title=$4,start_date=$5,salary=$6,status=$7,phone=$9 where id=$8 returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif', req.params.id, phoneNumber(e.phone) || '']);
   if (!result.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   res.json(result.rows[0]);
 }));
@@ -1241,9 +1241,11 @@ app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
       const previousTerminationDate = previousPeriod?.termination_date || null;
       const employmentGapDays = previousTerminationDate ? dayDifference(row.start_date, previousTerminationDate) : null;
       const leaveSeniorityExempt = false;
+      const syncPhone = phoneNumber(clean(row['CEP TELEFONU']) || clean(row['TELEFON'])) || '';
+      const syncEmail = emailAddress(clean(row['E-MAIL'])) ? clean(row['E-MAIL']) : '';
       await client.query(`
-        insert into employees(name,email,department,title,start_date,salary,status,payroll_sicil,workplace,unit,source,source_synced_at,payroll_details,termination_date,leave_seniority_exempt,employment_gap_days,previous_termination_date)
-        values($1,'',$2,$3,$4,0,$5,$6,$7,$8,'Bordro',now(),$9::jsonb,$10,$11,$12,$13)
+        insert into employees(name,email,phone,department,title,start_date,salary,status,payroll_sicil,workplace,unit,source,source_synced_at,payroll_details,termination_date,leave_seniority_exempt,employment_gap_days,previous_termination_date)
+        values($1,$14,$15,$2,$3,$4,0,$5,$6,$7,$8,'Bordro',now(),$9::jsonb,$10,$11,$12,$13)
         on conflict(payroll_sicil) where payroll_sicil is not null do update set
           name=excluded.name,
           department=excluded.department,
@@ -1255,12 +1257,14 @@ app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
           source='Bordro',
           source_synced_at=now(),
           payroll_details=excluded.payroll_details,
+          phone=case when coalesce(btrim(excluded.phone),'')<>'' then excluded.phone else employees.phone end,
+          email=case when coalesce(btrim(excluded.email),'')<>'' then excluded.email else employees.email end,
           termination_date=excluded.termination_date,
           leave_seniority_exempt=excluded.leave_seniority_exempt,
           employment_gap_days=excluded.employment_gap_days,
           previous_termination_date=excluded.previous_termination_date
         where employees.payroll_sync_protected=false`,
-      [clean(row.name), department, clean(row.title), row.start_date, sourceStatus(row.payroll_status), payrollSicil, workplace, unit, JSON.stringify(row), terminationDate, leaveSeniorityExempt, employmentGapDays, previousTerminationDate]);
+      [clean(row.name), department, clean(row.title), row.start_date, sourceStatus(row.payroll_status), payrollSicil, workplace, unit, JSON.stringify(row), terminationDate, leaveSeniorityExempt, employmentGapDays, previousTerminationDate, syncEmail, syncPhone]);
     }
     // Eksik/henüz oluşmakta olan Bordro döneminde görünmeyen personeli pasife
     // çekme. Pasiflik yalnızca kaynak satırındaki açık çalışma durumu ve çıkış
@@ -2434,6 +2438,86 @@ const inviteListRow = r => ({
   channel: r.channel, sent_ok: r.sent_ok, sent_error: r.sent_error, used_at: r.used_at,
   responded: Boolean(r.used_at), created_at: r.created_at
 });
+
+// --- Alıcı grupları (SMS / e-posta gönderiminde seçilir) -----------
+const canManageGroups = user => isHRUser(user);
+async function resolveGroupMembers(group) {
+  if (clean(group.department)) {
+    const rows = (await pool.query(
+      "select id,name,email,phone from employees where status<>'Pasif' and btrim(lower(department))=btrim(lower($1)) order by name",
+      [group.department])).rows;
+    return rows.map(e => ({ employee_id: e.id, name: clean(e.name), email: clean(e.email), phone: clean(e.phone) }));
+  }
+  return (Array.isArray(group.members) ? group.members : []).map(m => ({
+    employee_id: Number(m?.employee_id) || null,
+    name: clean(m?.name).slice(0, 160), email: clean(m?.email).slice(0, 200), phone: clean(m?.phone).slice(0, 40)
+  })).filter(m => m.name || m.email || m.phone);
+}
+function sanitizeGroupMembers(input) {
+  return (Array.isArray(input) ? input : []).slice(0, 2000).map(m => ({
+    employee_id: Number(m?.employee_id) || null,
+    name: clean(m?.name).slice(0, 160), email: clean(m?.email).slice(0, 200), phone: clean(m?.phone).slice(0, 40)
+  })).filter(m => m.name || m.email || m.phone);
+}
+
+app.get('/api/recipient-groups', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageGroups, 'Yetkiniz yok')) return;
+  const groups = (await pool.query('select * from recipient_groups order by lower(name)')).rows;
+  const out = [];
+  for (const g of groups) {
+    const members = await resolveGroupMembers(g);
+    out.push({
+      id: g.id, name: g.name, department: g.department,
+      dynamic: Boolean(clean(g.department)),
+      member_count: members.length,
+      with_email: members.filter(m => m.email).length,
+      with_phone: members.filter(m => m.phone).length
+    });
+  }
+  res.json(out);
+}));
+
+app.get('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageGroups, 'Yetkiniz yok')) return;
+  const g = (await pool.query('select * from recipient_groups where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!g) return res.status(404).json({ error: 'Grup bulunamadı' });
+  res.json({ id: g.id, name: g.name, department: g.department, dynamic: Boolean(clean(g.department)), members: await resolveGroupMembers(g) });
+}));
+
+app.post('/api/recipient-groups', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageGroups, 'Grup oluşturma yetkiniz yok')) return;
+  const body = req.body || {};
+  const name = clean(body.name).slice(0, 120);
+  if (!name) return res.status(400).json({ error: 'Grup adı zorunludur' });
+  const department = clean(body.department).slice(0, 120);
+  const members = department ? [] : sanitizeGroupMembers(body.members);
+  if (!department && !members.length) return res.status(400).json({ error: 'Grup için departman seçin veya en az bir üye ekleyin' });
+  const row = (await pool.query(
+    'insert into recipient_groups(name,department,members,created_by) values($1,$2,$3::jsonb,$4) returning *',
+    [name, department, JSON.stringify(members), req.user.name])).rows[0];
+  res.status(201).json({ id: row.id, name: row.name, department: row.department });
+}));
+
+app.patch('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageGroups, 'Yetkiniz yok')) return;
+  const g = (await pool.query('select * from recipient_groups where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!g) return res.status(404).json({ error: 'Grup bulunamadı' });
+  const body = req.body || {};
+  const name = body.name != null ? (clean(body.name).slice(0, 120) || g.name) : g.name;
+  const department = body.department != null ? clean(body.department).slice(0, 120) : g.department;
+  const members = body.members != null && !department ? sanitizeGroupMembers(body.members) : (department ? [] : g.members);
+  const row = (await pool.query(
+    'update recipient_groups set name=$2,department=$3,members=$4::jsonb,updated_at=now() where id=$1 returning *',
+    [g.id, name, department, JSON.stringify(members)])).rows[0];
+  res.json({ id: row.id, name: row.name, department: row.department });
+}));
+
+app.delete('/api/recipient-groups/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageGroups, 'Grup silme yetkiniz yok')) return;
+  const result = await pool.query('delete from recipient_groups where id=$1', [Number(req.params.id) || 0]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Grup bulunamadı' });
+  res.status(204).end();
+}));
 
 app.post('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageSurveys, 'Anket gönderme yetkiniz yok')) return;

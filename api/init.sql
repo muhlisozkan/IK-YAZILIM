@@ -410,3 +410,14 @@ create table if not exists candidates(
 );
 create index if not exists candidates_department_idx on candidates(department);
 create index if not exists candidates_status_idx on candidates(status);
+
+create table if not exists recipient_groups(
+  id bigserial primary key,
+  name text not null,
+  department text not null default '',
+  members jsonb not null default '[]'::jsonb,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists recipient_groups_name_idx on recipient_groups(lower(name));
