@@ -14,7 +14,7 @@
     'Bordro yetkilisi': { views: ['dashboard','payroll','reports','attendance'], create: true, approve: true },
     'Güvenlik': { views: ['dashboard','security'], create: true, approve: true },
     'Personel': { views: ['dashboard','leave','documents'], create: true, approve: false },
-    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security' && v !== 'lostfound'), create: false, approve: false }
+    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security' && v !== 'lostfound' && v !== 'survey'), create: false, approve: false }
   };
   const LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ','KAT HİZMETLERİ'];
   const normDept = value => String(value || '').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
@@ -55,9 +55,6 @@
   window.__ikCan = function (view, action = 'view') {
     if (view === 'security') return canSeeSecurity();
     if (view === 'lostfound') return canSeeLostFound();
-    // Anket modülü: Make It Right (Ayın Personeli) oylaması için tüm giriş yapan
-    // kullanıcılar erişebilir; Personel Anketi sekmesi survey.js içinde İK ile sınırlı.
-    if (view === 'survey') return action === 'view';
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;
     return action === 'view' ? true : Boolean(currentRule[action]);

@@ -2230,68 +2230,80 @@ app.delete('/api/surveys/:id', asyncRoute(async (req, res) => {
   res.status(204).end();
 }));
 
-// --- Ayın Personeli (Make It Right) oylaması ------------------------
+// --- Make It Right · Ayın Personeli şablonları ---------------------
+// eom_periods = "şablon", eom_candidates = adaylar, eom_votes = link ile toplanan oylar.
+// Oylama yalnızca kişiye özel tek kullanımlık linklerle yapılır (uygulama içi oy yok).
 const EOM_CATEGORIES = new Set(['idari', 'operasyon']);
 const canManageEom = user => isHRUser(user);
-
-const latestPeriod = async () => (await pool.query('select * from eom_periods order by id desc limit 1')).rows[0] || null;
 const isEomPhoto = value => /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(String(value)) && String(value).length <= 900000;
 const eomCandidateRow = (c, votes = null) => ({
   id: c.id, category: c.category, employee_id: c.employee_id,
   name: c.name, subtitle: c.subtitle, photo: c.photo || '', votes
 });
+const eomTemplate = async id => (await pool.query('select * from eom_periods where id=$1', [Number(id) || 0])).rows[0] || null;
 
-app.get('/api/eom', asyncRoute(async (req, res) => {
-  const manage = canManageEom(req.user);
-  const period = await latestPeriod();
-  if (!period) return res.json({ period: null, candidates: [], my_votes: {}, can_manage: manage });
-  const candidates = (await pool.query('select * from eom_candidates where period_id=$1 order by id', [period.id])).rows;
-  const mine = (await pool.query('select category,candidate_id from eom_votes where period_id=$1 and voter_id=$2', [period.id, req.user.id])).rows;
-  const myVotes = {};
-  mine.forEach(r => { myVotes[r.category] = Number(r.candidate_id); });
-  let counts = null, voterCount = null;
-  if (manage) {
-    counts = {};
-    (await pool.query('select candidate_id,count(*)::int n from eom_votes where period_id=$1 group by candidate_id', [period.id]))
-      .rows.forEach(r => { counts[r.candidate_id] = r.n; });
-    voterCount = (await pool.query(
-      'select count(*)::int n from (select distinct voter_id, invite_id from eom_votes where period_id=$1) t', [period.id])).rows[0].n;
-  }
-  res.json({
-    period: { id: period.id, title: period.title, status: period.status, created_at: period.created_at, closed_at: period.closed_at },
-    candidates: candidates.map(c => eomCandidateRow(c, counts ? (counts[c.id] || 0) : null)),
-    my_votes: myVotes,
-    voter_count: voterCount,
-    can_manage: manage
-  });
+app.get('/api/eom/templates', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const rows = (await pool.query(`
+    select p.id, p.title, p.status, p.created_at, count(c.id)::int as candidate_count
+    from eom_periods p left join eom_candidates c on c.period_id = p.id
+    group by p.id order by p.id desc`)).rows;
+  res.json(rows);
 }));
 
-app.post('/api/eom/periods', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Ayın Personeli dönemi açma yetkiniz yok')) return;
+app.get('/api/eom/templates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const t = await eomTemplate(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  const cands = (await pool.query('select * from eom_candidates where period_id=$1 order by id', [t.id])).rows;
+  res.json({ id: t.id, title: t.title, status: t.status, created_at: t.created_at, candidates: cands.map(c => eomCandidateRow(c)) });
+}));
+
+app.post('/api/eom/templates', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Şablon oluşturma yetkiniz yok')) return;
   const title = clean(req.body?.title).slice(0, 120);
-  if (!title) return res.status(400).json({ error: 'Dönem başlığı zorunludur' });
-  await pool.query("update eom_periods set status='closed', closed_at=now() where status='open'");
+  if (!title) return res.status(400).json({ error: 'Şablon adı zorunludur' });
   const row = (await pool.query('insert into eom_periods(title,created_by) values($1,$2) returning *', [title, req.user.name])).rows[0];
   res.status(201).json({ id: row.id, title: row.title, status: row.status });
 }));
 
-app.patch('/api/eom/periods/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Bu işlem için yetkiniz yok')) return;
-  const existing = (await pool.query('select * from eom_periods where id=$1', [Number(req.params.id) || 0])).rows[0];
-  if (!existing) return res.status(404).json({ error: 'Dönem bulunamadı' });
-  const status = ['open', 'closed'].includes(clean(req.body?.status)) ? clean(req.body.status) : existing.status;
-  const title = req.body?.title != null ? (clean(req.body.title).slice(0, 120) || existing.title) : existing.title;
+app.patch('/api/eom/templates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const t = await eomTemplate(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  const status = ['open', 'closed'].includes(clean(req.body?.status)) ? clean(req.body.status) : t.status;
+  const title = req.body?.title != null ? (clean(req.body.title).slice(0, 120) || t.title) : t.title;
   const row = (await pool.query(
     "update eom_periods set status=$2, title=$3, closed_at=case when $2='closed' then coalesce(closed_at,now()) else null end where id=$1 returning *",
-    [existing.id, status, title])).rows[0];
+    [t.id, status, title])).rows[0];
   res.json({ id: row.id, title: row.title, status: row.status });
+}));
+
+app.delete('/api/eom/templates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Şablon silme yetkiniz yok')) return;
+  const result = await pool.query('delete from eom_periods where id=$1', [Number(req.params.id) || 0]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  res.status(204).end();
+}));
+
+app.post('/api/eom/templates/:id/copy', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const src = await eomTemplate(req.params.id);
+  if (!src) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  const title = clean(req.body?.title).slice(0, 120) || `${src.title} (kopya)`;
+  const dst = (await pool.query('insert into eom_periods(title,created_by) values($1,$2) returning *', [title, req.user.name])).rows[0];
+  await pool.query(
+    `insert into eom_candidates(period_id,category,employee_id,name,subtitle,photo,created_by)
+     select $1,category,employee_id,name,subtitle,photo,$2 from eom_candidates where period_id=$3`,
+    [dst.id, req.user.name, src.id]);
+  res.status(201).json({ id: dst.id, title: dst.title, status: dst.status });
 }));
 
 app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageEom, 'Aday ekleme yetkiniz yok')) return;
-  const period = await latestPeriod();
-  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Açık bir Ayın Personeli dönemi yok' });
   const body = req.body || {};
+  const t = await eomTemplate(body.template_id);
+  if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
   const category = EOM_CATEGORIES.has(clean(body.category)) ? clean(body.category) : null;
   if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
   let name = clean(body.name).slice(0, 160);
@@ -2302,10 +2314,10 @@ app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
     if (emp) { name = emp.name; if (!subtitle) subtitle = clean(emp.title) || clean(emp.department); }
   }
   if (!name) return res.status(400).json({ error: 'Aday adı zorunludur' });
-  if (employeeId && (await pool.query('select 1 from eom_candidates where period_id=$1 and employee_id=$2', [period.id, employeeId])).rowCount)
-    return res.status(409).json({ error: 'Bu çalışan bu dönemde zaten aday olarak eklenmiş' });
-  if ((await pool.query('select 1 from eom_candidates where period_id=$1 and lower(btrim(name))=lower(btrim($2))', [period.id, name])).rowCount)
-    return res.status(409).json({ error: 'Bu isimde bir aday bu dönemde zaten var' });
+  if (employeeId && (await pool.query('select 1 from eom_candidates where period_id=$1 and employee_id=$2', [t.id, employeeId])).rowCount)
+    return res.status(409).json({ error: 'Bu çalışan bu şablonda zaten aday olarak eklenmiş' });
+  if ((await pool.query('select 1 from eom_candidates where period_id=$1 and lower(btrim(name))=lower(btrim($2))', [t.id, name])).rowCount)
+    return res.status(409).json({ error: 'Bu isimde bir aday bu şablonda zaten var' });
   let photo = '';
   if (body.photo != null && String(body.photo)) {
     if (!isEomPhoto(body.photo)) return res.status(400).json({ error: 'Geçersiz fotoğraf (jpg/png/webp, en fazla ~600 KB)' });
@@ -2313,7 +2325,7 @@ app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
   }
   const row = (await pool.query(
     'insert into eom_candidates(period_id,category,employee_id,name,subtitle,photo,created_by) values($1,$2,$3,$4,$5,$6,$7) returning *',
-    [period.id, category, employeeId, name, subtitle, photo, req.user.name])).rows[0];
+    [t.id, category, employeeId, name, subtitle, photo, req.user.name])).rows[0];
   res.status(201).json(eomCandidateRow(row, 0));
 }));
 
@@ -2326,7 +2338,7 @@ app.patch('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
   if (name !== existing.name && (await pool.query(
     'select 1 from eom_candidates where period_id=$1 and id<>$2 and lower(btrim(name))=lower(btrim($3))',
     [existing.period_id, existing.id, name])).rowCount)
-    return res.status(409).json({ error: 'Bu isimde bir aday bu dönemde zaten var' });
+    return res.status(409).json({ error: 'Bu isimde bir aday bu şablonda zaten var' });
   const subtitle = body.subtitle != null ? clean(body.subtitle).slice(0, 160) : existing.subtitle;
   let photo = existing.photo;
   if (body.photo != null) {
@@ -2345,32 +2357,6 @@ app.delete('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageEom, 'Aday silme yetkiniz yok')) return;
   const result = await pool.query('delete from eom_candidates where id=$1', [Number(req.params.id) || 0]);
   if (!result.rowCount) return res.status(404).json({ error: 'Aday bulunamadı' });
-  res.status(204).end();
-}));
-
-app.post('/api/eom/votes', asyncRoute(async (req, res) => {
-  const period = await latestPeriod();
-  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Oylama şu anda kapalı' });
-  const body = req.body || {};
-  const category = EOM_CATEGORIES.has(clean(body.category)) ? clean(body.category) : null;
-  if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
-  const candidateId = Number(body.candidate_id) || 0;
-  const cand = (await pool.query('select id from eom_candidates where id=$1 and period_id=$2 and category=$3', [candidateId, period.id, category])).rows[0];
-  if (!cand) return res.status(404).json({ error: 'Aday bulunamadı' });
-  await pool.query(
-    `insert into eom_votes(period_id,category,candidate_id,voter_id,voter_name) values($1,$2,$3,$4,$5)
-     on conflict (period_id,category,voter_id) where voter_id is not null
-     do update set candidate_id=excluded.candidate_id, created_at=now()`,
-    [period.id, category, candidateId, req.user.id, req.user.name]);
-  res.status(204).end();
-}));
-
-app.delete('/api/eom/votes', asyncRoute(async (req, res) => {
-  const period = await latestPeriod();
-  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Oylama şu anda kapalı' });
-  const category = EOM_CATEGORIES.has(clean(req.query.category)) ? clean(req.query.category) : null;
-  if (!category) return res.status(400).json({ error: 'Geçersiz kategori' });
-  await pool.query('delete from eom_votes where period_id=$1 and category=$2 and voter_id=$3', [period.id, category, req.user.id]);
   res.status(204).end();
 }));
 
@@ -2525,22 +2511,70 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
   });
 }));
 
-app.post('/api/eom/invites', asyncRoute(async (req, res) => {
+app.post('/api/eom/templates/:id/invites', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageEom, 'Gönderme yetkiniz yok')) return;
-  const period = await latestPeriod();
-  if (!period || period.status !== 'open') return res.status(400).json({ error: 'Açık bir oylama dönemi yok' });
+  const t = await eomTemplate(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  if (t.status !== 'open') return res.status(400).json({ error: 'Kapalı şablon gönderilemez' });
+  if (!(await pool.query('select 1 from eom_candidates where period_id=$1 limit 1', [t.id])).rowCount)
+    return res.status(400).json({ error: 'Önce aday ekleyin' });
   const { channel, recipients, message } = parseInviteBody(req.body);
   if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
-  const summary = await dispatchInvites(req, { kind: 'makeitright', surveyId: null, periodId: period.id, recipients, channel, message, subject: 'İK Merkezi · Ayın Personeli oylaması' });
+  const summary = await dispatchInvites(req, { kind: 'makeitright', surveyId: null, periodId: t.id, recipients, channel, message, subject: `İK Merkezi · ${t.title}` });
   res.json(summary);
 }));
 
-app.get('/api/eom/invites', asyncRoute(async (req, res) => {
+// Gönderilmiş Make It Right şablonlarının özeti
+app.get('/api/eom/sent', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
-  const period = await latestPeriod();
-  if (!period) return res.json([]);
-  const rows = (await pool.query('select * from survey_invites where period_id=$1 order by id desc', [period.id])).rows;
-  res.json(rows.map(inviteListRow));
+  const rows = (await pool.query(`
+    select p.id, p.title, p.status,
+      count(i.id)::int as sent,
+      count(i.id) filter (where i.opened_at is not null or i.used_at is not null)::int as opened,
+      count(i.id) filter (where i.used_at is not null)::int as responded,
+      max(i.created_at) as last_sent_at
+    from eom_periods p
+    join survey_invites i on i.period_id = p.id and i.kind = 'makeitright'
+    group by p.id
+    order by max(i.created_at) desc`)).rows;
+  res.json(rows);
+}));
+
+app.get('/api/eom/templates/:id/report', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  const t = await eomTemplate(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
+  const candidates = (await pool.query('select id,category,name,subtitle,photo from eom_candidates where period_id=$1 order by id', [t.id])).rows;
+  const invites = (await pool.query(
+    "select recipient_name,channel,sent_ok,sent_error,opened_at,used_at,response from survey_invites where period_id=$1 and kind='makeitright' order by id", [t.id])).rows;
+  const sent = invites.length;
+  const opened = invites.filter(i => i.opened_at || i.used_at).length;
+  const responded = invites.filter(i => i.used_at).length;
+  const countBy = {};
+  (await pool.query('select category,candidate_id,count(*)::int n from eom_votes where period_id=$1 group by category,candidate_id', [t.id]))
+    .rows.forEach(r => { countBy[`${r.category}:${r.candidate_id}`] = r.n; });
+  const categories = ['operasyon', 'idari'].map(cat => {
+    const distribution = candidates.filter(c => c.category === cat)
+      .map(c => ({ label: c.name, count: countBy[`${cat}:${c.id}`] || 0 }));
+    const totalVotes = distribution.reduce((a, d) => a + d.count, 0);
+    const top = distribution.slice().sort((a, b) => b.count - a.count)[0];
+    return {
+      category: cat,
+      label: cat === 'operasyon' ? 'Operasyon Çalışanları' : 'İdari Ofis Çalışanları',
+      total_votes: totalVotes,
+      winner: top && top.count > 0 ? top.label : null,
+      distribution
+    };
+  });
+  res.json({
+    template: { id: t.id, title: t.title, status: t.status },
+    totals: { sent, opened, responded },
+    categories,
+    invites: invites.map(i => ({
+      name: i.recipient_name, channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
+      opened_at: i.opened_at, used_at: i.used_at
+    }))
+  });
 }));
 
 // --- Genel (oturumsuz) davet bağlantısı ---
@@ -2576,8 +2610,8 @@ app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
     if (!p) return res.status(404).json({ status: 'invalid' });
     if (p.status !== 'open' && !inv.used_at) out.status = 'closed';
     out.eyebrow = 'Make It Right';
-    out.title = 'Ayın Personeli';
-    out.subtitle = p.title;
+    out.title = p.title;
+    out.subtitle = 'Ayın Personeli seçimi';
     out.candidates = (await pool.query('select id,category,name,subtitle,photo from eom_candidates where period_id=$1 order by id', [inv.period_id])).rows
       .map(c => ({ id: c.id, category: c.category, name: c.name, subtitle: c.subtitle, photo: c.photo || '' }));
   }

@@ -210,7 +210,7 @@
       }
     }
     setTag(d.eyebrow||'');
-    root.innerHTML=hero(d,d.kind==='makeitright'?'Ayın Personeli':d.title)
+    root.innerHTML=hero(d,d.title)
       +'<div class="card"><div class="state ok"><div class="badge">✓</div>'
       +'<h2>Yanıtınız alındı</h2>'
       +'<p>Katılımınız için teşekkür ederiz'+(d.recipient_name?', '+esc(d.recipient_name):'')+'. '
@@ -230,7 +230,7 @@
         +'<div class="cols">'+CATS.map(function(c){return colBlock(c[0],c[1],d.candidates||[])}).join('')+'</div>'
         +'<div id="err"></div><button class="btn" id="send">Oyumu gönder</button>';
     }
-    root.innerHTML=hero(d,d.kind==='makeitright'?'Ayın Personeli':d.title)+'<div class="card">'+inner+'</div>';
+    root.innerHTML=hero(d,d.title)+'<div class="card">'+inner+'</div>';
     wire(d);
   }
 

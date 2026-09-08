@@ -117,21 +117,35 @@
   const fmtDT=v=>{ if(!v)return '—'; const d=new Date(v); return isNaN(d)?'—':d.toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
   const PIE_COLORS=['#4967f4','#18a874','#f59e0b','#e55261','#8b5cf6','#0ea5e9','#ec4899','#64748b','#14b8a6','#f97316'];
 
-  function sentCardHtml(sent){
+  function sentCardHtml(sent,kind){
+    const eom=kind==='eom';
+    const attr=eom?'data-eom-report':'data-survey-report';
+    const heading=eom?'Gönderilen Make It Right anketleri':'Gönderilen anketler';
     const rows=(sent||[]).map(s=>{
       const rate=s.sent?Math.round(s.responded/s.sent*100):0;
       return `<tr>
-        <td><button class="btn ghost" data-survey-report="${s.id}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
+        <td><button class="btn ghost" ${attr}="${s.id}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
           <small class="muted" style="display:block">Son gönderim: ${esc(fmtDT(s.last_sent_at))}</small></td>
         <td>${s.sent}</td><td>${s.opened}</td><td>${s.responded}</td>
-        <td style="min-width:150px"><div class="bar"><i style="width:${rate}%"></i></div><small class="muted">%${rate} yanıt</small></td>
+        <td style="min-width:150px"><div class="bar"><i style="width:${rate}%"></i></div><small class="muted">%${rate} ${eom?'oy':'yanıt'}</small></td>
       </tr>`;
     }).join('');
     return `<div class="card" style="margin-top:18px">
-      <div class="card-head"><div><h2>Gönderilen anketler</h2><span class="muted">Anket adına tıklayarak yanıt durumunu ve grafikleri görün</span></div></div>
-      <div style="overflow:auto"><table><thead><tr><th>ANKET</th><th>GÖNDERİLDİ</th><th>AÇILDI</th><th>YANITLADI</th><th>YANIT ORANI</th></tr></thead>
-      <tbody>${rows||`<tr><td colspan="5" class="empty">Henüz anket gönderilmedi</td></tr>`}</tbody></table></div>
+      <div class="card-head"><div><h2>${heading}</h2><span class="muted">İsmine tıklayarak katılım durumunu ve grafikleri görün</span></div></div>
+      <div style="overflow:auto"><table><thead><tr><th>${eom?'ŞABLON':'ANKET'}</th><th>GÖNDERİLDİ</th><th>AÇILDI</th><th>${eom?'OY KULLANDI':'YANITLADI'}</th><th>KATILIM</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="5" class="empty">Henüz gönderim yok</td></tr>`}</tbody></table></div>
     </div>`;
+  }
+
+  function repRecipTable(invites){
+    return `<details class="rep-recips"><summary>Alıcı listesi (${(invites||[]).length})</summary>
+      <div style="overflow:auto"><table><thead><tr><th>ALICI</th><th>KANAL</th><th>DURUM</th><th>AÇILMA</th><th>KATILIM</th></tr></thead><tbody>
+      ${(invites||[]).map(v=>{
+        const st=v.used_at?'<span class="badge green">Katıldı</span>':(v.opened_at?'<span class="badge orange">Açtı</span>':(v.sent_ok?'<span class="badge blue">Gönderildi</span>':'<span class="badge red">Gönderilemedi</span>'));
+        return `<tr><td>${esc(v.name||'—')}${v.sent_error?`<small class="muted" style="display:block">${esc(v.sent_error)}</small>`:''}</td><td>${v.channel==='sms'?'SMS':'E-posta'}</td><td>${st}</td><td>${esc(fmtDT(v.opened_at))}</td><td>${esc(fmtDT(v.used_at))}</td></tr>`;
+      }).join('')||'<tr><td colspan="5" class="empty">Alıcı yok</td></tr>'}
+      </tbody></table></div>
+    </details>`;
   }
 
   function pieHtml(parts){
@@ -176,14 +190,7 @@
       </div>
       <div class="rep-q"><div class="rep-q-h">Yanıt durumu</div>${pieHtml(statusParts)}</div>
       ${qHtml||'<div class="empty">Bu ankette soru yok</div>'}
-      <details class="rep-recips"><summary>Alıcı listesi (${(rep.invites||[]).length})</summary>
-        <div style="overflow:auto"><table><thead><tr><th>ALICI</th><th>KANAL</th><th>DURUM</th><th>AÇILMA</th><th>YANIT</th></tr></thead><tbody>
-        ${(rep.invites||[]).map(v=>{
-          const st=v.used_at?'<span class="badge green">Yanıtladı</span>':(v.opened_at?'<span class="badge orange">Açtı</span>':(v.sent_ok?'<span class="badge blue">Gönderildi</span>':'<span class="badge red">Gönderilemedi</span>'));
-          return `<tr><td>${esc(v.name||'—')}${v.sent_error?`<small class="muted" style="display:block">${esc(v.sent_error)}</small>`:''}</td><td>${v.channel==='sms'?'SMS':'E-posta'}</td><td>${st}</td><td>${esc(fmtDT(v.opened_at))}</td><td>${esc(fmtDT(v.used_at))}</td></tr>`;
-        }).join('')||'<tr><td colspan="5" class="empty">Alıcı yok</td></tr>'}
-        </tbody></table></div>
-      </details>
+      ${repRecipTable(rep.invites)}
     </div>`;
   }
 
@@ -325,11 +332,10 @@
     redraw();
   }
 
-  // --- Make It Right · Ayın Personeli oylaması --------------------
-  // Sol sütun = operasyon, sağ sütun = idari ofis
+  // --- Make It Right · Ayın Personeli şablonları -----------------
+  // Sol sütun = operasyon, sağ sütun = idari ofis. Oylama sadece link ile.
   const EOM_CATS=[['operasyon','Operasyon Çalışanları'],['idari','İdari Ofis Çalışanları']];
   const eomCatLabel=c=>(EOM_CATS.find(x=>x[0]===c)||['',''])[1];
-
   const eomInitials=n=>String(n||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toLocaleUpperCase('tr-TR')||'?';
   function eomPhoto(c){
     return c.photo
@@ -337,128 +343,197 @@
       : `<span class="eom-photo eom-photo-ph">${esc(eomInitials(c.name))}</span>`;
   }
 
-  // Oy pusulası — hem canlı görünüm hem önizleme aynı işaretlemeyi kullanır
-  function eomColumnsHtml(data,{preview=false}={}){
-    const manage=data.can_manage&&!preview;
-    const open=data.period.status==='open';
+  async function renderMakeItRight(){
+    if(!document.querySelector('#eom-tmpl-card'))mount('<div class="card empty">Yükleniyor…</div>');
+    let list,sent;
+    try{
+      list=await api('/api/eom/templates');
+      sent=await api('/api/eom/sent').catch(()=>[]);
+    }catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    if(tab!=='makeitright')return;
+    const manage=canManage();
+    const rows=list.map(t=>`<tr>
+      <td><strong>${esc(t.title)}</strong></td>
+      <td>${t.candidate_count} aday</td>
+      <td><span class="badge ${t.status==='open'?'green':'orange'}">${t.status==='open'?'Aktif':'Kapalı'}</span></td>
+      <td class="row-actions">
+        <button class="btn ghost" data-eom-preview="${t.id}">Önizle</button>
+        ${manage?`${t.status==='open'?`<button class="btn ghost" data-eom-send="${t.id}">Gönder</button>`:''}<button class="btn ghost" data-eom-edit="${t.id}">Düzenle</button><button class="btn ghost" data-eom-copy="${t.id}">Kopyala</button><button class="btn ghost danger-text" data-eom-del="${t.id}">Sil</button>`:''}
+      </td>
+    </tr>`).join('');
+    mount(`<div class="card" id="eom-tmpl-card">
+      <div class="toolbar">
+        ${manage?`<button class="btn" id="eom-add">+ Yeni Make It Right şablonu</button>`:''}
+        <span class="muted">${list.length} şablon</span>
+      </div>
+      <div style="overflow:auto"><table><thead><tr><th>ŞABLON</th><th>ADAY</th><th>DURUM</th><th></th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="4" class="empty">Henüz şablon yok</td></tr>`}</tbody></table></div>
+    </div>
+    ${sentCardHtml(sent,'eom')}`);
+    if($('#eom-add'))$('#eom-add').onclick=eomCreateTemplate;
+    document.querySelectorAll('[data-eom-preview]').forEach(b=>b.onclick=()=>eomPreviewTemplate(b.dataset.eomPreview));
+    document.querySelectorAll('[data-eom-edit]').forEach(b=>b.onclick=()=>openEomBuilder(b.dataset.eomEdit));
+    document.querySelectorAll('[data-eom-report]').forEach(b=>b.onclick=()=>openEomReport(b.dataset.eomReport));
+    document.querySelectorAll('[data-eom-send]').forEach(b=>b.onclick=()=>{
+      const t=list.find(x=>String(x.id)===b.dataset.eomSend);
+      inviteModal('makeitright',{templateId:t.id,title:t.title});
+    });
+    document.querySelectorAll('[data-eom-copy]').forEach(b=>b.onclick=async()=>{
+      try{await api('/api/eom/templates/'+b.dataset.eomCopy+'/copy',{method:'POST'});renderMakeItRight();toast('Şablon kopyalandı');}
+      catch(err){toast(err.message);}
+    });
+    document.querySelectorAll('[data-eom-del]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Bu şablonu silmek istediğinize emin misiniz? Gönderilmiş linkler ve oylar da silinir.'))return;
+      try{await api('/api/eom/templates/'+b.dataset.eomDel,{method:'DELETE'});renderMakeItRight();toast('Şablon silindi');}
+      catch(err){toast(err.message);}
+    });
+  }
+
+  function eomCreateTemplate(){
+    modal('Yeni Make It Right şablonu',
+      `<div class="field"><label>Şablon adı *</label><input class="input" id="eom-tname" placeholder="ör. 2026 1. Çeyrek Ayın Personeli"></div>
+       <p class="muted" style="margin-top:10px;font-size:12px">Oluşturduktan sonra iki sütuna (operasyon / idari ofis) adayları eklersiniz.</p>`,
+      async()=>{
+        const title=($('#eom-tname').value||'').trim();
+        if(!title)return toast('Şablon adı girin');
+        try{
+          const t=await api('/api/eom/templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});
+          closeModal();renderMakeItRight();openEomBuilder(t.id);toast('Şablon oluşturuldu — şimdi aday ekleyin');
+        }catch(err){toast(err.message);}
+      });
+  }
+
+  function eomBuilderColumns(tpl){
     return EOM_CATS.map(([cat,label])=>{
-      const cands=data.candidates.filter(c=>c.category===cat);
-      const myPick=preview?null:data.my_votes[cat];
-      const cards=cands.map(c=>{
-        const picked=String(myPick)===String(c.id);
-        return `<div class="eom-cand ${picked?'picked':''}">
-          <label class="eom-cand-main">
-            <input type="radio" name="${preview?'pv-':''}eom-${cat}" value="${c.id}" ${picked?'checked':''} ${(open&&!preview)?'':'disabled'}>
-            ${eomPhoto(c)}
-            <span class="eom-cand-body"><strong>${esc(c.name)}</strong>${c.subtitle?`<small class="muted">${esc(c.subtitle)}</small>`:''}</span>
-          </label>
-          ${manage?`<span class="eom-votes" title="Oy sayısı">${c.votes??0}</span><button type="button" class="btn ghost eom-edit" data-edit="${c.id}">Düzenle</button><button type="button" class="btn ghost danger-text eom-del" data-del="${c.id}">Sil</button>`:''}
-        </div>`;
-      }).join('')||'<div class="empty">Aday eklenmedi</div>';
+      const cands=(tpl.candidates||[]).filter(c=>c.category===cat);
+      const cards=cands.map(c=>`<div class="eom-cand">
+        <span class="eom-cand-main">${eomPhoto(c)}<span class="eom-cand-body"><strong>${esc(c.name)}</strong>${c.subtitle?`<small class="muted">${esc(c.subtitle)}</small>`:''}</span></span>
+        <button type="button" class="btn ghost eom-edit-c" data-edit="${c.id}">Düzenle</button>
+        <button type="button" class="btn ghost danger-text eom-del-c" data-del="${c.id}">Sil</button>
+      </div>`).join('')||'<div class="empty">Aday eklenmedi</div>';
       return `<div class="eom-col">
         <div class="eom-col-head"><span>${label}</span><span class="muted">${cands.length} aday</span></div>
         <div class="eom-cards">${cards}</div>
-        ${manage&&open?`<button type="button" class="btn secondary eom-add" data-cat="${cat}">+ Aday ekle</button>`:''}
-        ${!preview&&open&&myPick?`<button type="button" class="btn ghost eom-clear" data-cat="${cat}">Seçimi geri al</button>`:''}
+        <button type="button" class="btn secondary eom-add-c" data-cat="${cat}">+ Aday ekle</button>
       </div>`;
     }).join('');
   }
 
-  let eomData=null;
-
-  async function renderMakeItRight(){
-    mount('<div class="card empty">Yükleniyor…</div>');
-    let data;
-    try{data=await api('/api/eom');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
-    if(tab!=='makeitright')return;
-    eomData=data;
-    const manage=data.can_manage;
-
-    if(!data.period){
-      mount(`<div class="card">
-        <div class="card-head"><h2>Ayın Personeli</h2></div>
-        <div class="empty">Henüz bir oylama dönemi başlatılmadı.${manage?'':' İK bir dönem başlattığında burada oy kullanabilirsiniz.'}</div>
-        ${manage?`<div style="margin-top:12px;text-align:center"><button class="btn" id="eom-new">+ Yeni dönem başlat</button></div>`:''}
-      </div>`);
-      if($('#eom-new'))$('#eom-new').onclick=eomNewPeriod;
-      return;
+  async function openEomBuilder(id){
+    let tpl;
+    try{tpl=await api('/api/eom/templates/'+id);}catch(err){return toast(err.message);}
+    modal('Make It Right şablonu','<div id="eomb-body"></div>',()=>closeModal());
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=()=>{closeModal();renderMakeItRight();};}
+    const box=()=>$('#eomb-body');
+    async function reload(){try{tpl=await api('/api/eom/templates/'+id);}catch(_){}draw();}
+    function draw(){
+      box().innerHTML=`
+        <div class="form-grid">
+          <div class="field" style="grid-column:1/-1"><label>Şablon adı *</label><input class="input" id="eomb-title" value="${esc(tpl.title)}"></div>
+          <div class="field"><label>Durum</label><select class="select" id="eomb-status"><option value="open" ${tpl.status==='open'?'selected':''}>Aktif</option><option value="closed" ${tpl.status==='closed'?'selected':''}>Kapalı</option></select></div>
+        </div>
+        <p class="muted" style="font-size:12px;margin:12px 0 4px">Sol sütun operasyon, sağ sütun idari ofis adayları. Oy verenler her sütundan 1 aday seçer.</p>
+        <div class="eom-grid">${eomBuilderColumns(tpl)}</div>`;
+      bind();
     }
-
-    const open=data.period.status==='open';
-    mount(`<div class="card">
-      <div class="card-head" style="align-items:center;gap:10px;flex-wrap:wrap">
-        <h2 style="margin:0">Ayın Personeli · ${esc(data.period.title)}</h2>
-        <span class="badge ${open?'green':'orange'}">${open?'Oylama açık':'Oylama kapandı'}</span>
-        ${manage?`<span style="flex:1"></span><span class="muted">${data.voter_count||0} kişi oy kullandı</span>
-          <button class="btn secondary" id="eom-preview">👁 Önizleme</button>
-          ${open?`<button class="btn secondary" id="eom-invite">✉ Link gönder</button><button class="btn ghost" id="eom-close">Oylamayı kapat</button>`:`<button class="btn ghost" id="eom-reopen">Yeniden aç</button>`}
-          <button class="btn" id="eom-new">Yeni dönem</button>`:''}
-      </div>
-      <p class="muted" style="margin:4px 0 16px">Her sütundan yalnızca <strong>1</strong> aday seçebilirsiniz. Seçiminiz otomatik kaydedilir.${open?'':' Oylama kapandığı için değişiklik yapılamaz.'}</p>
-      <div class="eom-grid">${eomColumnsHtml(data,{preview:false})}</div>
-    </div>`);
-
-    document.querySelectorAll('input[type=radio][name^="eom-"]').forEach(r=>r.onchange=async()=>{
-      const cat=r.name.slice(4);
-      try{await api('/api/eom/votes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({category:cat,candidate_id:Number(r.value)})});toast('Oyunuz kaydedildi');renderMakeItRight();}
-      catch(err){toast(err.message);renderMakeItRight();}
-    });
-    document.querySelectorAll('.eom-clear').forEach(b=>b.onclick=async()=>{
-      try{await api('/api/eom/votes?category='+encodeURIComponent(b.dataset.cat),{method:'DELETE'});toast('Seçim geri alındı');renderMakeItRight();}
-      catch(err){toast(err.message);}
-    });
-    document.querySelectorAll('.eom-add').forEach(b=>b.onclick=()=>eomCandidateModal(b.dataset.cat,null));
-    document.querySelectorAll('.eom-edit').forEach(b=>b.onclick=()=>{
-      const c=data.candidates.find(x=>String(x.id)===b.dataset.edit);
-      if(c)eomCandidateModal(c.category,c);
-    });
-    document.querySelectorAll('.eom-del').forEach(b=>b.onclick=async()=>{
-      if(!confirm('Bu adayı silmek istediğinize emin misiniz? Aldığı oylar da silinir.'))return;
-      try{await api('/api/eom/candidates/'+b.dataset.del,{method:'DELETE'});toast('Aday silindi');renderMakeItRight();}
-      catch(err){toast(err.message);}
-    });
-    if($('#eom-new'))$('#eom-new').onclick=eomNewPeriod;
-    if($('#eom-preview'))$('#eom-preview').onclick=()=>eomPreview(eomData);
-    if($('#eom-invite'))$('#eom-invite').onclick=()=>inviteModal('makeitright',{title:data.period.title});
-    if($('#eom-close'))$('#eom-close').onclick=()=>{if(confirm('Oylamayı kapatmak istediğinize emin misiniz?'))eomSetStatus(data.period.id,'closed');};
-    if($('#eom-reopen'))$('#eom-reopen').onclick=()=>eomSetStatus(data.period.id,'open');
+    function bind(){
+      box().querySelector('#eomb-title').onchange=async e=>{
+        const v=e.target.value.trim();if(!v)return;
+        try{await api('/api/eom/templates/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:v})});toast('Kaydedildi');}catch(err){toast(err.message);}
+      };
+      box().querySelector('#eomb-status').onchange=async e=>{
+        try{await api('/api/eom/templates/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:e.target.value})});toast('Kaydedildi');}catch(err){toast(err.message);}
+      };
+      box().querySelectorAll('.eom-add-c').forEach(b=>b.onclick=()=>eomCandidateModal(b.dataset.cat,null,{templateId:id,candidates:tpl.candidates||[],onDone:reload}));
+      box().querySelectorAll('.eom-edit-c').forEach(b=>b.onclick=()=>{
+        const c=(tpl.candidates||[]).find(x=>String(x.id)===b.dataset.edit);
+        if(c)eomCandidateModal(c.category,c,{templateId:id,candidates:tpl.candidates||[],onDone:reload});
+      });
+      box().querySelectorAll('.eom-del-c').forEach(b=>b.onclick=async()=>{
+        if(!confirm('Bu adayı silmek istediğinize emin misiniz?'))return;
+        try{await api('/api/eom/candidates/'+b.dataset.del,{method:'DELETE'});reload();toast('Aday silindi');}catch(err){toast(err.message);}
+      });
+    }
+    draw();
   }
 
-  function eomPreview(data){
-    if(!data||!data.period)return;
-    modal('Önizleme · Oy verenlerin göreceği ekran',
-      `<div class="sv-preview">
-       ${brandPreviewHead('Make It Right','Ayın Personeli',data.period.title)}
-       <p class="muted" style="margin:0 0 14px">Her sütundan yalnızca <strong>1</strong> aday seçilebilir.</p>
-       <div class="eom-grid eom-preview">${eomColumnsHtml(data,{preview:true})}</div>
-       <button class="btn" type="button" disabled style="margin-top:16px">Oyumu gönder</button>
-       </div>`,
-      ()=>closeModal());
+  function eomPreviewTemplate(id){
+    api('/api/eom/templates/'+id).then(tpl=>{
+      const cols=EOM_CATS.map(([cat,label])=>{
+        const cands=(tpl.candidates||[]).filter(c=>c.category===cat);
+        const cards=cands.map(c=>`<div class="eom-cand"><label class="eom-cand-main"><input type="radio" name="pv-${cat}" disabled>${eomPhoto(c)}<span class="eom-cand-body"><strong>${esc(c.name)}</strong>${c.subtitle?`<small class="muted">${esc(c.subtitle)}</small>`:''}</span></label></div>`).join('')||'<div class="empty">Aday eklenmedi</div>';
+        return `<div class="eom-col"><div class="eom-col-head"><span>${label}</span><span class="muted">${cands.length} aday</span></div><div class="eom-cards">${cards}</div></div>`;
+      }).join('');
+      modal('Önizleme · '+esc(tpl.title),
+        `<div class="sv-preview">
+         ${brandPreviewHead('Make It Right',tpl.title,'Ayın Personeli seçimi')}
+         <p class="muted" style="margin:0 0 14px">Her sütundan yalnızca <strong>1</strong> aday seçilebilir.</p>
+         <div class="eom-grid eom-preview">${cols}</div>
+         <button class="btn" type="button" disabled style="margin-top:16px">Oyumu gönder</button>
+         </div>`,()=>closeModal());
+      document.querySelector('.modal')?.classList.add('survey-modal');
+      const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
+    }).catch(err=>toast(err.message));
+  }
+
+  function eomReportHtml(rep){
+    const t=rep.totals,notResp=Math.max(0,t.sent-t.responded);
+    const statusParts=[
+      {label:'Oy kullandı',count:t.responded,color:'#18a874'},
+      {label:'Açtı, oy kullanmadı',count:Math.max(0,t.opened-t.responded),color:'#f59e0b'},
+      {label:'Hiç açmadı',count:Math.max(0,t.sent-t.opened),color:'#c3cad6'}
+    ];
+    const cats=(rep.categories||[]).map(c=>`<div class="rep-q">
+      <div class="rep-q-h">${esc(c.label)}</div>
+      <div class="muted" style="font-size:12px">${c.total_votes} oy${c.winner?` · önde: <strong>${esc(c.winner)}</strong>`:''}</div>
+      ${pieHtml((c.distribution||[]).map(d=>({label:d.label,count:d.count})))}
+    </div>`).join('');
+    return `<div id="rep-body">
+      <div class="rep-stats">
+        <div class="rep-stat"><b>${t.sent}</b><span>Gönderildi</span></div>
+        <div class="rep-stat"><b>${t.opened}</b><span>Açıldı (tıkladı)</span></div>
+        <div class="rep-stat"><b>${t.responded}</b><span>Oy kullandı</span></div>
+        <div class="rep-stat"><b>${notResp}</b><span>Oy kullanmadı</span></div>
+      </div>
+      <div class="rep-q"><div class="rep-q-h">Katılım durumu</div>${pieHtml(statusParts)}</div>
+      ${cats||'<div class="empty">Bu şablonda aday yok</div>'}
+      ${repRecipTable(rep.invites)}
+    </div>`;
+  }
+  function eomRepSig(rep){
+    const t=rep.totals||{};
+    return [t.sent,t.opened,t.responded,(rep.categories||[]).map(c=>(c.distribution||[]).map(d=>d.count).join('.')).join('|')].join(';');
+  }
+  async function openEomReport(id){
+    let rep;
+    try{rep=await api('/api/eom/templates/'+id+'/report');}catch(err){return toast(err.message);}
+    modal('Make It Right raporu · '+esc(rep.template.title),eomReportHtml(rep),()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
+    let lastSig=eomRepSig(rep);
+    clearInterval(repTimer);
+    repTimer=setInterval(async()=>{
+      const body=document.querySelector('#rep-body');
+      if(!body||!document.body.contains(body)){clearInterval(repTimer);repTimer=null;return;}
+      let fresh;
+      try{fresh=await api('/api/eom/templates/'+id+'/report');}catch(_){return;}
+      const sig=eomRepSig(fresh);
+      if(sig===lastSig)return;
+      lastSig=sig;
+      const scroll=body.scrollTop,recipsOpen=body.querySelector('.rep-recips')?.open;
+      body.outerHTML=eomReportHtml(fresh);
+      const nb=document.querySelector('#rep-body');
+      if(nb){nb.scrollTop=scroll;if(recipsOpen){const d=nb.querySelector('.rep-recips');if(d)d.open=true;}}
+      toast('Yeni oy geldi — rapor güncellendi');
+    },3000);
   }
 
-  function eomNewPeriod(){
-    const now=new Date(),months=['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
-    modal('Yeni Ayın Personeli dönemi',
-      `<div class="field"><label>Dönem başlığı</label><input class="input" id="eom-title" value="${esc(months[now.getMonth()]+' '+now.getFullYear())}"></div>
-       <p class="muted" style="margin-top:10px">Açık bir dönem varsa kapatılır ve yeni dönem başlatılır. Yeni dönemde adaylar sıfırdan eklenir.</p>`,
-      async()=>{
-        const title=($('#eom-title').value||'').trim();
-        if(!title)return toast('Dönem başlığı girin');
-        try{await api('/api/eom/periods',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});closeModal();renderMakeItRight();toast('Yeni dönem başlatıldı');}
-        catch(err){toast(err.message);}
-      });
-  }
-
-  async function eomSetStatus(id,status){
-    try{await api('/api/eom/periods/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});renderMakeItRight();toast(status==='closed'?'Oylama kapatıldı':'Oylama yeniden açıldı');}
-    catch(err){toast(err.message);}
-  }
-
-  function eomCandidateModal(cat,existing){
+  function eomCandidateModal(cat,existing,ctx){
+    ctx=ctx||{};
     const editing=!!existing;
-    const taken=(eomData?.candidates||[]);
+    const onDone=ctx.onDone||renderMakeItRight;
+    const taken=(ctx.candidates||[]);
     const takenEmp=new Set(taken.map(c=>String(c.employee_id)).filter(x=>x&&x!=='null'));
     const takenName=new Set(taken.map(c=>String(c.name||'').trim().toLocaleLowerCase('tr-TR')));
     const emps=(state.employees||[])
@@ -491,14 +566,14 @@
         const employee_id=editing?'':($('#eom-emp')?.value||'');
         if(!name&&!employee_id)return toast('Aday adı girin veya çalışan seçin');
         const payload={category:cat,name,subtitle:($('#eom-sub').value||'').trim()};
-        if(!editing&&employee_id)payload.employee_id=employee_id;
+        if(!editing){payload.template_id=ctx.templateId;if(employee_id)payload.employee_id=employee_id;}
         if(photoData!=null)payload.photo=photoData;
         else if(removePhoto)payload.photo='';
         const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
         try{
           if(editing)await api('/api/eom/candidates/'+existing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
           else await api('/api/eom/candidates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-          closeModal();renderMakeItRight();toast(editing?'Aday güncellendi':'Aday eklendi');
+          closeModal();onDone();toast(editing?'Aday güncellendi':'Aday eklendi');
         }catch(err){toast(err.message);if(submit)submit.disabled=false;}
       });
     const sel=$('#eom-emp');
@@ -529,7 +604,7 @@
     let channel='email';
     let rows=[{name:'',email:'',phone:''}];
     let done=false;
-    const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/invites';
+    const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/templates/'+opts.templateId+'/invites';
     modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body"></div>',async()=>{
       if(done){closeModal();if(kind!=='personel')renderMakeItRight();return;}
       const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim()})).filter(r=>r.name||r.email||r.phone);
