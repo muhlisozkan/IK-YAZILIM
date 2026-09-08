@@ -1670,10 +1670,26 @@ app.post('/api/leaves', asyncRoute(async (req, res) => {
     const balYear = Number(String(body.start_date).slice(0, 4));
     const balance = (await annualBalanceRows([person], balYear))[0];
     const available = balance ? balance.available_days : 0;
-    if (Number(body.days) > available + 0.01) {
+    const requestedDays = Number(body.days);
+    if (requestedDays > available + 0.01) {
       return res.status(400).json({
         error: `Yıllık izin bakiyesi yetersiz. ${balYear} için kalan kullanılabilir bakiye: ${available.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} gün (talep: ${body.days} gün).`
       });
+    }
+    // 4857 s. m.56: hak ediş döneminde iznin bir bölümü kesintisiz en az 10 gün olmalı.
+    const entitlement = balance ? Number(balance.current_year_days || 0) : 0;
+    if (entitlement >= 10 && requestedDays < 10) {
+      const split = (await pool.query(`
+        select bool_or(days >= 10) as has_long,
+               coalesce(sum(days) filter (where days < 10), 0)::numeric as small_used
+        from leave_requests
+        where employee_id=$1 and leave_type='Yıllık izin' and status in ('Bekliyor','Onaylandı')
+          and extract(year from start_date)=$2`, [person.id, balYear])).rows[0];
+      if (!split.has_long && Number(split.small_used || 0) + requestedDays > entitlement - 10 + 0.01) {
+        return res.status(400).json({
+          error: `Yıllık iznin bir bölümü kesintisiz en az 10 gün kullanılmalıdır (4857 s. m.56). ${balYear} hak edişinde 10 günden kısa parçalarla en fazla ${entitlement - 10} gün kullanılabilir; kalan izin tek seferde en az 10 gün olmalıdır.`
+        });
+      }
     }
   }
   const route = await approvalRouteFor('leave', person.department);

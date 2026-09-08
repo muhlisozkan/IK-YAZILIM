@@ -123,8 +123,11 @@ function leaveModal(){
     if(Math.round((new Date(end)-new Date(start))/86400000)>40)return toast('Bitiş tarihi başlangıçtan en fazla 40 gün sonra olabilir');
     const days=businessDays(start,end);if(!days)return toast('Seçilen aralıkta çalışma günü yok');
     if(type==='Yıllık izin'){
-      const bal=await annualBalanceFor(employee.id,Number(start.slice(0,4)));
+      const yr=Number(start.slice(0,4));
+      const bal=await annualBalanceFor(employee.id,yr);
       if(bal&&days>bal.available+0.01)return toast(`Yıllık izin bakiyesi yetersiz. Kalan kullanılabilir bakiye: ${leaveNumber(bal.available)} gün (talep: ${days} gün).`);
+      const w=bal?splitRuleWarning(employee.id,yr,days,bal.entitlement):'';
+      if(w)return toast(w+' Kalan izni tek seferde en az 10 gün olarak talep edin.');
     }
     try{const created=await leaveApi('/api/leaves',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:employee.id,leave_type:type,start_date:start,end_date:end,days})});state.leaves.unshift({...created,employee:created.employee_name,type:created.leave_type,start:leaveDate(created.start_date),end:leaveDate(created.end_date)});__annualBalanceCache={};closeModal();renderLeaveRequests();toast(`İzin talebi ${created.current_approver} onayına gönderildi`)}catch(error){toast(error.message)}
   });
@@ -140,6 +143,8 @@ function leaveModal(){
         const yeter=days<=bal.available+0.01;
         html+=`<br>Kullanılabilir yıllık izin bakiyesi: <strong>${leaveNumber(bal.available)} gün</strong>`;
         if(!yeter)html+=`<br><span class="danger-text"><strong>Bakiye yetersiz</strong> — bu talep bakiyeyi ${leaveNumber(days-bal.available)} gün aşıyor.</span>`;
+        const w=splitRuleWarning(empId,Number(start.slice(0,4)),days,bal.entitlement);
+        if(w)html+=`<br><span class="danger-text">${w}</span>`;
       }
     }
     box.innerHTML=html;
@@ -165,7 +170,19 @@ async function annualBalanceFor(employeeId,year){
   }
   const rows=await __annualBalanceCache[year];
   const r=rows.find(x=>String(x.employee_id)===String(employeeId));
-  return r?{available:Number(r.available_days),remaining:Number(r.remaining_days),used:Number(r.used_days)}:null;
+  return r?{available:Number(r.available_days),remaining:Number(r.remaining_days),used:Number(r.used_days),entitlement:Number(r.current_year_days||0)}:null;
+}
+// 4857/56: hak ediş döneminde iznin bir parçası kesintisiz en az 10 gün olmalı
+function splitRuleWarning(employeeId,year,days,entitlement){
+  if(!(entitlement>=10)||days>=10)return '';
+  const mine=(state.leaves||[]).filter(l=>String(l.employee_id)===String(employeeId)
+    &&(l.leave_type||l.type)==='Yıllık izin'&&['Bekliyor','Onaylandı'].includes(l.status)
+    &&Number(String(l.start_date||l.start||'').slice(0,4))===year);
+  if(mine.some(l=>Number(l.days)>=10))return '';
+  const smallUsed=mine.filter(l=>Number(l.days)<10).reduce((s,l)=>s+Number(l.days),0);
+  if(smallUsed+days>entitlement-10+0.01)
+    return `Yıllık iznin bir bölümü kesintisiz en az 10 gün olmalıdır (4857/56). ${year} hak edişinde 10 günden kısa parçalarla en fazla ${leaveNumber(entitlement-10)} gün kullanılabilir.`;
+  return '';
 }
 
 async function decideLeave(id,decision){
