@@ -726,8 +726,12 @@
             <button type="button" class="btn ghost" id="inv-add">+ Elle satır</button>
             <button type="button" class="btn ghost" id="inv-groups">Grupları yönet</button>
           </div>
+          <p class="muted" style="font-size:11px;margin:0 0 8px">Grup ve departman seçimleri listeye <strong>eklenir</strong> (birden çok departmana birlikte gönderebilirsiniz). Baştan başlamak için “Listeyi temizle”.</p>
           <div class="inv-rows">${rows.map(rowHtml).join('')}</div>
-          ${filled?`<button type="button" class="btn ghost" id="inv-savegroup">💾 Bu listeyi grup olarak kaydet</button>`:''}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+            ${filled?`<button type="button" class="btn ghost danger-text" id="inv-clear">Listeyi temizle</button>`:''}
+            ${filled?`<button type="button" class="btn ghost" id="inv-savegroup">💾 Bu listeyi grup olarak kaydet</button>`:''}
+          </div>
         </div>
         <div class="field"><label>Selamlama</label>
           <label class="inv-greet"><input type="checkbox" id="inv-greet" ${greet?'checked':''}> Mesaja kişiye özel selamlama ekle</label>
@@ -745,15 +749,18 @@
       box().querySelector('#inv-add').onclick=()=>{rows.push({name:'',email:'',phone:'',employee_id:null});redraw();};
       box().querySelector('#inv-groups').onclick=()=>recipientGroupsModal(async()=>{await loadGroups();redraw();});
       box().querySelector('#inv-group').onchange=async e=>{
-        const id=e.target.value;e.target.value='';if(!id)return;
-        try{const g=await api('/api/recipient-groups/'+id);const n=addRecipients(g.members);toast(n?`${n} alıcı eklendi`:'Yeni alıcı yok (zaten listede)');}
+        const id=e.target.value,label=e.target.selectedOptions[0]?.textContent||'Grup';e.target.value='';if(!id)return;
+        try{const g=await api('/api/recipient-groups/'+id);const n=addRecipients(g.members);
+          toast(n?`${label.split(' (')[0]}: ${n} kişi eklendi · toplam ${rows.filter(r=>r.name||r.email||r.phone).length} alıcı`:'Yeni alıcı yok (hepsi zaten listede)');}
         catch(err){toast(err.message);}
       };
       box().querySelector('#inv-dept').onchange=e=>{
         const d=e.target.value;e.target.value='';if(!d)return;
         const n=addRecipients(deptMembers(d));
-        toast(n?`${d}: ${n} çalışan eklendi`:'Yeni çalışan yok (zaten listede)');
+        toast(n?`${d}: ${n} çalışan eklendi · toplam ${rows.filter(r=>r.name||r.email||r.phone).length} alıcı`:`${d}: yeni çalışan yok (hepsi zaten listede)`);
       };
+      const cl=box().querySelector('#inv-clear');
+      if(cl)cl.onclick=()=>{rows=[{name:'',email:'',phone:'',employee_id:null}];redraw();toast('Alıcı listesi temizlendi');};
       const sg=box().querySelector('#inv-savegroup');
       if(sg)sg.onclick=async()=>{
         const name=prompt('Grup adı:');if(!name||!name.trim())return;
