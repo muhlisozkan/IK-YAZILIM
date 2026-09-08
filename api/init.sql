@@ -276,7 +276,7 @@ create table if not exists leave_requests(
   leave_type text not null,
   start_date date not null,
   end_date date not null,
-  days integer not null check(days > 0),
+  days numeric(5,1) not null check(days > 0),
   status text not null default 'Bekliyor',
   approval_route jsonb not null default '[]'::jsonb,
   approval_step integer not null default 0,

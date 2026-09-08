@@ -1653,7 +1653,9 @@ app.get('/api/leaves', asyncRoute(async (req, res) => {
 app.post('/api/leaves', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const employeeId = Number(body.employee_id);
-  if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date || !Number.isInteger(Number(body.days)) || Number(body.days) <= 0) {
+  const requestedDaysRaw = Number(body.days);
+  if (!Number.isInteger(employeeId) || !dateOnly(body.start_date) || !dateOnly(body.end_date) || body.end_date < body.start_date
+    || !(requestedDaysRaw > 0) || Math.round(requestedDaysRaw * 2) !== requestedDaysRaw * 2) {
     return res.status(400).json({ error: 'Çalışan, geçerli tarih aralığı ve izin süresi zorunludur' });
   }
   if (dateDistance(body.end_date, body.start_date) > 40) {

@@ -1,5 +1,25 @@
-const nationalHolidays = ['2026-01-01','2026-04-23','2026-05-01','2026-05-19','2026-07-15','2026-08-30','2026-10-29'];
-function businessDays(start,end){let n=0,d=new Date(start),last=new Date(end);while(d<=last){const day=d.getDay(),iso=d.toISOString().slice(0,10);if(day!==0&&day!==6&&!nationalHolidays.includes(iso))n++;d.setDate(d.getDate()+1)}return n}
+// Haftalık izin çalışan başına 1 gün (yalnızca Pazar). Cumartesi çalışma günüdür.
+// Tam gün resmi tatiller izin hesabında sayılmaz; yarım gün resmi tatiller 0,5 gün sayılır.
+const fullHolidays = ['2026-01-01','2026-04-23','2026-05-01','2026-05-19','2026-07-15','2026-08-30','2026-10-29',
+  // Dini bayramlar 2026 — kesin tarihler ilan edilince güncelleyin
+  '2026-03-20','2026-03-21','2026-03-22',              // Ramazan Bayramı
+  '2026-05-27','2026-05-28','2026-05-29','2026-05-30']; // Kurban Bayramı
+const halfHolidays = ['2026-10-28',                    // Cumhuriyet Bayramı arifesi (yarım gün)
+  '2026-03-19','2026-05-26'];                          // Ramazan / Kurban Bayramı arifeleri (yarım gün)
+const nationalHolidays = [...fullHolidays, ...halfHolidays];
+function businessDays(start,end){
+  let n=0,d=new Date(start),last=new Date(end);
+  while(d<=last){
+    const day=d.getDay(),iso=d.toISOString().slice(0,10);
+    if(day!==0){
+      if(fullHolidays.includes(iso)){/* sayılmaz */}
+      else if(halfHolidays.includes(iso))n+=0.5;
+      else n+=1;
+    }
+    d.setDate(d.getDate()+1);
+  }
+  return n;
+}
 const leaveEsc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const leaveDate=value=>value?String(value).slice(0,10):'';
 const leaveNumber=value=>Number(value||0).toLocaleString('tr-TR',{maximumFractionDigits:2});
@@ -102,7 +122,7 @@ function renderLeaveRequests(){
   const list=state.leaves.filter(item=>!status||item.status===status);
   const isFinalHrStep=item=>item.can_approve&&String(item.current_approver||'').trim()==='İK yöneticisi'
     &&Array.isArray(item.approval_route)&&Number(item.approval_step||0)===item.approval_route.length-1;
-  const rows=list.map(item=>`<tr><td>${leaveEsc(item.employee_name||item.employee)}</td><td>${leaveEsc(item.leave_type||item.type)}</td><td>${leaveDate(item.start_date||item.start)} – ${leaveDate(item.end_date||item.end)}</td><td>${item.days} gün</td><td><span class="badge ${item.status==='Onaylandı'?'green':item.status==='Reddedildi'?'red':'orange'}">${leaveEsc(item.status)}</span><small class="muted" style="display:block;max-width:420px">${leaveProgress(item)}</small>${item.rejection_reason?`<small class="danger-text">${leaveEsc(item.rejection_reason)}</small>`:''}</td><td>${item.can_approve?`<button class="btn ghost" data-leave-decision="approve" data-id="${item.id}">Onayla</button><button class="btn ghost danger-text" data-leave-decision="reject" data-id="${item.id}">Reddet</button>${isFinalHrStep(item)?`<label class="gm-escalate" title="İşaretlenirse İK onayından sonra talep Genel Müdür onayına gider"><input type="checkbox" data-gm-escalate="${item.id}"> GM onayına gönder</label>`:''}`:''}${item.can_delete?`<button class="btn ghost danger-text" data-leave-delete="${item.id}">Sil</button>`:''}</td></tr>`).join('');
+  const rows=list.map(item=>`<tr><td>${leaveEsc(item.employee_name||item.employee)}</td><td>${leaveEsc(item.leave_type||item.type)}</td><td>${leaveDate(item.start_date||item.start)} – ${leaveDate(item.end_date||item.end)}</td><td>${leaveNumber(item.days)} gün</td><td><span class="badge ${item.status==='Onaylandı'?'green':item.status==='Reddedildi'?'red':'orange'}">${leaveEsc(item.status)}</span><small class="muted" style="display:block;max-width:420px">${leaveProgress(item)}</small>${item.rejection_reason?`<small class="danger-text">${leaveEsc(item.rejection_reason)}</small>`:''}</td><td>${item.can_approve?`<button class="btn ghost" data-leave-decision="approve" data-id="${item.id}">Onayla</button><button class="btn ghost danger-text" data-leave-decision="reject" data-id="${item.id}">Reddet</button>${isFinalHrStep(item)?`<label class="gm-escalate" title="İşaretlenirse İK onayından sonra talep Genel Müdür onayına gider"><input type="checkbox" data-gm-escalate="${item.id}"> GM onayına gönder</label>`:''}`:''}${item.can_delete?`<button class="btn ghost danger-text" data-leave-delete="${item.id}">Sil</button>`:''}</td></tr>`).join('');
   const queue=list.filter(item=>item.can_approve).length;
   $('#app').innerHTML=`<div class="section-title"><div><h2>İzin talepleri</h2><span class="muted">Sıralı onay süreci ve talep sonuçları</span></div>${leaveTabs()}</div>${queue?`<div class="formula"><strong>${queue} izin talebi onayınızı bekliyor.</strong></div>`:''}<div class="card" style="margin-top:18px"><div class="card-head"><h2>İzin talepleri</h2><div class="toolbar" style="margin:0"><select class="select" id="leave-filter"><option value="">Tümü</option><option>Bekliyor</option><option>Onaylandı</option><option>Reddedildi</option></select><button class="btn" id="add-leave">+ İzin talebi</button></div></div><div style="overflow:auto"><table><thead><tr><th>ÇALIŞAN</th><th>İZİN TÜRÜ</th><th>TARİH</th><th>SÜRE</th><th>DURUM / ONAY AKIŞI</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="6" class="empty">Gösterilecek izin talebi yok</td></tr>'}</tbody></table></div></div>`;
   bindLeaveTabs();
@@ -136,7 +156,7 @@ function leaveModal(){
     const box=$('#leave-preview');if(!box)return;
     if(!(start&&end&&end>=start)){box.innerHTML='Tarihleri seçtiğinizde çalışma günü hesaplanır.';return;}
     const days=businessDays(start,end);
-    let html=`Hesaplanan izin süresi: <strong>${days} çalışma günü</strong>`;
+    let html=`Hesaplanan izin süresi: <strong>${leaveNumber(days)} çalışma günü</strong>`;
     if(type==='Yıllık izin'&&empId){
       const bal=await annualBalanceFor(empId,Number(start.slice(0,4)));
       if(bal){
