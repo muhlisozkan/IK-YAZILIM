@@ -2374,11 +2374,26 @@ const inviteBaseUrl = req => {
 };
 const inviteLink = (req, token) => `${inviteBaseUrl(req)}/anket.html?t=${encodeURIComponent(token)}`;
 
-function composeInviteMessage(message, name, link) {
+// "muhlis özkan" -> "Muhlis ÖZKAN" (adlar düzgün, soyad Türkçe büyük harf)
+function salutationName(name) {
+  const parts = clean(name).split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  const titleTr = s => s.charAt(0).toLocaleUpperCase('tr-TR') + s.slice(1).toLocaleLowerCase('tr-TR');
+  const last = parts.pop();
+  return [...parts.map(titleTr), last.toLocaleUpperCase('tr-TR')].join(' ');
+}
+
+function composeInviteMessage(message, name, link, greet = true) {
+  const salut = salutationName(name);
   const m = clean(message);
-  if (!m) return `İK Merkezi · Sayın ${name || 'ilgili'}, aşağıdaki bağlantıdan yanıtlayabilirsiniz:\n${link}\n(Bağlantı yalnızca bir kez kullanılabilir.)`;
-  const filled = m.replace(/\{ad\}/g, name || '').replace(/\{link\}/g, link);
-  return /\{link\}/.test(m) ? filled : `${filled}\n${link}`;
+  let body;
+  if (!m) {
+    body = `İK Merkezi olarak görüşünüz bizim için değerli. Aşağıdaki bağlantıdan yanıtınızı paylaşabilirsiniz:\n${link}\n(Bağlantı size özeldir ve yalnızca bir kez kullanılabilir.)`;
+  } else {
+    const filled = m.replace(/\{ad\}/g, salut || name).replace(/\{link\}/g, link);
+    body = /\{link\}/.test(m) ? filled : `${filled}\n${link}`;
+  }
+  return (greet && salut) ? `Sayın ${salut},\n\n${body}` : body;
 }
 
 async function sendInviteEmail(to, subject, bodyText, link) {
@@ -2386,11 +2401,15 @@ async function sendInviteEmail(to, subject, bodyText, link) {
   if (!settings) return { ok: false, error: 'SMTP ayarları yapılmamış' };
   const transport = await smtpTransport(settings);
   const h = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const htmlBody = h(bodyText).split(h(link)).join(`<a href="${h(link)}">${h(link)}</a>`).replace(/\n/g, '<br>');
+  const htmlBody = bodyText.split('\n').map(line => {
+    if (/^Sayın .+,$/.test(line.trim())) return `<p style="margin:0 0 14px"><strong>${h(line)}</strong></p>`;
+    const linked = h(line).split(h(link)).join(`<a href="${h(link)}">${h(link)}</a>`);
+    return line.trim() ? `<p style="margin:0 0 10px">${linked}</p>` : '';
+  }).join('');
   await transport.sendMail({
     from: { name: settings.from_name, address: settings.from_email }, to, subject,
     text: bodyText,
-    html: `<div style="font-family:system-ui,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6">${htmlBody}</div>`
+    html: `<div style="font-family:system-ui,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6;color:#1f2a3a">${htmlBody}</div>`
   });
   return { ok: true };
 }
@@ -2404,10 +2423,10 @@ function parseInviteBody(body) {
     phone: clean(r?.phone).slice(0, 40),
     employee_id: Number(r?.employee_id) || null
   })).filter(r => r.name || r.email || r.phone).slice(0, 500);
-  return { channel, recipients, message: clean(b.message).slice(0, 1000) };
+  return { channel, recipients, message: clean(b.message).slice(0, 1000), greet: b.greet !== false };
 }
 
-async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject }) {
+async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject, greet = true }) {
   const results = [];
   for (const r of recipients) {
     const name = r.name, email = r.email, phone = phoneNumber(r.phone) || '';
@@ -2415,7 +2434,7 @@ async function dispatchInvites(req, { kind, surveyId, periodId, recipients, chan
     if (channel === 'sms' && !phone) { results.push({ name, ok: false, error: 'Geçersiz telefon numarası' }); continue; }
     const token = newInviteToken();
     const link = inviteLink(req, token);
-    const text = composeInviteMessage(message, name, link);
+    const text = composeInviteMessage(message, name, link, greet);
     let sendRes;
     try {
       sendRes = channel === 'email'
@@ -2523,9 +2542,9 @@ app.post('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageSurveys, 'Anket gönderme yetkiniz yok')) return;
   const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
-  const { channel, recipients, message } = parseInviteBody(req.body);
+  const { channel, recipients, message, greet } = parseInviteBody(req.body);
   if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
-  const summary = await dispatchInvites(req, { kind: 'personel', surveyId: survey.id, periodId: null, recipients, channel, message, subject: `İK Merkezi · ${survey.title}` });
+  const summary = await dispatchInvites(req, { kind: 'personel', surveyId: survey.id, periodId: null, recipients, channel, message, greet, subject: `İK Merkezi · ${survey.title}` });
   res.json(summary);
 }));
 
@@ -2602,9 +2621,9 @@ app.post('/api/eom/templates/:id/invites', asyncRoute(async (req, res) => {
   if (t.status !== 'open') return res.status(400).json({ error: 'Kapalı şablon gönderilemez' });
   if (!(await pool.query('select 1 from eom_candidates where period_id=$1 limit 1', [t.id])).rowCount)
     return res.status(400).json({ error: 'Önce aday ekleyin' });
-  const { channel, recipients, message } = parseInviteBody(req.body);
+  const { channel, recipients, message, greet } = parseInviteBody(req.body);
   if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
-  const summary = await dispatchInvites(req, { kind: 'makeitright', surveyId: null, periodId: t.id, recipients, channel, message, subject: `İK Merkezi · ${t.title}` });
+  const summary = await dispatchInvites(req, { kind: 'makeitright', surveyId: null, periodId: t.id, recipients, channel, message, greet, subject: `İK Merkezi · ${t.title}` });
   res.json(summary);
 }));
 
@@ -2681,7 +2700,8 @@ app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
   }
   const out = {
     status: inv.used_at ? 'used' : 'pending', kind: inv.kind, org: 'Hilton Dalaman',
-    recipient_name: inv.recipient_name, used_at: inv.used_at, response: inv.response || null
+    recipient_name: inv.recipient_name, recipient_salutation: salutationName(inv.recipient_name),
+    used_at: inv.used_at, response: inv.response || null
   };
   if (inv.kind === 'personel') {
     const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];

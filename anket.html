@@ -167,7 +167,7 @@
       +'<div class="eyebrow">'+esc(eb)+'</div>'
       +'<h1>'+esc(titleOverride||d.title||'Anket')+'</h1>'
       +(d.subtitle?'<p class="sub">'+esc(d.subtitle)+'</p>':'')
-      +(d.recipient_name?'<div class="greet">👤 <b>Sayın '+esc(d.recipient_name)+'</b></div>':'')
+      +(d.recipient_name?'<div class="greet">👤 <b>Sayın '+esc(d.recipient_salutation||d.recipient_name)+'</b></div>':'')
       +'</div>';
   }
   function setTag(t){document.getElementById('tag').textContent=t||''}
@@ -213,7 +213,7 @@
     root.innerHTML=hero(d,d.title)
       +'<div class="card"><div class="state ok"><div class="badge">✓</div>'
       +'<h2>Yanıtınız alındı</h2>'
-      +'<p>Katılımınız için teşekkür ederiz'+(d.recipient_name?', '+esc(d.recipient_name):'')+'. '
+      +'<p>Katılımınız için teşekkür ederiz'+(d.recipient_name?', Sayın '+esc(d.recipient_salutation||d.recipient_name):'')+'. '
       +'Bu bağlantı tek kullanımlıktır; tekrar oy verme veya düzeltme yapılamaz.</p>'
       +recap+'</div></div>';
   }

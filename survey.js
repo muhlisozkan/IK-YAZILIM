@@ -648,10 +648,20 @@
     draw();
   }
 
+  // "muhlis özkan" -> "Muhlis ÖZKAN"
+  function salutationName(name){
+    const p=String(name||'').trim().split(/\s+/).filter(Boolean);
+    if(!p.length)return '';
+    const t=s=>s.charAt(0).toLocaleUpperCase('tr-TR')+s.slice(1).toLocaleLowerCase('tr-TR');
+    const l=p.pop();
+    return [...p.map(t),l.toLocaleUpperCase('tr-TR')].join(' ');
+  }
+
   // --- Kişiye özel tek kullanımlık link ile gönderim --------------
   function inviteModal(kind,opts){
     opts=opts||{};
     let channel='email';
+    let greet=true;
     let rows=[{name:'',email:'',phone:'',employee_id:null}];
     let groups=[];
     let done=false;
@@ -678,7 +688,7 @@
       if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarası olmalı (numarası olmayanları çıkarın)');
       const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
       try{
-        const res=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel,message:curMsg(),recipients})});
+        const res=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel,greet,message:curMsg(),recipients})});
         showResult(res);
       }catch(err){toast(err.message);if(submit)submit.disabled=false;}
     });
@@ -713,14 +723,19 @@
           <div class="inv-rows">${rows.map(rowHtml).join('')}</div>
           ${filled?`<button type="button" class="btn ghost" id="inv-savegroup">💾 Bu listeyi grup olarak kaydet</button>`:''}
         </div>
+        <div class="field"><label>Selamlama</label>
+          <label class="inv-greet"><input type="checkbox" id="inv-greet" ${greet?'checked':''}> Mesaja kişiye özel selamlama ekle</label>
+          ${greet?`<small class="muted">Her mesaj <strong>Sayın ${esc(salutationName((rows.find(r=>r.name)||{}).name)||'Ad SOYAD')},</strong> ile başlar (soyisim büyük harf).</small>`:''}
+        </div>
         <div class="field"><label>Mesaj (opsiyonel)</label>
-          <textarea class="input" id="inv-msg" placeholder="Boş bırakılırsa standart metin gönderilir. {ad} ve {link} kullanılabilir.">${esc(curMsg())}</textarea>
+          <textarea class="input" id="inv-msg" placeholder="Boş bırakılırsa standart metin gönderilir. {ad} = Ad SOYAD, {link} = bağlantı.">${esc(curMsg())}</textarea>
         </div>
         <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. ${channel==='sms'?'Telefon':'E-posta'}sı olmayan satırlar kırmızı gösterilir; göndermeden önce çıkarın.</p>`;
       bind();
     }
     function bind(){
       box().querySelectorAll('[name="inv-ch"]').forEach(el=>el.onchange=()=>{channel=el.value;redraw();});
+      box().querySelector('#inv-greet').onchange=e=>{greet=e.target.checked;redraw();};
       box().querySelector('#inv-add').onclick=()=>{rows.push({name:'',email:'',phone:'',employee_id:null});redraw();};
       box().querySelector('#inv-groups').onclick=()=>recipientGroupsModal(async()=>{await loadGroups();redraw();});
       box().querySelector('#inv-group').onchange=async e=>{
