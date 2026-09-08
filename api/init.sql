@@ -241,6 +241,7 @@ create table if not exists eom_candidates(
   employee_id bigint,
   name text not null,
   subtitle text not null default '',
+  photo text not null default '',
   created_by text,
   created_at timestamptz not null default now()
 );

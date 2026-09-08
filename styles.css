@@ -156,6 +156,8 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .eom-cand.picked{border-color:var(--blue);background:#f2f5ff;box-shadow:0 0 0 1px var(--blue) inset}
 .eom-cand-main{display:flex;align-items:center;gap:10px;flex:1;cursor:pointer;min-width:0}
 .eom-cand-main input{flex:0 0 auto}
+.eom-photo{flex:0 0 auto;width:46px;height:46px;border-radius:10px;object-fit:cover;background:#edf0f5}
+.eom-photo-ph{display:grid;place-items:center;color:var(--blue);font-weight:700;font-size:14px;background:#e7ebff}
 .eom-cand-body{min-width:0}
 .eom-cand-body strong{display:block;font-size:13px}
 .eom-cand-body small{display:block;margin-top:2px}
@@ -163,4 +165,9 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .eom-cand .btn.ghost{flex:0 0 auto;padding:4px 6px}
 .eom-col .eom-add{align-self:flex-start}
 .eom-col .eom-clear{align-self:flex-start;color:var(--muted)}
+.eom-photo-pick{display:flex;gap:14px;align-items:flex-start}
+.eom-photo-prev{flex:0 0 auto;width:96px;height:96px;border-radius:12px;overflow:hidden;background:#edf0f5;display:grid;place-items:center}
+.eom-photo-prev img{width:100%;height:100%;object-fit:cover}
+.eom-photo-prev-ph{color:var(--muted);font-size:11px;text-align:center;padding:6px}
+.eom-preview{pointer-events:none}
 @media(max-width:760px){.eom-grid{grid-template-columns:1fr}}

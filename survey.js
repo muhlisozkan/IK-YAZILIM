@@ -208,11 +208,48 @@
   const EOM_CATS=[['operasyon','Operasyon Çalışanları'],['idari','İdari Ofis Çalışanları']];
   const eomCatLabel=c=>(EOM_CATS.find(x=>x[0]===c)||['',''])[1];
 
+  const eomInitials=n=>String(n||'?').trim().split(/\s+/).map(w=>w[0]||'').slice(0,2).join('').toLocaleUpperCase('tr-TR')||'?';
+  function eomPhoto(c){
+    return c.photo
+      ? `<img class="eom-photo" src="${esc(c.photo)}" alt="${esc(c.name)}">`
+      : `<span class="eom-photo eom-photo-ph">${esc(eomInitials(c.name))}</span>`;
+  }
+
+  // Oy pusulası — hem canlı görünüm hem önizleme aynı işaretlemeyi kullanır
+  function eomColumnsHtml(data,{preview=false}={}){
+    const manage=data.can_manage&&!preview;
+    const open=data.period.status==='open';
+    return EOM_CATS.map(([cat,label])=>{
+      const cands=data.candidates.filter(c=>c.category===cat);
+      const myPick=preview?null:data.my_votes[cat];
+      const cards=cands.map(c=>{
+        const picked=String(myPick)===String(c.id);
+        return `<div class="eom-cand ${picked?'picked':''}">
+          <label class="eom-cand-main">
+            <input type="radio" name="${preview?'pv-':''}eom-${cat}" value="${c.id}" ${picked?'checked':''} ${(open&&!preview)?'':'disabled'}>
+            ${eomPhoto(c)}
+            <span class="eom-cand-body"><strong>${esc(c.name)}</strong>${c.subtitle?`<small class="muted">${esc(c.subtitle)}</small>`:''}</span>
+          </label>
+          ${manage?`<span class="eom-votes" title="Oy sayısı">${c.votes??0}</span><button type="button" class="btn ghost eom-edit" data-edit="${c.id}">Düzenle</button><button type="button" class="btn ghost danger-text eom-del" data-del="${c.id}">Sil</button>`:''}
+        </div>`;
+      }).join('')||'<div class="empty">Aday eklenmedi</div>';
+      return `<div class="eom-col">
+        <div class="eom-col-head"><span>${label}</span><span class="muted">${cands.length} aday</span></div>
+        <div class="eom-cards">${cards}</div>
+        ${manage&&open?`<button type="button" class="btn secondary eom-add" data-cat="${cat}">+ Aday ekle</button>`:''}
+        ${!preview&&open&&myPick?`<button type="button" class="btn ghost eom-clear" data-cat="${cat}">Seçimi geri al</button>`:''}
+      </div>`;
+    }).join('');
+  }
+
+  let eomData=null;
+
   async function renderMakeItRight(){
     mount('<div class="card empty">Yükleniyor…</div>');
     let data;
     try{data=await api('/api/eom');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
     if(tab!=='makeitright')return;
+    eomData=data;
     const manage=data.can_manage;
 
     if(!data.period){
@@ -226,35 +263,17 @@
     }
 
     const open=data.period.status==='open';
-    const cols=EOM_CATS.map(([cat,label])=>{
-      const cands=data.candidates.filter(c=>c.category===cat);
-      const myPick=data.my_votes[cat];
-      const cardsHtml=cands.map(c=>`
-        <div class="eom-cand ${String(myPick)===String(c.id)?'picked':''}">
-          <label class="eom-cand-main">
-            <input type="radio" name="eom-${cat}" value="${c.id}" ${String(myPick)===String(c.id)?'checked':''} ${open?'':'disabled'}>
-            <span class="eom-cand-body"><strong>${esc(c.name)}</strong>${c.subtitle?`<small class="muted">${esc(c.subtitle)}</small>`:''}</span>
-          </label>
-          ${manage?`<span class="eom-votes" title="Oy sayısı">${c.votes??0}</span><button type="button" class="btn ghost danger-text eom-del" data-del="${c.id}">Sil</button>`:''}
-        </div>`).join('')||'<div class="empty">Aday eklenmedi</div>';
-      return `<div class="eom-col">
-        <div class="eom-col-head"><span>${label}</span><span class="muted">${cands.length} aday</span></div>
-        <div class="eom-cards">${cardsHtml}</div>
-        ${manage&&open?`<button type="button" class="btn secondary eom-add" data-cat="${cat}">+ Aday ekle</button>`:''}
-        ${open&&myPick?`<button type="button" class="btn ghost eom-clear" data-cat="${cat}">Seçimi geri al</button>`:''}
-      </div>`;
-    }).join('');
-
     mount(`<div class="card">
       <div class="card-head" style="align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Ayın Personeli · ${esc(data.period.title)}</h2>
         <span class="badge ${open?'green':'orange'}">${open?'Oylama açık':'Oylama kapandı'}</span>
         ${manage?`<span style="flex:1"></span><span class="muted">${data.voter_count||0} kişi oy kullandı</span>
+          <button class="btn secondary" id="eom-preview">👁 Önizleme</button>
           ${open?`<button class="btn ghost" id="eom-close">Oylamayı kapat</button>`:`<button class="btn ghost" id="eom-reopen">Yeniden aç</button>`}
           <button class="btn" id="eom-new">Yeni dönem</button>`:''}
       </div>
       <p class="muted" style="margin:4px 0 16px">Her sütundan yalnızca <strong>1</strong> aday seçebilirsiniz. Seçiminiz otomatik kaydedilir.${open?'':' Oylama kapandığı için değişiklik yapılamaz.'}</p>
-      <div class="eom-grid">${cols}</div>
+      <div class="eom-grid">${eomColumnsHtml(data,{preview:false})}</div>
     </div>`);
 
     document.querySelectorAll('input[type=radio][name^="eom-"]').forEach(r=>r.onchange=async()=>{
@@ -266,15 +285,31 @@
       try{await api('/api/eom/votes?category='+encodeURIComponent(b.dataset.cat),{method:'DELETE'});toast('Seçim geri alındı');renderMakeItRight();}
       catch(err){toast(err.message);}
     });
-    document.querySelectorAll('.eom-add').forEach(b=>b.onclick=()=>eomAddCandidate(b.dataset.cat));
+    document.querySelectorAll('.eom-add').forEach(b=>b.onclick=()=>eomCandidateModal(b.dataset.cat,null));
+    document.querySelectorAll('.eom-edit').forEach(b=>b.onclick=()=>{
+      const c=data.candidates.find(x=>String(x.id)===b.dataset.edit);
+      if(c)eomCandidateModal(c.category,c);
+    });
     document.querySelectorAll('.eom-del').forEach(b=>b.onclick=async()=>{
       if(!confirm('Bu adayı silmek istediğinize emin misiniz? Aldığı oylar da silinir.'))return;
       try{await api('/api/eom/candidates/'+b.dataset.del,{method:'DELETE'});toast('Aday silindi');renderMakeItRight();}
       catch(err){toast(err.message);}
     });
     if($('#eom-new'))$('#eom-new').onclick=eomNewPeriod;
+    if($('#eom-preview'))$('#eom-preview').onclick=()=>eomPreview(eomData);
     if($('#eom-close'))$('#eom-close').onclick=()=>{if(confirm('Oylamayı kapatmak istediğinize emin misiniz?'))eomSetStatus(data.period.id,'closed');};
     if($('#eom-reopen'))$('#eom-reopen').onclick=()=>eomSetStatus(data.period.id,'open');
+  }
+
+  function eomPreview(data){
+    if(!data||!data.period)return;
+    modal('Önizleme · Oy verenlerin göreceği ekran',
+      `<p class="muted" style="margin:0 0 14px">Her sütundan yalnızca <strong>1</strong> aday seçilebilir.</p>
+       <div class="eom-grid eom-preview">${eomColumnsHtml(data,{preview:true})}</div>
+       <button class="btn" type="button" disabled style="margin-top:16px">Oyumu gönder</button>`,
+      ()=>closeModal());
+    document.querySelector('.modal')?.classList.add('survey-modal');
+    const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
   }
 
   function eomNewPeriod(){
@@ -295,27 +330,64 @@
     catch(err){toast(err.message);}
   }
 
-  function eomAddCandidate(cat){
+  function eomCandidateModal(cat,existing){
+    const editing=!!existing;
     const emps=(state.employees||[]).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
-    modal('Aday ekle · '+eomCatLabel(cat),
+    let photoData=null;   // yeni seçilen fotoğrafın data URL'i
+    let removePhoto=false;
+    modal(editing?('Aday düzenle · '+esc(existing.name)):('Aday ekle · '+eomCatLabel(cat)),
       `<div class="form-grid">
-        <div class="field" style="grid-column:1/-1"><label>Çalışan seç (opsiyonel)</label>
+        ${editing?'':`<div class="field" style="grid-column:1/-1"><label>Çalışan seç (opsiyonel)</label>
           <select class="select" id="eom-emp"><option value="">— elle gir —</option>
-          ${emps.map(e=>`<option value="${e.id}" data-sub="${esc(e.title||e.department||'')}">${esc(e.name)}${e.department?' · '+esc(e.department):''}</option>`).join('')}</select></div>
-        <div class="field" style="grid-column:1/-1"><label>Aday adı *</label><input class="input" id="eom-name"></div>
-        <div class="field" style="grid-column:1/-1"><label>Ünvan / departman</label><input class="input" id="eom-sub"></div>
+          ${emps.map(e=>`<option value="${e.id}" data-sub="${esc(e.title||e.department||'')}">${esc(e.name)}${e.department?' · '+esc(e.department):''}</option>`).join('')}</select></div>`}
+        <div class="field" style="grid-column:1/-1"><label>Aday adı *</label><input class="input" id="eom-name" value="${editing?esc(existing.name):''}"></div>
+        <div class="field" style="grid-column:1/-1"><label>Ünvan / departman</label><input class="input" id="eom-sub" value="${editing?esc(existing.subtitle||''):''}"></div>
+        <div class="field" style="grid-column:1/-1">
+          <label>Fotoğraf</label>
+          <div class="eom-photo-pick">
+            <div id="eom-photo-prev" class="eom-photo-prev">${editing&&existing.photo?`<img src="${esc(existing.photo)}" alt="">`:`<span class="eom-photo-prev-ph">Fotoğraf yok</span>`}</div>
+            <div>
+              <input type="file" accept="image/*" id="eom-photo-file" hidden>
+              <button type="button" class="btn secondary" id="eom-photo-btn">Fotoğraf yükle</button>
+              ${editing&&existing.photo?`<button type="button" class="btn ghost danger-text" id="eom-photo-rm">Kaldır</button>`:''}
+              <div class="muted" style="font-size:11px;margin-top:6px">JPG / PNG / WEBP · en fazla 600 KB</div>
+            </div>
+          </div>
+        </div>
       </div>`,
       async()=>{
         const name=($('#eom-name').value||'').trim();
-        const employee_id=$('#eom-emp').value||'';
+        const employee_id=editing?'':($('#eom-emp')?.value||'');
         if(!name&&!employee_id)return toast('Aday adı girin veya çalışan seçin');
-        try{await api('/api/eom/candidates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({category:cat,employee_id:employee_id||undefined,name,subtitle:($('#eom-sub').value||'').trim()})});closeModal();renderMakeItRight();toast('Aday eklendi');}
-        catch(err){toast(err.message);}
+        const payload={category:cat,name,subtitle:($('#eom-sub').value||'').trim()};
+        if(!editing&&employee_id)payload.employee_id=employee_id;
+        if(photoData!=null)payload.photo=photoData;
+        else if(removePhoto)payload.photo='';
+        const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
+        try{
+          if(editing)await api('/api/eom/candidates/'+existing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+          else await api('/api/eom/candidates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+          closeModal();renderMakeItRight();toast(editing?'Aday güncellendi':'Aday eklendi');
+        }catch(err){toast(err.message);if(submit)submit.disabled=false;}
       });
     const sel=$('#eom-emp');
     if(sel)sel.onchange=()=>{
       const opt=sel.selectedOptions[0];
       if(sel.value&&opt){$('#eom-name').value=opt.textContent.split(' · ')[0];if(!$('#eom-sub').value)$('#eom-sub').value=opt.dataset.sub||'';}
+    };
+    const file=$('#eom-photo-file'),prev=$('#eom-photo-prev');
+    $('#eom-photo-btn').onclick=()=>file.click();
+    file.onchange=()=>{
+      const f=file.files&&file.files[0];if(!f)return;
+      if(!/^image\//.test(f.type))return toast('Lütfen bir resim dosyası seçin');
+      if(f.size>600*1024)return toast('Fotoğraf en fazla 600 KB olabilir');
+      const reader=new FileReader();
+      reader.onload=()=>{photoData=reader.result;removePhoto=false;prev.innerHTML=`<img src="${esc(photoData)}" alt="">`;};
+      reader.readAsDataURL(f);
+    };
+    if($('#eom-photo-rm'))$('#eom-photo-rm').onclick=()=>{
+      photoData=null;removePhoto=true;file.value='';
+      prev.innerHTML='<span class="eom-photo-prev-ph">Fotoğraf yok</span>';
     };
   }
 

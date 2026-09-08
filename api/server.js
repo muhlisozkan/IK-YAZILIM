@@ -2232,6 +2232,11 @@ const EOM_CATEGORIES = new Set(['idari', 'operasyon']);
 const canManageEom = user => isHRUser(user);
 
 const latestPeriod = async () => (await pool.query('select * from eom_periods order by id desc limit 1')).rows[0] || null;
+const isEomPhoto = value => /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(String(value)) && String(value).length <= 900000;
+const eomCandidateRow = (c, votes = null) => ({
+  id: c.id, category: c.category, employee_id: c.employee_id,
+  name: c.name, subtitle: c.subtitle, photo: c.photo || '', votes
+});
 
 app.get('/api/eom', asyncRoute(async (req, res) => {
   const manage = canManageEom(req.user);
@@ -2250,10 +2255,7 @@ app.get('/api/eom', asyncRoute(async (req, res) => {
   }
   res.json({
     period: { id: period.id, title: period.title, status: period.status, created_at: period.created_at, closed_at: period.closed_at },
-    candidates: candidates.map(c => ({
-      id: c.id, category: c.category, employee_id: c.employee_id, name: c.name, subtitle: c.subtitle,
-      votes: counts ? (counts[c.id] || 0) : null
-    })),
+    candidates: candidates.map(c => eomCandidateRow(c, counts ? (counts[c.id] || 0) : null)),
     my_votes: myVotes,
     voter_count: voterCount,
     can_manage: manage
@@ -2296,10 +2298,35 @@ app.post('/api/eom/candidates', asyncRoute(async (req, res) => {
     if (emp) { name = emp.name; if (!subtitle) subtitle = clean(emp.title) || clean(emp.department); }
   }
   if (!name) return res.status(400).json({ error: 'Aday adı zorunludur' });
+  let photo = '';
+  if (body.photo != null && String(body.photo)) {
+    if (!isEomPhoto(body.photo)) return res.status(400).json({ error: 'Geçersiz fotoğraf (jpg/png/webp, en fazla ~600 KB)' });
+    photo = String(body.photo);
+  }
   const row = (await pool.query(
-    'insert into eom_candidates(period_id,category,employee_id,name,subtitle,created_by) values($1,$2,$3,$4,$5,$6) returning *',
-    [period.id, category, employeeId, name, subtitle, req.user.name])).rows[0];
-  res.status(201).json({ id: row.id, category: row.category, employee_id: row.employee_id, name: row.name, subtitle: row.subtitle, votes: 0 });
+    'insert into eom_candidates(period_id,category,employee_id,name,subtitle,photo,created_by) values($1,$2,$3,$4,$5,$6,$7) returning *',
+    [period.id, category, employeeId, name, subtitle, photo, req.user.name])).rows[0];
+  res.status(201).json(eomCandidateRow(row, 0));
+}));
+
+app.patch('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageEom, 'Aday düzenleme yetkiniz yok')) return;
+  const existing = (await pool.query('select * from eom_candidates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Aday bulunamadı' });
+  const body = req.body || {};
+  const name = body.name != null ? (clean(body.name).slice(0, 160) || existing.name) : existing.name;
+  const subtitle = body.subtitle != null ? clean(body.subtitle).slice(0, 160) : existing.subtitle;
+  let photo = existing.photo;
+  if (body.photo != null) {
+    const value = String(body.photo);
+    if (value && !isEomPhoto(value)) return res.status(400).json({ error: 'Geçersiz fotoğraf (jpg/png/webp, en fazla ~600 KB)' });
+    photo = value;
+  }
+  const row = (await pool.query(
+    'update eom_candidates set name=$2,subtitle=$3,photo=$4 where id=$1 returning *',
+    [existing.id, name, subtitle, photo])).rows[0];
+  const votes = (await pool.query('select count(*)::int n from eom_votes where candidate_id=$1', [existing.id])).rows[0].n;
+  res.json(eomCandidateRow(row, votes));
 }));
 
 app.delete('/api/eom/candidates/:id', asyncRoute(async (req, res) => {
