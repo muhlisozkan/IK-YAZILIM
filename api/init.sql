@@ -168,6 +168,7 @@ create table if not exists smtp_settings(
   tenant_id text,
   client_id text,
   client_secret_encrypted text,
+  tls_insecure boolean not null default false,
   updated_by text,
   updated_at timestamptz not null default now()
 );

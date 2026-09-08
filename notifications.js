@@ -206,6 +206,7 @@
         <div class="field"><label>Port</label><input class="input" id="smtp-port" type="number" value="587" readonly></div>
         <div class="field"><label>Güvenlik</label><input class="input" value="STARTTLS" readonly></div>
         <div class="field"><label>Gönderimi etkinleştir</label><select class="select" id="smtp-enabled"><option value="true" ${smtpSettings.enabled?'selected':''}>Etkin</option><option value="false" ${!smtpSettings.enabled?'selected':''}>Kapalı</option></select></div>
+        <div class="field"><label>TLS sertifika doğrulaması</label><select class="select" id="smtp-tls-insecure"><option value="0" ${!smtpSettings.tls_insecure?'selected':''}>Doğrula (önerilen)</option><option value="1" ${smtpSettings.tls_insecure?'selected':''}>Doğrulamayı atla</option></select><small class="muted">Ağ güvenlik duvarı SMTP trafiğini incelediğinde (ör. WatchGuard) “Doğrulamayı atla” seçin.</small></div>
         <div class="field"><label>SMTP kullanıcı e-postası *</label><input class="input" id="smtp-user" type="email" value="${esc(smtpSettings.username)}" placeholder="bildirim@firma.com"></div>
         <div class="field"><label>SMTP parolası *</label><input class="input" id="smtp-password" type="password" autocomplete="new-password" placeholder="${smtpSettings.password_saved?'Kayıtlı · değiştirmek için yazın':'Parolayı girin'}"></div>
         <div class="field"><label>Gönderen e-posta *</label><input class="input" id="smtp-from" type="email" value="${esc(smtpSettings.from_email)}" placeholder="bildirim@firma.com"></div>
@@ -222,6 +223,7 @@
     try{
       smtpSettings=Object.assign(smtpSettings,await api('/api/smtp-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
         enabled:$('#smtp-enabled').value==='true',host:'smtp.office365.com',port:587,
+        tls_insecure:$('#smtp-tls-insecure').value==='1',
         username:$('#smtp-user').value.trim(),from_email:$('#smtp-from').value.trim(),from_name:$('#smtp-name').value.trim(),
         password:$('#smtp-password').value
       })}));

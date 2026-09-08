@@ -619,17 +619,18 @@ async function smtpTransport(settings) {
   return nodemailer.createTransport({
     host:settings.host,port:Number(settings.port),secure:false,requireTLS:true,
     auth:{user:settings.username,pass:decryptSmtpSecret(settings.password_encrypted)},
-    tls:{minVersion:'TLSv1.2'},connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000
+    tls:{minVersion:'TLSv1.2',rejectUnauthorized:!settings.tls_insecure},
+    connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000
   });
 }
 
 app.get('/api/smtp-settings', asyncRoute(async (req,res)=>{
   if (!requireSystemAdmin(req,res)) return;
   const settings=await readSmtpSettings();
-  if (!settings) return res.json({configured:false,enabled:false,host:'smtp.office365.com',port:587,secure:false,auth_mode:'password',username:'',from_email:'',from_name:'İK Merkezi',password_saved:false});
+  if (!settings) return res.json({configured:false,enabled:false,host:'smtp.office365.com',port:587,secure:false,auth_mode:'password',username:'',from_email:'',from_name:'İK Merkezi',password_saved:false,tls_insecure:false});
   res.json({configured:true,enabled:settings.enabled,host:settings.host,port:settings.port,secure:false,
     auth_mode:'password',username:settings.username,from_email:settings.from_email,from_name:settings.from_name,
-    password_saved:Boolean(settings.password_encrypted),updated_at:settings.updated_at});
+    password_saved:Boolean(settings.password_encrypted),tls_insecure:Boolean(settings.tls_insecure),updated_at:settings.updated_at});
 }));
 
 app.put('/api/smtp-settings', asyncRoute(async (req,res)=>{
@@ -641,16 +642,17 @@ app.put('/api/smtp-settings', asyncRoute(async (req,res)=>{
   const current=await readSmtpSettings();
   const passwordEncrypted=body.password?encryptSmtpSecret(body.password):current?.password_encrypted||null;
   if (!passwordEncrypted) return res.status(400).json({error:'SMTP parolası zorunludur'});
+  const tlsInsecure=Boolean(body.tls_insecure);
   await pool.query(`
-    insert into smtp_settings(id,enabled,host,port,secure,auth_mode,username,from_email,from_name,password_encrypted,tenant_id,client_id,client_secret_encrypted,updated_by,updated_at)
-    values(1,$1,$2,$3,false,'password',$4,$5,$6,$7,null,null,null,$8,now())
+    insert into smtp_settings(id,enabled,host,port,secure,auth_mode,username,from_email,from_name,password_encrypted,tenant_id,client_id,client_secret_encrypted,tls_insecure,updated_by,updated_at)
+    values(1,$1,$2,$3,false,'password',$4,$5,$6,$7,null,null,null,$8,$9,now())
     on conflict(id) do update set enabled=excluded.enabled,host=excluded.host,port=excluded.port,secure=false,
       auth_mode='password',username=excluded.username,from_email=excluded.from_email,from_name=excluded.from_name,
       password_encrypted=excluded.password_encrypted,tenant_id=null,client_id=null,client_secret_encrypted=null,
-      updated_by=excluded.updated_by,updated_at=now()`,
-    [Boolean(body.enabled),host,port,username,fromEmail,fromName,passwordEncrypted,req.user.name]);
+      tls_insecure=excluded.tls_insecure,updated_by=excluded.updated_by,updated_at=now()`,
+    [Boolean(body.enabled),host,port,username,fromEmail,fromName,passwordEncrypted,tlsInsecure,req.user.name]);
   const saved=await readSmtpSettings();
-  res.json({ok:true,enabled:saved.enabled,configured:true,auth_mode:'password',password_saved:Boolean(saved.password_encrypted),updated_at:saved.updated_at});
+  res.json({ok:true,enabled:saved.enabled,configured:true,auth_mode:'password',password_saved:Boolean(saved.password_encrypted),tls_insecure:Boolean(saved.tls_insecure),updated_at:saved.updated_at});
 }));
 
 app.post('/api/smtp-settings/test', asyncRoute(async (req,res)=>{
