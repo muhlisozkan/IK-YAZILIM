@@ -1,7 +1,7 @@
 (function () {
   const userKey = 'ik_users';
   const sessionKey = 'ik_current_user_id';
-  const allViews = ['dashboard','employees','departments','leave','payroll','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound','survey'];
+  const allViews = ['dashboard','employees','departments','leave','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound','survey'];
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
     'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
@@ -11,7 +11,7 @@
     'Genel müdür': { views: ['dashboard','leave','reports'], create: false, approve: true },
     'Genel müdür yardımcısı': { views: ['dashboard','leave','reports'], create: false, approve: true },
     'Bölge yöneticisi': { views: ['dashboard','leave','reports'], create: false, approve: true },
-    'Bordro yetkilisi': { views: ['dashboard','payroll','reports','attendance'], create: true, approve: true },
+    'Bordro yetkilisi': { views: ['dashboard','reports','attendance'], create: true, approve: true },
     'Güvenlik': { views: ['dashboard','security'], create: true, approve: true },
     'Personel': { views: ['dashboard','leave','documents'], create: true, approve: false },
     'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security' && v !== 'lostfound' && v !== 'survey'), create: false, approve: false }
