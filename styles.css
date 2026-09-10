@@ -562,49 +562,48 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .pb-row.pb-saved td.pb-pos{box-shadow:inset 3px 0 0 var(--green)}
 
 /* ============================================================
-   Sol ana menü — Açık mavi tema
-   Zemin: #e3edfb → #d6e4f6 · Vurgu: mavi #3a5bd9
+   Sol ana menü — Orta koyulukta kurumsal mavi
+   Zemin: #2f5c9c → #274d84 · Vurgu: beyaz
    ============================================================ */
 .sidebar{
-  background:linear-gradient(180deg,#e6effc 0%,#d8e6f7 100%);
-  border-right:1px solid #c9dbf1;
-  box-shadow:1px 0 0 rgba(20,40,80,.04);
+  background:linear-gradient(180deg,#2f5c9c 0%,#274d84 100%);
+  border-right:1px solid rgba(255,255,255,.1);
+  box-shadow:1px 0 0 rgba(0,0,0,.08);
   padding:20px 13px 12px;
 }
-.sidebar>nav{scrollbar-color:#b7cbe6 transparent}
-.sidebar>nav::-webkit-scrollbar-thumb{background:#bcd0ea;border-radius:6px}
+.sidebar>nav{scrollbar-color:rgba(255,255,255,.28) transparent}
+.sidebar>nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.24);border-radius:6px}
 
 /* Marka */
-.sidebar .brand{padding:6px 8px 16px;margin-bottom:10px;border-bottom:1px solid rgba(30,60,110,.12)}
+.sidebar .brand{padding:6px 8px 16px;margin-bottom:10px;border-bottom:1px solid rgba(255,255,255,.14)}
 .sidebar .brand-mark{
   width:36px;height:36px;border-radius:10px;
-  background:linear-gradient(145deg,#3a5bd9,#2c46b3);
-  color:#fff;font-weight:800;letter-spacing:.01em;
-  box-shadow:0 6px 16px rgba(44,70,179,.28);
+  background:#fff;color:#274d84;font-weight:800;letter-spacing:.01em;
+  box-shadow:0 6px 16px rgba(0,0,0,.22);
 }
-.sidebar .brand strong{color:#1e2b45;font-weight:650;font-size:14.5px;letter-spacing:-.01em}
-.sidebar .brand small{color:#5a6b88;font-size:10.5px;margin-top:3px;letter-spacing:.02em}
+.sidebar .brand strong{color:#fff;font-weight:650;font-size:14.5px;letter-spacing:-.01em}
+.sidebar .brand small{color:#bdd2ec;font-size:10.5px;margin-top:3px;letter-spacing:.02em}
 
 /* Menü öğeleri */
 .sidebar .nav-item{
-  color:#2f3d58;font-weight:600;font-size:14px;letter-spacing:.008em;
+  color:#e6eef9;font-weight:600;font-size:14px;letter-spacing:.008em;
   border-radius:9px;padding:10px 11px;margin:1px 0;
   transition:background .14s,color .14s,box-shadow .14s;
 }
-.sidebar .nav-item:hover{background:rgba(255,255,255,.7);color:#1b2740}
+.sidebar .nav-item:hover{background:rgba(255,255,255,.12);color:#fff}
 .sidebar .nav-item.active{
-  background:#fff;color:var(--blue-ink);font-weight:700;
-  box-shadow:inset 3px 0 0 var(--blue),0 1px 3px rgba(20,40,90,.08);
+  background:rgba(255,255,255,.17);color:#fff;font-weight:700;
+  box-shadow:inset 3px 0 0 #fff;
 }
 
 /* Alt bilgi */
 .sidebar .sidebar-foot{
-  color:#5a6b88;border-top:1px solid rgba(30,60,110,.14);
+  color:#aac1de;border-top:1px solid rgba(255,255,255,.15);
   font-size:10.5px;letter-spacing:.04em;
 }
-.sidebar .sidebar-foot span{color:var(--green)}
+.sidebar .sidebar-foot span{color:#8ce3b6}
 
 @media(max-width:850px){
   .sidebar .brand{border-bottom:0;padding-bottom:8px}
-  .sidebar .nav-item.active{box-shadow:inset 0 -3px 0 var(--blue)}
+  .sidebar .nav-item.active{box-shadow:inset 0 -3px 0 #fff}
 }
