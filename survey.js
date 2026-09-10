@@ -23,15 +23,15 @@
       ${subtitle?`<div class="brand-pv-sub">${esc(subtitle)}</div>`:''}
     </div>`;
   }
-  function surveyPreviewHtml(title,description,questions){
+  function surveyPreviewHtml(title,description,questions,eyebrow){
     return `<div class="sv-preview">
-      ${brandPreviewHead('Personel Anketi',title||'(anket başlığı)',description)}
+      ${brandPreviewHead(eyebrow||'Personel Anketi',title||'(anket başlığı)',description)}
       ${(questions||[]).map((q,i)=>`<div class="sv-pv-q"><div class="sv-pv-title">${i+1}. ${esc(q.title||'(başlıksız soru)')}${q.required?' <span class="danger-text">*</span>':''}</div>${q.detail?`<div class="muted" style="font-size:12px;margin:2px 0 8px">${esc(q.detail)}</div>`:''}${previewControl(q,i)}</div>`).join('')||'<div class="empty">Henüz soru yok</div>'}
       <button class="btn" type="button" disabled style="margin-top:14px">Yanıtları gönder</button>
     </div>`;
   }
-  function previewSurvey(s){
-    modal('Önizleme · '+(s.title||'Anket'),surveyPreviewHtml(s.title,s.description,s.questions),()=>closeModal());
+  function previewSurvey(s,eyebrow){
+    modal('Önizleme · '+(s.title||'Anket'),surveyPreviewHtml(s.title,s.description,s.questions,eyebrow),()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
     const submit=document.querySelector('.modal .submit');if(submit){submit.textContent='Kapat';submit.onclick=closeModal;}
   }
@@ -113,6 +113,54 @@
     });
   }
 
+  // --- Performans Değerlendirme (Performans sekmesi) -------------
+  async function renderPerformance(){
+    if(state.view!=='performance')return;
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='performance'));
+    $('#page-title').textContent='Performans Değerlendirme';
+    if(!canManage()){$('#app').innerHTML='<div class="card empty">Performans değerlendirme yönetimi için yetkiniz yok.</div>';return;}
+    if(!document.querySelector('#perf-tmpl-card'))$('#app').innerHTML='<div class="section-title"><div><h2>Performans Değerlendirme</h2></div></div><div class="card empty">Yükleniyor…</div>';
+    let list,sent;
+    try{
+      list=await api('/api/surveys?kind=performans');
+      sent=await api('/api/surveys/sent?kind=performans').catch(()=>[]);
+    }catch(err){$('#app').innerHTML=`<div class="card empty">${esc(err.message)}</div>`;return;}
+    if(state.view!=='performance')return;
+    const rows=list.map(s=>`<tr>
+      <td><strong>${esc(s.title)}</strong>${s.description?`<small class="muted" style="display:block">${esc(s.description)}</small>`:''}</td>
+      <td>${(s.questions||[]).length} soru</td>
+      <td><span class="badge ${s.active?'green':'orange'}">${s.active?'Aktif':'Pasif'}</span></td>
+      <td class="row-actions">
+        <button class="btn ghost" data-perf-preview="${s.id}">Önizle</button>
+        ${s.active?`<button class="btn ghost" data-perf-send="${s.id}">Gönder</button>`:''}
+        <button class="btn ghost" data-perf-edit="${s.id}">Düzenle</button>
+        <button class="btn ghost" data-perf-copy="${s.id}">Kopyala</button>
+        <button class="btn ghost danger-text" data-perf-del="${s.id}">Sil</button>
+      </td></tr>`).join('');
+    $('#app').innerHTML=`
+      <div class="section-title"><div><h2>Performans Değerlendirme</h2><span class="muted">FR/HR/015 · yetkinlik bazlı öz değerlendirme — anket gönderimi ve departman raporları</span></div></div>
+      <div class="card" id="perf-tmpl-card">
+        <div class="toolbar">
+          <button class="btn" id="perf-add">+ Yeni değerlendirme formu</button>
+          <span class="muted">${list.length} form</span>
+        </div>
+        <div style="overflow:auto"><table><thead><tr><th>FORM</th><th>SORU</th><th>DURUM</th><th></th></tr></thead>
+        <tbody>${rows||`<tr><td colspan="4" class="empty">Henüz form yok</td></tr>`}</tbody></table></div>
+      </div>
+      ${sentCardHtml(sent)}`;
+    $('#perf-add').onclick=()=>openBuilder('performans',null);
+    document.querySelectorAll('[data-perf-preview]').forEach(b=>b.onclick=()=>previewSurvey(list.find(s=>String(s.id)===b.dataset.perfPreview),'Performans Değerlendirme'));
+    document.querySelectorAll('[data-perf-edit]').forEach(b=>b.onclick=()=>openBuilder('performans',list.find(s=>String(s.id)===b.dataset.perfEdit)));
+    document.querySelectorAll('[data-perf-copy]').forEach(b=>b.onclick=()=>{const src=list.find(s=>String(s.id)===b.dataset.perfCopy);openBuilder('performans',{...src,id:null,title:src.title+' (kopya)'});});
+    document.querySelectorAll('[data-perf-send]').forEach(b=>b.onclick=()=>{const s=list.find(x=>String(x.id)===b.dataset.perfSend);inviteModal('performans',{surveyId:s.id,title:s.title});});
+    document.querySelectorAll('[data-perf-del]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('Bu formu silmek istediğinize emin misiniz?'))return;
+      try{await api('/api/surveys/'+b.dataset.perfDel,{method:'DELETE'});renderPerformance();toast('Form silindi');}
+      catch(err){toast(err.message);}
+    });
+    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>openSurveyReport(b.dataset.surveyReport));
+  }
+
   // --- Gönderilen anketler & rapor -------------------------------
   const fmtDT=v=>{ if(!v)return '—'; const d=new Date(v); return isNaN(d)?'—':d.toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
   const PIE_COLORS=['#4967f4','#18a874','#f59e0b','#e55261','#8b5cf6','#0ea5e9','#ec4899','#64748b','#14b8a6','#f97316'];
@@ -122,23 +170,26 @@
     const attr=eom?'data-eom-report':'data-survey-report';
     const heading=eom?'Gönderilen Make It Right anketleri':'Gönderilen anketler';
     const rows=(sent||[]).map(s=>{
-      const rate=s.sent?Math.round(s.responded/s.sent*100):0;
+      const delivered=s.delivered??s.sent, failed=s.failed??0;
+      const rate=delivered?Math.round(s.responded/delivered*100):0;
       return `<tr>
         <td><button class="btn ghost" ${attr}="${s.id}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
           <small class="muted" style="display:block">Son gönderim: ${esc(fmtDT(s.last_sent_at))}</small></td>
-        <td>${s.sent}</td><td>${s.opened}</td><td>${s.responded}</td>
+        <td>${delivered}</td><td>${failed?`<span class="danger-text">${failed}</span>`:'0'}</td><td>${s.opened}</td><td>${s.responded}</td>
         <td style="min-width:150px"><div class="bar"><i style="width:${rate}%"></i></div><small class="muted">%${rate} ${eom?'oy':'yanıt'}</small></td>
       </tr>`;
     }).join('');
     return `<div class="card" style="margin-top:18px">
       <div class="card-head"><div><h2>${heading}</h2><span class="muted">İsmine tıklayarak katılım durumunu ve grafikleri görün</span></div></div>
-      <div style="overflow:auto"><table><thead><tr><th>${eom?'ŞABLON':'ANKET'}</th><th>GÖNDERİLDİ</th><th>AÇILDI</th><th>${eom?'OY KULLANDI':'YANITLADI'}</th><th>KATILIM</th></tr></thead>
-      <tbody>${rows||`<tr><td colspan="5" class="empty">Henüz gönderim yok</td></tr>`}</tbody></table></div>
+      <div style="overflow:auto"><table><thead><tr><th>${eom?'ŞABLON':'ANKET'}</th><th>ULAŞTI</th><th>BAŞARISIZ</th><th>AÇILDI</th><th>${eom?'OY KULLANDI':'YANITLADI'}</th><th>KATILIM</th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="6" class="empty">Henüz gönderim yok</td></tr>`}</tbody></table></div>
     </div>`;
   }
 
   function repRecipTable(invites){
-    return `<details class="rep-recips"><summary>Alıcı listesi (${(invites||[]).length})</summary>
+    const all=invites||[];
+    const ok=all.filter(v=>v.sent_ok===true).length, bad=all.length-ok;
+    return `<details class="rep-recips"><summary>Alıcı listesi (${all.length}) · ${ok} ulaştı${bad?` · <span class="danger-text">${bad} başarısız</span>`:''}</summary>
       <div style="overflow:auto"><table><thead><tr><th>ALICI</th><th>KANAL</th><th>DURUM</th><th>AÇILMA</th><th>KATILIM</th></tr></thead><tbody>
       ${(invites||[]).map(v=>{
         const st=v.used_at?'<span class="badge green">Katıldı</span>':(v.opened_at?'<span class="badge orange">Açtı</span>':(v.sent_ok?'<span class="badge blue">Gönderildi</span>':'<span class="badge red">Gönderilemedi</span>'));
@@ -159,69 +210,140 @@
     return `<div class="rep-chart"><div class="rep-pie" style="background:conic-gradient(${stops})" role="img"></div><ul class="rep-legend">${legend}</ul></div>`;
   }
 
+  function reportTextCount(rep){
+    return (rep.questions||[]).filter(q=>q.type==='text').reduce((a,q)=>a+((q.texts||[]).length),0);
+  }
+  function reportTabsHtml(rep){
+    const n=reportTextCount(rep);
+    const hasCompare=(rep.departmentCompare||[]).length>0;
+    const depts=rep.departmentList||[];
+    const cur=['summary','texts','compare'].includes(repTab)?repTab:'summary';
+    const deptSel=depts.length?`<select class="select" id="rep-dept" style="margin-left:auto;font-size:12px;padding:6px 9px">
+        <option value="">Tüm departmanlar</option>
+        ${depts.map(d=>`<option value="${esc(d)}" ${repDept===d?'selected':''}>${esc(d)}</option>`).join('')}
+      </select>`:'';
+    return `<div class="rep-tabs" id="rep-tabs">
+      <button type="button" class="rtab${cur==='summary'?' on':''}" data-rtab="summary">Özet ve grafikler</button>
+      <button type="button" class="rtab${cur==='texts'?' on':''}" data-rtab="texts">Yazılı değerlendirmeler <span class="rtab-badge">${n}</span></button>
+      ${hasCompare?`<button type="button" class="rtab${cur==='compare'?' on':''}" data-rtab="compare">Departman karşılaştırma</button>`:''}
+      ${deptSel}
+    </div>`;
+  }
+  function bindReportTabs(){
+    const bar=document.querySelector('#rep-tabs');
+    if(!bar)return;
+    bar.querySelectorAll('.rtab').forEach(b=>b.onclick=()=>{
+      repTab=b.dataset.rtab;
+      bar.querySelectorAll('.rtab').forEach(x=>x.classList.toggle('on',x.dataset.rtab===repTab));
+      document.querySelectorAll('#rep-body [data-rpanel]').forEach(p=>{p.hidden=p.dataset.rpanel!==repTab;});
+      const body=document.querySelector('#rep-body');if(body)body.scrollTop=0;
+    });
+    const ds=bar.querySelector('#rep-dept');
+    if(ds)ds.onchange=()=>{repDept=ds.value;reloadReport();};
+  }
+  function avgClass(v){ if(v==null)return ''; return v>=3.5?'avg-hi':(v>=2.5?'avg-mid':'avg-lo'); }
+  function compareHtml(rep){
+    const rows=rep.departmentCompare||[];
+    const depts=rep.departmentList||[];
+    if(!rows.length)return '<div class="empty">Puanlanabilir soru yok</div>';
+    const activeDepts=depts.filter(d=>rows.some(r=>r.byDept.some(x=>x.department===d)));
+    const other=[...new Set(rows.flatMap(r=>r.byDept.map(x=>x.department)))].filter(d=>!activeDepts.includes(d));
+    const cols=[...activeDepts,...other];
+    const cell=(r,d)=>{const x=r.byDept.find(y=>y.department===d);return x?`<td class="${avgClass(x.average)}" title="${x.answered} yanıt">${x.average.toFixed(2).replace('.',',')}</td>`:'<td class="muted">—</td>';};
+    return `<div class="muted" style="font-size:12px;margin-bottom:10px">Her yetkinlik için departman ortalaması (1–4 ölçek; Evet/Hayır sorularında 1 = Evet). Yeşil ≥ 3,5 · mavi 2,5–3,5 · turuncu &lt; 2,5.</div>
+      <div style="overflow:auto"><table class="rep-compare"><thead><tr><th>YETKİNLİK</th>${cols.map(d=>`<th>${esc(d)}</th>`).join('')}<th>GENEL</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr><td class="rc-q">${esc(r.title)}</td>${cols.map(d=>cell(r,d)).join('')}<td class="${avgClass(r.overall)}"><b>${r.overall!=null?r.overall.toFixed(2).replace('.',','):'—'}</b></td></tr>`).join('')}
+      </tbody></table></div>`;
+  }
   function reportHtml(rep){
-    const t=rep.totals, notResp=Math.max(0,t.sent-t.responded);
+    const t=rep.totals, delivered=t.delivered??t.sent, failed=t.failed??0;
     const statusParts=[
       {label:'Yanıtladı',count:t.responded,color:'#18a874'},
       {label:'Açtı, yanıtlamadı',count:Math.max(0,t.opened-t.responded),color:'#f59e0b'},
-      {label:'Hiç açmadı',count:Math.max(0,t.sent-t.opened),color:'#c3cad6'}
+      {label:'Hiç açmadı',count:Math.max(0,delivered-t.opened),color:'#c3cad6'}
     ];
-    const qHtml=(rep.questions||[]).map((q,i)=>{
-      let inner;
-      if(q.type==='text'){
-        inner=q.texts&&q.texts.length
-          ? `<ul class="rep-texts">${q.texts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`
-          : `<div class="muted" style="font-size:13px">Henüz yazılı yanıt yok</div>`;
-      }else{
-        inner=pieHtml((q.distribution||[]).map(d=>({label:d.label,count:d.count})));
-      }
-      return `<div class="rep-q">
+    const qList=(rep.questions||[]).map((q,i)=>({q,i}));
+    const chartHtml=qList.filter(x=>x.q.type!=='text').map(({q,i})=>`<div class="rep-q">
         <div class="rep-q-h">${i+1}. ${esc(q.title||'')}</div>
         <div class="muted" style="font-size:12px">${q.answered} kişi yanıtladı</div>
-        ${inner}
-      </div>`;
-    }).join('');
+        ${pieHtml((q.distribution||[]).map(d=>({label:d.label,count:d.count})))}
+      </div>`).join('');
+    const textQs=qList.filter(x=>x.q.type==='text');
+    const textHtml=textQs.length
+      ? textQs.map(({q,i})=>`<div class="rep-q">
+          <div class="rep-q-h">${i+1}. ${esc(q.title||'')}</div>
+          <div class="muted" style="font-size:12px">${(q.texts||[]).length} yazılı yanıt</div>
+          ${(q.texts&&q.texts.length)
+            ? `<ul class="rep-texts">${q.texts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`
+            : `<div class="muted" style="font-size:13px">Henüz yazılı yanıt yok</div>`}
+        </div>`).join('')
+      : '<div class="empty">Bu ankette elle yazılan (serbest metin) soru yok</div>';
+    const cur=['summary','texts','compare'].includes(repTab)?repTab:'summary';
+    const hasCompare=(rep.departmentCompare||[]).length>0;
+    const deptNote=rep.department?`<div class="badge blue" style="margin-bottom:12px">Departman: ${esc(rep.department)}</div> `:'';
     return `<div id="rep-body">
-      <div class="rep-stats">
-        <div class="rep-stat"><b>${t.sent}</b><span>Gönderildi</span></div>
-        <div class="rep-stat"><b>${t.opened}</b><span>Açıldı (tıkladı)</span></div>
-        <div class="rep-stat"><b>${t.responded}</b><span>Yanıtladı</span></div>
-        <div class="rep-stat"><b>${notResp}</b><span>Yanıtlamadı</span></div>
+      <div data-rpanel="summary"${cur==='summary'?'':' hidden'}>
+        ${deptNote}
+        <div class="rep-stats">
+          <div class="rep-stat"><b>${delivered}</b><span>Ulaştı</span></div>
+          <div class="rep-stat"><b${failed?' class="danger-text"':''}>${failed}</b><span>Başarısız</span></div>
+          <div class="rep-stat"><b>${t.opened}</b><span>Açıldı (tıkladı)</span></div>
+          <div class="rep-stat"><b>${t.responded}</b><span>Yanıtladı</span></div>
+        </div>
+        <div class="rep-q"><div class="rep-q-h">Yanıt durumu <span class="muted" style="font-weight:400">(ulaşan ${delivered} kişi üzerinden)</span></div>${pieHtml(statusParts)}</div>
+        ${chartHtml||'<div class="empty">Bu ankette grafikli soru yok</div>'}
+        ${repRecipTable(rep.invites)}
       </div>
-      <div class="rep-q"><div class="rep-q-h">Yanıt durumu</div>${pieHtml(statusParts)}</div>
-      ${qHtml||'<div class="empty">Bu ankette soru yok</div>'}
-      ${repRecipTable(rep.invites)}
+      <div data-rpanel="texts"${cur==='texts'?'':' hidden'}>
+        ${textHtml}
+      </div>
+      ${hasCompare?`<div data-rpanel="compare"${cur==='compare'?'':' hidden'}>${compareHtml(rep)}</div>`:''}
     </div>`;
   }
 
   function repSig(rep){
     const t=rep.totals||{};
-    return [t.sent,t.opened,t.responded,
-      (rep.questions||[]).map(q=>q.type==='text'?q.answered+'x'+((q.texts||[]).length):(q.distribution||[]).map(d=>d.count).join('.')).join('|')
+    return [rep.department||'',t.sent,t.delivered,t.failed,t.opened,t.responded,
+      (rep.questions||[]).map(q=>q.type==='text'?q.answered+'x'+((q.texts||[]).length):(q.distribution||[]).map(d=>d.count).join('.')).join('|'),
+      (rep.departmentCompare||[]).map(r=>r.byDept.map(x=>x.average).join('.')).join('|')
     ].join(';');
   }
-  let repTimer=null;
+  let repTimer=null, repTab='summary', repDept='', repRepId=null, lastRepSig='';
+  function paintReport(rep,keepScroll){
+    const bar=document.querySelector('#rep-tabs'), body=document.querySelector('#rep-body');
+    if(!body)return;
+    const scroll=keepScroll?body.scrollTop:0, recipsOpen=body.querySelector('.rep-recips')?.open;
+    if(bar)bar.outerHTML=reportTabsHtml(rep); else return;
+    body.outerHTML=reportHtml(rep);
+    bindReportTabs();
+    const nb=document.querySelector('#rep-body');
+    if(nb){nb.scrollTop=scroll;if(recipsOpen){const d=nb.querySelector('.rep-recips');if(d)d.open=true;}}
+    lastRepSig=repSig(rep);
+  }
+  async function reloadReport(){
+    if(!repRepId)return;
+    let fresh;
+    try{fresh=await api('/api/surveys/'+repRepId+'/report'+(repDept?'?department='+encodeURIComponent(repDept):''));}catch(err){return toast(err.message);}
+    paintReport(fresh,true);
+  }
   async function openSurveyReport(id){
+    repTab='summary';repDept='';repRepId=id;
     let rep;
     try{rep=await api('/api/surveys/'+id+'/report');}catch(err){return toast(err.message);}
-    modal('Anket raporu · '+esc(rep.survey.title),reportHtml(rep),()=>closeModal());
+    modal('Rapor · '+esc(rep.survey.title),reportTabsHtml(rep)+reportHtml(rep),()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
+    bindReportTabs();
+    lastRepSig=repSig(rep);
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=closeModal;}
     // Rapor açıkken yeni yanıtları canlı yansıt
-    let lastSig=repSig(rep);
     clearInterval(repTimer);
     repTimer=setInterval(async()=>{
       const body=document.querySelector('#rep-body');
       if(!body||!document.body.contains(body)){clearInterval(repTimer);repTimer=null;return;}
       let fresh;
-      try{fresh=await api('/api/surveys/'+id+'/report');}catch(_){return;}
-      const sig=repSig(fresh);
-      if(sig===lastSig)return;
-      lastSig=sig;
-      const scroll=body.scrollTop,recipsOpen=body.querySelector('.rep-recips')?.open;
-      body.outerHTML=reportHtml(fresh);
-      const nb=document.querySelector('#rep-body');
-      if(nb){nb.scrollTop=scroll;if(recipsOpen){const d=nb.querySelector('.rep-recips');if(d)d.open=true;}}
+      try{fresh=await api('/api/surveys/'+repRepId+'/report'+(repDept?'?department='+encodeURIComponent(repDept):''));}catch(_){return;}
+      if(repSig(fresh)===lastRepSig)return;
+      paintReport(fresh,true);
       toast('Yeni yanıt geldi — rapor güncellendi');
     },3000);
   }
@@ -244,7 +366,9 @@
       try{
         if(editing)await api('/api/surveys/'+existing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
         else await api('/api/surveys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-        await load(kind,true);closeModal();render();toast(editing?'Anket güncellendi':'Anket şablonu oluşturuldu');
+        await load(kind,true);closeModal();
+        if(kind==='performans')renderPerformance();else render();
+        toast(editing?'Form güncellendi':'Form oluşturuldu');
       }catch(err){toast(err.message);if(submit)submit.disabled=false;}
     });
     document.querySelector('.modal')?.classList.add('survey-modal');
@@ -478,11 +602,11 @@
   }
 
   function eomReportHtml(rep){
-    const t=rep.totals,notResp=Math.max(0,t.sent-t.responded);
+    const t=rep.totals, delivered=t.delivered??t.sent, failed=t.failed??0;
     const statusParts=[
       {label:'Oy kullandı',count:t.responded,color:'#18a874'},
       {label:'Açtı, oy kullanmadı',count:Math.max(0,t.opened-t.responded),color:'#f59e0b'},
-      {label:'Hiç açmadı',count:Math.max(0,t.sent-t.opened),color:'#c3cad6'}
+      {label:'Hiç açmadı',count:Math.max(0,delivered-t.opened),color:'#c3cad6'}
     ];
     const cats=(rep.categories||[]).map(c=>`<div class="rep-q">
       <div class="rep-q-h">${esc(c.label)}</div>
@@ -491,19 +615,19 @@
     </div>`).join('');
     return `<div id="rep-body">
       <div class="rep-stats">
-        <div class="rep-stat"><b>${t.sent}</b><span>Gönderildi</span></div>
+        <div class="rep-stat"><b>${delivered}</b><span>Ulaştı</span></div>
+        <div class="rep-stat"><b${failed?' class="danger-text"':''}>${failed}</b><span>Başarısız</span></div>
         <div class="rep-stat"><b>${t.opened}</b><span>Açıldı (tıkladı)</span></div>
         <div class="rep-stat"><b>${t.responded}</b><span>Oy kullandı</span></div>
-        <div class="rep-stat"><b>${notResp}</b><span>Oy kullanmadı</span></div>
       </div>
-      <div class="rep-q"><div class="rep-q-h">Katılım durumu</div>${pieHtml(statusParts)}</div>
+      <div class="rep-q"><div class="rep-q-h">Katılım durumu <span class="muted" style="font-weight:400">(ulaşan ${delivered} kişi üzerinden)</span></div>${pieHtml(statusParts)}</div>
       ${cats||'<div class="empty">Bu şablonda aday yok</div>'}
       ${repRecipTable(rep.invites)}
     </div>`;
   }
   function eomRepSig(rep){
     const t=rep.totals||{};
-    return [t.sent,t.opened,t.responded,(rep.categories||[]).map(c=>(c.distribution||[]).map(d=>d.count).join('.')).join('|')].join(';');
+    return [t.sent,t.delivered,t.failed,t.opened,t.responded,(rep.categories||[]).map(c=>(c.distribution||[]).map(d=>d.count).join('.')).join('|')].join(';');
   }
   async function openEomReport(id){
     let rep;
@@ -693,7 +817,7 @@
     let rows=[{name:'',email:'',phone:'',employee_id:null}];
     let groups=[];
     let done=false;
-    const path=kind==='personel'?'/api/surveys/'+opts.surveyId+'/invites':'/api/eom/templates/'+opts.templateId+'/invites';
+    const path=kind==='makeitright'?'/api/eom/templates/'+opts.templateId+'/invites':'/api/surveys/'+opts.surveyId+'/invites';
     const rkey=r=>((r.email||'').trim().toLowerCase())||((r.phone||'').replace(/\D/g,''))||((r.name||'').trim().toLowerCase());
     const allActiveEmps=()=>(state.employees||[]).filter(e=>e.status!=='Pasif')
       .map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
@@ -712,7 +836,7 @@
     }
     const loadGroups=async()=>{try{groups=await api('/api/recipient-groups');}catch(_){groups=[];}};
     modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body">Yükleniyor…</div>',async()=>{
-      if(done){closeModal();if(kind!=='personel')renderMakeItRight();return;}
+      if(done){closeModal();if(kind==='makeitright')renderMakeItRight();else if(kind==='performans')renderPerformance();return;}
       const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim(),employee_id:r.employee_id||undefined})).filter(r=>r.name||r.email||r.phone);
       if(!recipients.length)return toast('En az bir alıcı girin');
       if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresi olmalı (e-postası olmayanları çıkarın)');
@@ -835,6 +959,9 @@
     if(state.view==='survey'){
       if(window.__ikCan&&!window.__ikCan('survey')){state.view='dashboard';baseShell();return;}
       render();
+    }else if(state.view==='performance'){
+      if(window.__ikCan&&!window.__ikCan('performance')){state.view='dashboard';baseShell();return;}
+      renderPerformance();
     }else baseShell();
   };
 })();

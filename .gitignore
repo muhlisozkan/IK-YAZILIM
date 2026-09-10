@@ -12,3 +12,6 @@ backups/
 node_modules/
 api/node_modules/
 *.log
+
+# Kaynak malzeme (çalışma zamanında kullanılmaz, hassas veri içerir)
+imports/

@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#0c2340">
 <title>Hilton Dalaman · Anket</title>
 <style>
+  @font-face{font-family:'InterVariable';font-style:normal;font-weight:100 900;font-display:swap;src:url('/fonts/InterVariable.woff2') format('woff2')}
   :root{
     --navy:#0c2340;--navy-2:#16406b;--navy-3:#1e4e80;
     --gold:#b58150;--gold-soft:#e9dcc9;
@@ -17,8 +18,9 @@
   html,body{margin:0}
   body{
     background:var(--bg);color:var(--ink);
-    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-    -webkit-font-smoothing:antialiased;
+    font:15px/1.6 'InterVariable',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    letter-spacing:-.006em;
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
   }
   .page{max-width:720px;margin:0 auto;padding:0 16px 48px}
 

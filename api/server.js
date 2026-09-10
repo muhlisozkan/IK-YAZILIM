@@ -2257,7 +2257,7 @@ async function seedHmsIfEmpty() {
 }
 
 // --- Anket şablonları -------------------------------------------------
-const SURVEY_KINDS = new Set(['personel', 'makeitright']);
+const SURVEY_KINDS = new Set(['personel', 'makeitright', 'performans']);
 const SURVEY_QTYPES = new Set(['text', 'single', 'multi', 'scale', 'yesno']);
 const canManageSurveys = user => isHRUser(user);
 function sanitizeSurveyQuestions(input) {
@@ -2524,16 +2524,25 @@ function parseInviteBody(body) {
     name: clean(r?.name).slice(0, 160),
     email: clean(r?.email).slice(0, 200),
     phone: clean(r?.phone).slice(0, 40),
-    employee_id: Number(r?.employee_id) || null
+    employee_id: Number(r?.employee_id) || null,
+    department: clean(r?.department).slice(0, 120)
   })).filter(r => r.name || r.email || r.phone).slice(0, 500);
   return { channel, recipients, message: clean(b.message).slice(0, 1000), greet: b.greet !== false };
 }
 
 async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject, greet = true }) {
+  // Alıcıların departmanını (departman bazlı rapor için) çalışan kaydından çöz
+  const empIds = [...new Set(recipients.map(r => Number(r.employee_id)).filter(Boolean))];
+  const deptById = {};
+  if (empIds.length) {
+    (await pool.query('select id, department from employees where id = any($1::bigint[])', [empIds]))
+      .rows.forEach(e => { deptById[e.id] = clean(e.department); });
+  }
   const insertInvite = (token, r, phone, ok, err) => pool.query(
-    `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
-    [token, kind, surveyId, periodId, r.employee_id, r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name]);
+    `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by,recipient_department)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
+    [token, kind, surveyId, periodId, r.employee_id, r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name,
+     deptById[Number(r.employee_id)] || clean(r.department)]);
   const results = [];
   const summary = () => ({ sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results });
 
@@ -2687,7 +2696,8 @@ app.post('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
   if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
   const { channel, recipients, message, greet } = parseInviteBody(req.body);
   if (!recipients.length) return res.status(400).json({ error: 'En az bir alıcı ekleyin' });
-  const summary = await dispatchInvites(req, { kind: 'personel', surveyId: survey.id, periodId: null, recipients, channel, message, greet, subject: `İK Merkezi · ${survey.title}` });
+  const inviteKind = SURVEY_KINDS.has(survey.kind) && survey.kind !== 'makeitright' ? survey.kind : 'personel';
+  const summary = await dispatchInvites(req, { kind: inviteKind, surveyId: survey.id, periodId: null, recipients, channel, message, greet, subject: `İK Merkezi · ${survey.title}` });
   res.json(summary);
 }));
 
@@ -2700,34 +2710,36 @@ app.get('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
 // Gönderilmiş anketlerin özeti (şablon listesinin altında gösterilir)
 app.get('/api/surveys/sent', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const kind = SURVEY_KINDS.has(clean(req.query.kind)) ? clean(req.query.kind) : 'personel';
   const rows = (await pool.query(`
     select s.id, s.title, s.active,
       count(i.id)::int as sent,
+      count(i.id) filter (where i.sent_ok is true)::int as delivered,
+      count(i.id) filter (where i.sent_ok is not true)::int as failed,
       count(i.id) filter (where i.opened_at is not null or i.used_at is not null)::int as opened,
       count(i.id) filter (where i.used_at is not null)::int as responded,
       max(i.created_at) as last_sent_at
     from survey_templates s
     join survey_invites i on i.survey_id = s.id
-    where s.kind = 'personel'
+    where s.kind = $1
     group by s.id
-    order by max(i.created_at) desc`)).rows;
+    order by max(i.created_at) desc`, [kind])).rows;
   res.json(rows);
 }));
 
-// Tek bir anketin ayrıntılı raporu: yanıt durumu + soru bazlı dağılımlar
-app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
-  const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
-  if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
-  const invites = (await pool.query(
-    'select recipient_name,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
-    [survey.id])).rows;
-  const sent = invites.length;
-  const opened = invites.filter(i => i.opened_at || i.used_at).length;
-  const responded = invites.filter(i => i.used_at).length;
-  const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
-  const questions = (Array.isArray(survey.questions) ? survey.questions : []).map((q, idx) => {
-    const vals = answered.map(r => r[idx]).filter(a => a && a.value != null).map(a => a.value);
+// Bir sorunun tek bir yanıt değerini sayısal puana çevirir (ortalama için)
+function questionScore(q, value) {
+  if (q.type === 'scale') { const n = Number(value); return Number.isFinite(n) ? n : null; }
+  if (q.type === 'single' && q.scored) {
+    const opt = (Array.isArray(q.options) ? q.options : []).find(o => o.label === value);
+    return opt ? (Number(opt.score) || 0) : null;
+  }
+  if (q.type === 'yesno') return value === 'Evet' ? 1 : (value === 'Hayır' ? 0 : null);
+  return null;
+}
+function surveyQuestionStats(questions, responses) {
+  return (Array.isArray(questions) ? questions : []).map((q, idx) => {
+    const vals = responses.map(r => r[idx]).filter(a => a && a.value != null).map(a => a.value);
     if (q.type === 'text') {
       const texts = vals.filter(v => typeof v === 'string' && v.trim()).map(v => String(v).slice(0, 2000));
       return { title: q.title, type: q.type, answered: texts.length, texts };
@@ -2737,21 +2749,75 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
       : q.type === 'scale' ? Array.from({ length: Math.max(1, hi - lo + 1) }, (_, k) => String(lo + k))
         : (Array.isArray(q.options) ? q.options.map(o => o.label).filter(Boolean) : []);
     const counts = new Map(seed.map(l => [l, 0]));
-    let answeredCount = 0;
+    let answeredCount = 0, scoreSum = 0, scoreN = 0;
     vals.forEach(v => {
       const arr = Array.isArray(v) ? v : [v];
       let any = false;
       arr.forEach(x => { const k = String(x); if (k === '') return; counts.set(k, (counts.get(k) || 0) + 1); any = true; });
       if (any) answeredCount++;
+      const s = questionScore(q, Array.isArray(v) ? v[0] : v);
+      if (s != null) { scoreSum += s; scoreN++; }
     });
-    return { title: q.title, type: q.type, answered: answeredCount, distribution: [...counts.entries()].map(([label, count]) => ({ label, count })) };
+    const scored = (q.type === 'scale') || (q.type === 'single' && q.scored) || q.type === 'yesno';
+    return {
+      title: q.title, type: q.type, answered: answeredCount,
+      distribution: [...counts.entries()].map(([label, count]) => ({ label, count })),
+      average: scored && scoreN ? +(scoreSum / scoreN).toFixed(2) : null
+    };
   });
+}
+
+// Tek bir anketin ayrıntılı raporu: yanıt durumu + soru bazlı dağılımlar + departman kırılımı
+app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
+  const allInvites = (await pool.query(
+    'select recipient_name,recipient_department,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
+    [survey.id])).rows;
+  const deptOf = i => clean(i.recipient_department) || '(Departman belirtilmemiş)';
+  const departmentList = [...new Set(allInvites.map(i => clean(i.recipient_department)).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'tr'));
+
+  const dsel = clean(req.query.department);
+  const invites = dsel ? allInvites.filter(i => deptOf(i) === dsel) : allInvites;
+
+  const sent = invites.length;
+  const delivered = invites.filter(i => i.sent_ok === true).length;
+  const failed = sent - delivered;
+  const opened = invites.filter(i => i.opened_at || i.used_at).length;
+  const responded = invites.filter(i => i.used_at).length;
+  const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
+  const questions = surveyQuestionStats(survey.questions, answered);
+
+  // Departman karşılaştırması: puanlanabilir her soru için departman departman ortalama
+  const qList = (Array.isArray(survey.questions) ? survey.questions : []);
+  const respByDept = {};
+  allInvites.filter(i => Array.isArray(i.response)).forEach(i => {
+    (respByDept[deptOf(i)] = respByDept[deptOf(i)] || []).push(i.response);
+  });
+  const departmentCompare = qList.map((q, idx) => ({ q, idx }))
+    .filter(({ q }) => (q.type === 'scale') || (q.type === 'single' && q.scored) || q.type === 'yesno')
+    .map(({ q, idx }) => {
+      const byDept = Object.entries(respByDept).map(([department, rs]) => {
+        let sum = 0, n = 0;
+        rs.forEach(r => { const s = questionScore(q, r[idx] && (Array.isArray(r[idx].value) ? r[idx].value[0] : r[idx].value)); if (s != null) { sum += s; n++; } });
+        return { department, average: n ? +(sum / n).toFixed(2) : null, answered: n };
+      }).filter(d => d.answered > 0).sort((a, b) => a.department.localeCompare(b.department, 'tr'));
+      const allN = byDept.reduce((a, d) => a + d.answered, 0);
+      const allAvg = allN ? +(byDept.reduce((a, d) => a + d.average * d.answered, 0) / allN).toFixed(2) : null;
+      return { index: idx, title: q.title, type: q.type, overall: allAvg, byDept };
+    });
+
   res.json({
-    survey: { id: survey.id, title: survey.title, description: survey.description, active: survey.active },
-    totals: { sent, opened, responded },
+    survey: { id: survey.id, title: survey.title, description: survey.description, active: survey.active, kind: survey.kind },
+    department: dsel || null,
+    departmentList,
+    totals: { sent, delivered, failed, opened, responded },
     questions,
+    departmentCompare,
     invites: invites.map(i => ({
-      name: i.recipient_name, channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
+      name: i.recipient_name, department: deptOf(i), channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
       opened_at: i.opened_at, used_at: i.used_at
     }))
   });
@@ -2776,6 +2842,8 @@ app.get('/api/eom/sent', asyncRoute(async (req, res) => {
   const rows = (await pool.query(`
     select p.id, p.title, p.status,
       count(i.id)::int as sent,
+      count(i.id) filter (where i.sent_ok is true)::int as delivered,
+      count(i.id) filter (where i.sent_ok is not true)::int as failed,
       count(i.id) filter (where i.opened_at is not null or i.used_at is not null)::int as opened,
       count(i.id) filter (where i.used_at is not null)::int as responded,
       max(i.created_at) as last_sent_at
@@ -2794,6 +2862,8 @@ app.get('/api/eom/templates/:id/report', asyncRoute(async (req, res) => {
   const invites = (await pool.query(
     "select recipient_name,channel,sent_ok,sent_error,opened_at,used_at,response from survey_invites where period_id=$1 and kind='makeitright' order by id", [t.id])).rows;
   const sent = invites.length;
+  const delivered = invites.filter(i => i.sent_ok === true).length;
+  const failed = sent - delivered;
   const opened = invites.filter(i => i.opened_at || i.used_at).length;
   const responded = invites.filter(i => i.used_at).length;
   const countBy = {};
@@ -2814,7 +2884,7 @@ app.get('/api/eom/templates/:id/report', asyncRoute(async (req, res) => {
   });
   res.json({
     template: { id: t.id, title: t.title, status: t.status },
-    totals: { sent, opened, responded },
+    totals: { sent, delivered, failed, opened, responded },
     categories,
     invites: invites.map(i => ({
       name: i.recipient_name, channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
@@ -2846,11 +2916,11 @@ app.get('/api/public/invite/:token', asyncRoute(async (req, res) => {
     recipient_name: inv.recipient_name, recipient_salutation: salutationName(inv.recipient_name),
     used_at: inv.used_at, response: inv.response || null
   };
-  if (inv.kind === 'personel') {
+  if (inv.kind !== 'makeitright') {
     const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];
     if (!s) return res.status(404).json({ status: 'invalid' });
     if (!s.active && !inv.used_at) out.status = 'closed';
-    out.eyebrow = 'Personel Anketi';
+    out.eyebrow = inv.kind === 'performans' ? 'Performans Değerlendirme' : 'Personel Anketi';
     out.title = s.title; out.subtitle = s.description; out.description = s.description; out.questions = s.questions || [];
   } else {
     const p = (await pool.query('select * from eom_periods where id=$1', [inv.period_id])).rows[0];
@@ -2870,7 +2940,7 @@ app.post('/api/public/invite/:token', asyncRoute(async (req, res) => {
   if (!inv) return res.status(404).json({ error: 'Bağlantı geçersiz' });
   if (inv.used_at) return res.status(409).json({ error: 'Bu bağlantı zaten kullanıldı; değişiklik yapılamaz.' });
   const body = req.body || {};
-  if (inv.kind === 'personel') {
+  if (inv.kind !== 'makeitright') {
     const s = (await pool.query('select * from survey_templates where id=$1', [inv.survey_id])).rows[0];
     if (!s) return res.status(404).json({ error: 'Anket bulunamadı' });
     if (!s.active) return res.status(409).json({ error: 'Anket kapatılmış' });
@@ -2897,6 +2967,782 @@ app.post('/api/public/invite/:token', asyncRoute(async (req, res) => {
     }
     await pool.query('update survey_invites set response=$2::jsonb, used_at=now() where id=$1', [inv.id, JSON.stringify(chosen)]);
   }
+  res.json({ ok: true });
+}));
+
+// --- Güncel Tablo: yüklenen Excel'in salt-okunur görüntüleyicisi ------
+const colLetterToNum = s => { let n = 0; for (const ch of s) n = n * 26 + (ch.charCodeAt(0) - 64); return n; };
+function parseMergeRange(ref) {
+  const m = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(ref);
+  if (!m) return null;
+  return { r1: +m[2], c1: colLetterToNum(m[1]), r2: +m[4], c2: colLetterToNum(m[3]) };
+}
+function guncelFmtNumber(n, numFmt) {
+  if (!Number.isFinite(n)) return String(n);
+  const f = String(numFmt || '');
+  if (/%/.test(f)) {
+    const dec = ((f.match(/\.(0+)/) || [])[1] || '').length;
+    return (n * 100).toLocaleString('tr-TR', { minimumFractionDigits: dec, maximumFractionDigits: dec }) + '%';
+  }
+  const decM = (f.match(/\.(0+)/) || [])[1];
+  const dec = decM ? decM.length : (Number.isInteger(n) ? 0 : 2);
+  let s = n.toLocaleString('tr-TR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  if (/(?:₺|"₺"|\bTL\b|"TL"|\bTRY\b)/i.test(f)) s = '₺' + s;
+  else if (/(?:\$|\bUSD\b)/.test(f)) s = '$' + s;
+  else if (/(?:€|\bEUR\b)/.test(f)) s = '€' + s;
+  return s;
+}
+function guncelCellDisplay(cell, safe) {
+  let v = safe(() => cell.value, null);
+  const numFmt = safe(() => cell.numFmt, '') || '';
+  for (let i = 0; i < 3 && v && typeof v === 'object' && ('formula' in v || 'sharedFormula' in v); i++) v = v.result;
+  if (v == null) return '';
+  if (v instanceof Date) {
+    return (v.getUTCHours() || v.getUTCMinutes()) ? v.toLocaleString('tr-TR') : v.toLocaleDateString('tr-TR');
+  }
+  if (typeof v === 'number') return guncelFmtNumber(v, numFmt);
+  if (typeof v === 'string') return v;
+  if (typeof v === 'boolean') return v ? 'DOĞRU' : 'YANLIŞ';
+  if (typeof v === 'object') {
+    if (v.error) return String(v.error);
+    if (Array.isArray(v.richText)) return v.richText.map(t => t.text || '').join('');
+    if ('text' in v) return String(v.text);
+    const t = safe(() => cell.text, null);
+    return (t != null && t !== '[object Object]' && !/\bGMT\b/.test(String(t))) ? String(t) : '';
+  }
+  return String(v);
+}
+function extractGuncelSheet(ws) {
+  const styleKeys = new Map(), styles = [];
+  const styleIndex = cell => {
+    const font = cell.font || {}, fill = cell.fill, al = cell.alignment || {};
+    const s = {};
+    if (font.bold) s.b = 1;
+    if (font.color && font.color.argb && !/^FF0{0,6}$/.test(font.color.argb) && font.color.argb.slice(-6) !== '000000') s.fc = font.color.argb.slice(-6);
+    if (fill && fill.type === 'pattern' && fill.pattern !== 'none' && fill.fgColor && fill.fgColor.argb) {
+      const c = fill.fgColor.argb.slice(-6);
+      if (c.toUpperCase() !== 'FFFFFF') s.bg = c;
+    }
+    if (al.horizontal && 'left center right'.includes(al.horizontal)) s.h = al.horizontal[0];
+    const key = JSON.stringify(s);
+    if (key === '{}') return undefined;
+    if (!styleKeys.has(key)) { styleKeys.set(key, styles.length); styles.push(s); }
+    return styleKeys.get(key);
+  };
+  const cells = [];
+  let maxR = 0, maxC = 0;
+  const safe = (fn, dflt) => { try { return fn(); } catch { return dflt; } };
+  ws.eachRow({ includeEmpty: false }, (row, r) => {
+    row.eachCell({ includeEmpty: false }, (cell, c) => {
+      // birleşik hücrenin (slave) kopyası — master zaten yazılıyor
+      if (cell.type === 8) return;
+      if (safe(() => cell.isMerged && cell.master && cell.master.address !== cell.address, false)) return;
+      const txt = guncelCellDisplay(cell, safe);
+      const v = safe(() => cell.value, null);
+      let formula = null;
+      if (v && typeof v === 'object') {
+        if (v.formula != null) formula = '=' + String(v.formula).replace(/^[=+]/, '').slice(0, 2000);
+        else if (v.sharedFormula != null) formula = '↪ ' + String(v.sharedFormula) + ' hücresiyle paylaşımlı formül';
+      }
+      if (!txt && !formula) return;
+      const o = { r, c };
+      if (txt) o.t = txt.slice(0, 400);
+      if (formula) o.f = formula;
+      const rawVal = (v && typeof v === 'object' && 'result' in v) ? v.result : v;
+      if (typeof rawVal === 'number') o.n = 1;
+      const si = safe(() => styleIndex(cell), undefined);
+      if (si !== undefined) o.s = si;
+      cells.push(o);
+      if (r > maxR) maxR = r;
+      if (c > maxC) maxC = c;
+    });
+  });
+  let mergesRaw = safe(() => ws.model && ws.model.merges, null);
+  if (mergesRaw && !Array.isArray(mergesRaw)) mergesRaw = Object.keys(mergesRaw);
+  const merges = (mergesRaw || []).map(parseMergeRange).filter(Boolean)
+    .filter(m => m.r1 <= maxR && m.c1 <= maxC)
+    .map(m => ({ r1: m.r1, c1: m.c1, r2: Math.min(m.r2, maxR), c2: Math.min(m.c2, maxC) }));
+  const cols = [];
+  for (let c = 1; c <= maxC; c++) {
+    const col = ws.getColumn(c);
+    cols.push(col && col.width ? Math.round(col.width) : 0);
+  }
+  return { name: ws.name, rows: maxR, colsN: maxC, cells, styles, merges, cols };
+}
+async function parseGuncelWorkbook(buffer) {
+  const ExcelJSmod = (await import('exceljs')).default;
+  const wb = new ExcelJSmod.Workbook();
+  await wb.xlsx.load(buffer);
+  const sheets = wb.worksheets
+    .filter(ws => ws && ws.state !== 'veryHidden' && ws.state !== 'hidden')
+    .map((ws, i) => ({ idx: i, name: ws.name, data: extractGuncelSheet(ws) }));
+  const sheetMeta = sheets.map(s => ({ idx: s.idx, name: s.name, rows: s.data.rows, cols: s.data.colsN, cells: s.data.cells.length }));
+  return { sheetMeta, sheets };
+}
+async function saveGuncelWorkbook({ buffer, name, note, by }) {
+  const { sheetMeta, sheets } = await parseGuncelWorkbook(buffer);
+  if (!sheets.length) throw Object.assign(new Error('Dosyada görünür sayfa bulunamadı'), { status: 400 });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const wbRow = (await client.query(
+      `insert into guncel_workbook(original_name,note,xlsx,sheet_meta,uploaded_by) values($1,$2,$3,$4::jsonb,$5) returning id,uploaded_at`,
+      [clean(name).slice(0, 200) || 'guncel.xlsx', clean(note).slice(0, 500), buffer, JSON.stringify(sheetMeta), clean(by)])).rows[0];
+    for (const s of sheets) {
+      await client.query('insert into guncel_sheet(workbook_id,idx,name,data) values($1,$2,$3,$4::jsonb)',
+        [wbRow.id, s.idx, s.name, JSON.stringify(s.data)]);
+    }
+    // yalnızca son 6 sürümü sakla
+    await client.query(`delete from guncel_workbook where id in (
+      select id from guncel_workbook order by id desc offset 6)`);
+    await client.query('commit');
+    return { id: wbRow.id, uploaded_at: wbRow.uploaded_at, sheet_meta: sheetMeta };
+  } catch (e) { await client.query('rollback').catch(() => {}); throw e; }
+  finally { client.release(); }
+}
+
+app.get('/api/guncel-tablo', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isHRUser, 'Güncel Tablo erişim yetkiniz yok')) return;
+  const rows = (await pool.query(
+    `select id, original_name, note, sheet_meta, uploaded_by, uploaded_at,
+            octet_length(xlsx) as size
+     from guncel_workbook order by id desc`)).rows;
+  res.json(rows.map((r, i) => ({ ...r, is_current: i === 0 })));
+}));
+
+app.get('/api/guncel-tablo/:id/sheet/:idx', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isHRUser, 'Yetkiniz yok')) return;
+  const row = (await pool.query('select data from guncel_sheet where workbook_id=$1 and idx=$2',
+    [Number(req.params.id) || 0, Number(req.params.idx)])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Sayfa bulunamadı' });
+  res.json(row.data);
+}));
+
+app.get('/api/guncel-tablo/:id/download', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isHRUser, 'Yetkiniz yok')) return;
+  const row = (await pool.query('select original_name, xlsx from guncel_workbook where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(row.original_name || 'guncel.xlsx')}`
+  });
+  res.send(Buffer.from(row.xlsx));
+}));
+
+app.post('/api/guncel-tablo', express.raw({ type: () => true, limit: '35mb' }), asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isHRUser, 'Yükleme yetkiniz yok')) return;
+  const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buffer || buffer.length < 100) return res.status(400).json({ error: 'Dosya alınamadı' });
+  if (buffer.length > 30 * 1024 * 1024) return res.status(413).json({ error: 'Dosya çok büyük (en fazla 30 MB)' });
+  if (buffer.slice(0, 2).toString('binary') !== 'PK') return res.status(400).json({ error: 'Geçerli bir .xlsx dosyası değil' });
+  const name = clean(req.get('X-Filename')) || 'guncel.xlsx';
+  const note = clean(req.get('X-Note'));
+  try {
+    const saved = await saveGuncelWorkbook({ buffer, name, note, by: req.user.name });
+    res.status(201).json(saved);
+  } catch (e) {
+    console.error('guncel-tablo upload failed:', e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : ('Excel işlenemedi: ' + (e.message || '')) });
+  }
+}));
+
+app.delete('/api/guncel-tablo/:id', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isHRUser, 'Silme yetkiniz yok')) return;
+  const count = (await pool.query('select count(*)::int n from guncel_workbook')).rows[0].n;
+  if (count <= 1) return res.status(400).json({ error: 'Son sürüm silinemez' });
+  await pool.query('delete from guncel_workbook where id=$1', [Number(req.params.id) || 0]);
+  res.json({ ok: true });
+}));
+
+// --- Personel Bütçesi: "Bütçe YYYY" sayfasından departman bazlı kadro bütçesi ---
+const BUTCE_MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+const parseTrNum = s => {
+  if (s == null || s === '') return null;
+  const n = Number(String(s).replace(/\s/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+};
+const normDeptName = s => String(s || '').toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ').trim();
+const canSeeAllButce = user => companyWideRoles.has(user?.role) || clean(user?.department) === 'İnsan Kaynakları';
+const looseDeptMatch = (a, b) => { const x = normDeptName(a), y = normDeptName(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); };
+
+// En yeni yüklenen Excel'in bütçe yılları + o yıllardaki departman adları
+async function butceExcelInfo() {
+  const wb = (await pool.query('select id from guncel_workbook order by id desc limit 1')).rows[0];
+  if (!wb) return { years: [], departments: [] };
+  const sheets = (await pool.query(
+    `select name, data from guncel_sheet where workbook_id=$1 and name ~ '^Bütçe *20[0-9][0-9]$' order by name`, [wb.id])).rows;
+  const years = sheets.map(s => (s.name.match(/(20\d\d)/) || [])[1]).filter(Boolean);
+  const departments = new Set();
+  const newest = sheets[sheets.length - 1];
+  if (newest) {
+    const cell = new Map();
+    (newest.data.cells || []).forEach(c => cell.set(c.r * 128 + c.c, c));
+    for (let r = 2; r <= (newest.data.rows || 0); r++) {
+      const a = (cell.get(r * 128 + 1)?.t || '').trim(), b = (cell.get(r * 128 + 2)?.t || '').trim();
+      if (a && b) departments.add(a);
+    }
+  }
+  return { years, departments: [...departments], sheets };
+}
+// Bir departmanın en yeni Excel bütçesindeki pozisyon satırları (yeni yıla ön-doldurma için)
+function excelPositionsForDept(sheets, dept) {
+  const sheet = (sheets || [])[sheets.length - 1];
+  if (!sheet || !dept) return { year: null, rows: [] };
+  const year = (sheet.name.match(/(20\d\d)/) || [])[1] || null;
+  const cell = new Map();
+  (sheet.data.cells || []).forEach(c => cell.set(c.r * 128 + c.c, c));
+  const txt = (r, c) => (cell.get(r * 128 + c)?.t || '').trim();
+  const rows = [];
+  for (let r = 2; r <= (sheet.data.rows || 0); r++) {
+    const a = txt(r, 1), b = txt(r, 2), d = txt(r, 4);
+    if (a === dept && (b || d) && !/toplam/i.test(a)) {
+      rows.push({ altDepartman: b, bolum: txt(r, 3), pozisyon: d, aylar: BUTCE_MONTHS.map((_, i) => parseTrNum(txt(r, 5 + i))) });
+    }
+  }
+  return { year, rows };
+}
+// Bir yılın (Excel veya girişli) TÜM pozisyon satırları: [{dept, pozisyon, aylar:[12 sayı|null]}]
+async function butcePositionRows(year, excel) {
+  const y = String(year);
+  if (excel.years.includes(y)) {
+    const sheet = (excel.sheets || []).find(s => new RegExp('^Bütçe *' + y + '$').test(s.name));
+    if (!sheet) return [];
+    const cell = new Map();
+    (sheet.data.cells || []).forEach(c => cell.set(c.r * 128 + c.c, c));
+    const txt = (r, c) => (cell.get(r * 128 + c)?.t || '').trim();
+    const out = [];
+    for (let r = 2; r <= (sheet.data.rows || 0); r++) {
+      const a = txt(r, 1), b = txt(r, 2), d = txt(r, 4);
+      if (a && (b || d) && !/toplam/i.test(a)) {
+        out.push({ dept: a, pozisyon: d || b, aylar: BUTCE_MONTHS.map((_, i) => parseTrNum(txt(r, 5 + i))) });
+      }
+    }
+    return out;
+  }
+  return (await pool.query('select departman, pozisyon, alt_departman, aylar from personel_butce_giris where butce_yili=$1 order by departman, sira, id', [Number(y)]))
+    .rows.map(r => ({
+      dept: r.departman, pozisyon: r.pozisyon || r.alt_departman || r.departman,
+      aylar: (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12).map(v => (v == null || v === '' ? null : Number(v))).map(v => Number.isFinite(v) ? v : null)
+    }));
+}
+// Excel'deki gerçekleşen kadro sayıları: { yıl: { departman: [12 sayı] } }
+// Kaynak: "2025-2026 Karşılaştırma" (dd.mm.yyyy sütunları) ve "Bütçe vs Gerçekleşen YYYY" ("X Gerç." sütunları)
+async function butceExcelActuals() {
+  const wb = (await pool.query('select id from guncel_workbook order by id desc limit 1')).rows[0];
+  if (!wb) return {};
+  const sheets = (await pool.query(
+    `select name, data from guncel_sheet where workbook_id=$1 and (name ~* 'kar[şs][ıi]la[şs]t[ıi]rma' or name ~* '^b[üu]t[çc]e vs')`, [wb.id])).rows;
+  const monthIndex = w => BUTCE_MONTHS.findIndex(m => w.toLocaleLowerCase('tr-TR') === m.toLocaleLowerCase('tr-TR'));
+  const result = {};
+  const put = (year, dept, mi, val) => {
+    if (val == null || !year || mi < 0 || !dept) return;
+    const y = (result[year] = result[year] || {});
+    (y[dept] = y[dept] || Array(12).fill(null))[mi] = val;
+  };
+  for (const sh of sheets) {
+    const cell = new Map();
+    (sh.data.cells || []).forEach(c => cell.set(c.r * 128 + c.c, c));
+    const txt = (r, c) => (cell.get(r * 128 + c)?.t || '').trim();
+    let hdr = 0;
+    for (let r = 1; r <= 8; r++) if (/^departman$/i.test(txt(r, 1))) { hdr = r; break; }
+    if (!hdr) continue;
+    const sheetYear = (sh.name.match(/(20\d\d)/g) || []).pop();
+    const colMap = {};
+    for (let c = 2; c <= (sh.data.colsN || 0); c++) {
+      const h = txt(hdr, c);
+      let m = h.match(/^\d{2}\.(\d{2})\.(20\d\d)$/);
+      if (m) { colMap[c] = { year: m[2], mi: Number(m[1]) - 1 }; continue; }
+      m = h.match(/^(\p{L}+)\s+Ger[çc]/u);
+      if (m && sheetYear) colMap[c] = { year: sheetYear, mi: monthIndex(m[1]) };
+    }
+    for (let r = hdr + 1; r <= (sh.data.rows || 0); r++) {
+      const dept = txt(r, 1);
+      if (!dept || /genel toplam|toplam[ıi]?$|a[çc][ıi]klama|^[••]/i.test(dept)) continue;
+      for (const c in colMap) put(colMap[c].year, dept, colMap[c].mi, parseTrNum(txt(r, Number(c))));
+    }
+  }
+  return result;
+}
+async function butceResolveScope(user, all, reqDept, excelDepartments) {
+  if (all) {
+    const d = clean(reqDept);
+    return d && d !== 'Tümü' ? d : null;
+  }
+  return (excelDepartments || []).find(x => looseDeptMatch(x, user.department)) || clean(user.department) || null;
+}
+function butceEntryRow(r) {
+  const aylar = (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12);
+  while (aylar.length < 12) aylar.push(null);
+  const nums = aylar.map(v => (v == null || v === '' ? null : Number(v))).map(v => Number.isFinite(v) ? v : null);
+  const toplam = nums.reduce((a, v) => a + (v || 0), 0);
+  return {
+    kind: 'position', id: r.id, dept: r.departman,
+    altDept: r.alt_departman || '', bolum: r.bolum || '', pozisyon: r.pozisyon || '',
+    label: r.pozisyon || r.alt_departman || r.departman,
+    values: nums.map(v => v == null ? '' : String(v).replace('.', ',')),
+    valuesNum: nums,
+    toplamNum: toplam, toplam: toplam ? String(Math.round(toplam * 100) / 100).replace('.', ',') : '',
+    ortalamaNum: toplam / 12, ortalama: toplam ? String(Math.round(toplam / 12 * 10) / 10).replace('.', ',') : '',
+    sira: r.sira, updated_by: r.updated_by, updated_at: r.updated_at
+  };
+}
+
+const normPoz = s => String(s || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim();
+// Satırlara: önceki yılın pozisyon bütçesi (prevValues) + bu yılın İK-girişli gerçekleşeni (actualValues)
+async function butceEnrichRows(rows, year, excel) {
+  const prevYear = String(Number(year) - 1);
+  const prevRows = await butcePositionRows(prevYear, excel);
+  const prevMap = new Map();
+  prevRows.forEach(r => {
+    const k = normPoz(r.dept) + '|' + normPoz(r.pozisyon);
+    const e = prevMap.get(k) || Array(12).fill(0);
+    r.aylar.forEach((v, i) => { if (v) e[i] += v; });
+    prevMap.set(k, e);
+  });
+  const actMap = new Map();
+  (await pool.query('select departman, pozisyon, aylar from personel_pozisyon_gerceklesen where butce_yili=$1', [Number(year)])).rows
+    .forEach(r => actMap.set(normPoz(r.departman) + '|' + normPoz(r.pozisyon),
+      (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12).map(v => (v == null ? null : Number(v)))));
+  const f = v => (v == null || v === 0 || !Number.isFinite(v)) ? '' : String(Math.round(v * 100) / 100).replace('.', ',');
+  const total = arr => { const nz = (arr || []).filter(v => v != null); return nz.length ? Math.round(nz.reduce((a, v) => a + v, 0) * 100) / 100 : null; };
+
+  const enriched = rows.map(r => {
+    if (r.kind && r.kind !== 'position') return { ...r };
+    const k = normPoz(r.dept) + '|' + normPoz(r.pozisyon || r.label);
+    const prev = prevMap.get(k) || Array(12).fill(null);
+    const act = actMap.get(k) || Array(12).fill(null);
+    const pt = total(prev), at = total(act), bt = r.toplamNum != null ? r.toplamNum : total(r.valuesNum);
+    return {
+      ...r,
+      prevValues: prev.map(f), prevValuesNum: prev,
+      actualValues: act.map(v => (v == null ? '' : String(v).replace('.', ','))), actualValuesNum: act,
+      toplamNum: bt,
+      prevToplam: pt != null ? f(pt) : '', prevOrt: pt ? f(pt / 12) : '',
+      actualToplam: at != null ? f(at) : '', actualOrt: at ? f(at / 12) : ''
+    };
+  });
+
+  // Alt-toplam / genel toplam satırları: üyelerinden topla
+  return enriched.map(r => {
+    if (!r.kind || r.kind === 'position') return r;
+    const members = enriched.filter(x => x.kind === 'position' && (r.kind === 'grand' || x.dept === r.dept));
+    const colSum = key => {
+      const acc = Array(12).fill(0); let any = false;
+      members.forEach(m => (m[key] || []).forEach((v, i) => { if (v != null) { acc[i] += v; any = true; } }));
+      return any ? acc.map(v => Math.round(v * 100) / 100) : Array(12).fill(null);
+    };
+    const prevA = colSum('prevValuesNum'), actA = colSum('actualValuesNum');
+    const pt = total(prevA), at = total(actA);
+    return {
+      ...r,
+      prevValues: prevA.map(f), actualValues: actA.map(f),
+      prevToplam: pt != null ? f(pt) : '', prevOrt: pt ? f(pt / 12) : '',
+      actualToplam: at != null ? f(at) : '', actualOrt: at ? f(at / 12) : ''
+    };
+  });
+}
+
+app.get('/api/personel-butcesi', asyncRoute(async (req, res) => {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const deptManager = isDepartmentManager(user);
+  if (!all && !deptManager) return res.status(403).json({ error: 'Personel bütçesi görüntüleme yetkiniz yok' });
+
+  const excel = await butceExcelInfo();
+  const excelYears = excel.years;
+
+  // Düzenlenebilir yıllar: girişi olan yıllar + her zaman "gelecek yıl"
+  const entryYearRows = (await pool.query('select distinct butce_yili from personel_butce_giris')).rows;
+  const entryYears = new Set(entryYearRows.map(r => String(r.butce_yili)));
+  const excelMax = excelYears.length ? Math.max(...excelYears.map(Number)) : new Date().getFullYear();
+  for (let y = excelMax + 1; y <= Math.max(new Date().getFullYear() + 1, excelMax + 1); y++) entryYears.add(String(y));
+
+  const allYears = [...new Set([...excelYears, ...entryYears])].sort();
+  if (!allYears.length) return res.status(404).json({ error: 'Bütçe verisi yok' });
+  const year = allYears.includes(clean(req.query.year)) ? clean(req.query.year) : allYears[allYears.length - 1];
+  // Bütçe sütunu yalnızca GELECEK yıllar için düzenlenebilir; içinde bulunulan ve geçmiş yıllarda salt-okunur (yalnız gerçekleşen girilir)
+  const editable = !excelYears.includes(year) && Number(year) > new Date().getFullYear();
+
+  const scopeDept = await butceResolveScope(user, all, req.query.department, excel.departments);
+
+  if (editable) {
+    const entryDeptRows = (await pool.query('select distinct departman from personel_butce_giris where butce_yili=$1', [Number(year)])).rows;
+    const departments = [...new Set([...excel.departments, ...entryDeptRows.map(r => r.departman)])].sort((a, b) => a.localeCompare(b, 'tr'));
+    let entries = (await pool.query('select * from personel_butce_giris where butce_yili=$1 order by departman, sira, id', [Number(year)])).rows.map(butceEntryRow);
+    if (scopeDept) entries = entries.filter(e => e.dept === scopeDept);
+
+    // Bu departman için henüz giriş yoksa: önceki yılın pozisyon listesini taslak olarak getir
+    let draftSource = null;
+    if (scopeDept && !entries.length) {
+      const prev = excelPositionsForDept(excel.sheets || [], scopeDept);
+      if (prev.rows.length) {
+        draftSource = prev.year;
+        entries = prev.rows.map((p, i) => butceEntryRow({
+          id: null, departman: scopeDept, alt_departman: p.altDepartman, bolum: p.bolum,
+          pozisyon: p.pozisyon, aylar: Array(12).fill(null), sira: i, updated_by: '', updated_at: null
+        }));
+      }
+    }
+
+    return res.json({
+      year, prevYear: String(Number(year) - 1), years: allYears, editable: true,
+      canEdit: all || (deptManager && !!scopeDept),
+      canEditActual: all || (deptManager && !!scopeDept),
+      scope: all ? 'all' : 'department',
+      department: scopeDept,
+      departments,
+      draftSource,
+      months: BUTCE_MONTHS,
+      rows: await butceEnrichRows(entries, year, excel)
+    });
+  }
+
+  // Excel'den (salt-okunur)
+  const sheet = (excel.sheets || []).find(s => new RegExp('^Bütçe *' + year + '$').test(s.name));
+  if (!sheet) return res.status(404).json({ error: year + ' bütçe sayfası bulunamadı' });
+  const cells = new Map();
+  (sheet.data.cells || []).forEach(c => cells.set(c.r * 128 + c.c, c));
+  const txt = (r, c) => (cells.get(r * 128 + c)?.t || '').trim();
+  const out = [];
+  const departments = new Set();
+  for (let r = 2; r <= (sheet.data.rows || 0); r++) {
+    const a = txt(r, 1), b = txt(r, 2), d = txt(r, 4);
+    if (!a && !b && !d) continue;
+    const values = BUTCE_MONTHS.map((_, i) => txt(r, 5 + i));
+    const rec = {
+      values, valuesNum: values.map(parseTrNum),
+      toplam: txt(r, 17), toplamNum: parseTrNum(txt(r, 17)),
+      ortalama: txt(r, 18), ortalamaNum: parseTrNum(txt(r, 18))
+    };
+    if (/genel toplam/i.test(a)) { rec.kind = 'grand'; rec.dept = ''; rec.label = 'GENEL TOPLAM'; }
+    else if (a && !b) {
+      rec.kind = 'subtotal';
+      rec.dept = txt(r, 21) || a.replace(/\s*(Toplam[ıi]?|T)\.?\s*$/i, '').trim();
+      rec.label = (rec.dept || a) + ' — Toplam';
+    } else if (a && (b || d)) {
+      rec.kind = 'position';
+      rec.dept = a; rec.altDept = b; rec.bolum = txt(r, 3); rec.pozisyon = d;
+      rec.label = d || b || a;
+      departments.add(a);
+    } else continue;
+    out.push(rec);
+  }
+  const rows = scopeDept ? out.filter(x => x.dept === scopeDept && x.kind !== 'grand') : out;
+  res.json({
+    year, prevYear: String(Number(year) - 1), years: allYears, editable: false, canEdit: false,
+    canEditActual: all || (deptManager && !!scopeDept),
+    scope: all ? 'all' : 'department',
+    department: scopeDept,
+    departments: [...new Set([...departments, ...excel.departments])].sort((a, b) => a.localeCompare(b, 'tr')),
+    months: BUTCE_MONTHS,
+    rows: await butceEnrichRows(rows, year, excel)
+  });
+}));
+
+// Geçen yılla karşılaştırma: aylık toplam kadro + pozisyon bazında
+app.get('/api/personel-butcesi/karsilastirma', asyncRoute(async (req, res) => {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const deptManager = isDepartmentManager(user);
+  if (!all && !deptManager) return res.status(403).json({ error: 'Yetkiniz yok' });
+
+  const excel = await butceExcelInfo();
+  const entryYearRows = (await pool.query('select distinct butce_yili from personel_butce_giris')).rows;
+  const entryYears = entryYearRows.map(r => String(r.butce_yili));
+  const excelMax = excel.years.length ? Math.max(...excel.years.map(Number)) : new Date().getFullYear();
+  const futureYears = [];
+  for (let y = excelMax + 1; y <= Math.max(new Date().getFullYear() + 1, excelMax + 1); y++) futureYears.push(String(y));
+  const allYears = [...new Set([...excel.years, ...entryYears, ...futureYears])].sort();
+  const year = allYears.includes(clean(req.query.year)) ? clean(req.query.year) : allYears[allYears.length - 1];
+  const prevYear = String(Number(year) - 1);
+
+  const scopeDept = await butceResolveScope(user, all, req.query.department, excel.departments);
+
+  const curRows0 = await butcePositionRows(year, excel);
+  const prevRows0 = await butcePositionRows(prevYear, excel);
+  const hasPrev = allYears.includes(prevYear) && prevRows0.length > 0;
+
+  const cur = scopeDept ? curRows0.filter(r => r.dept === scopeDept) : curRows0;
+  const prev = scopeDept ? prevRows0.filter(r => r.dept === scopeDept) : prevRows0;
+
+  const monthTotals = rows => Array.from({ length: 12 }, (_, i) => Math.round(rows.reduce((s, r) => s + (r.aylar[i] || 0), 0) * 100) / 100);
+  const yearAvg = rows => { const mt = monthTotals(rows); const nz = mt.filter(v => v > 0); return nz.length ? Math.round(mt.reduce((a, v) => a + v, 0) / 12 * 10) / 10 : 0; };
+  const posTotal = r => Math.round(r.aylar.reduce((a, v) => a + (v || 0), 0) * 100) / 100;
+
+  // Pozisyon bazında eşleştirme (normalize edilmiş ad)
+  const norm = s => String(s || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim();
+  const agg = rows => {
+    const m = new Map();
+    rows.forEach(r => {
+      const k = norm(r.pozisyon);
+      if (!k) return;
+      const e = m.get(k) || { pozisyon: r.pozisyon, total: 0, count: 0 };
+      e.total += posTotal(r); e.count++;
+      m.set(k, e);
+    });
+    return m;
+  };
+  const curAgg = agg(cur), prevAgg = agg(prev);
+  const keys = [...new Set([...curAgg.keys(), ...prevAgg.keys()])];
+  const positions = keys.map(k => {
+    const c = curAgg.get(k), p = prevAgg.get(k);
+    const cTot = c ? c.total : 0, pTot = p ? p.total : 0;
+    return {
+      pozisyon: (c || p).pozisyon,
+      currentTotal: cTot, prevTotal: pTot,
+      currentAvg: Math.round(cTot / 12 * 10) / 10, prevAvg: Math.round(pTot / 12 * 10) / 10,
+      diff: Math.round((cTot - pTot) / 12 * 10) / 10,
+      // "kaldirildi" yalnızca pozisyon bu yıl hiç yoksa (satır silinmiş); değer girilmemişse değil
+      status: !p ? 'yeni' : (!c ? 'kaldirildi' : 'mevcut')
+    };
+  }).sort((a, b) => b.currentTotal - a.currentTotal || b.prevTotal - a.prevTotal);
+
+  const curMT = monthTotals(cur), prevMT = monthTotals(prev);
+  const monthIdx = Math.min(11, new Date().getMonth());
+
+  res.json({
+    year, prevYear, hasPrev,
+    scope: all ? 'all' : 'department',
+    department: scopeDept,
+    departments: [...new Set([...excel.departments, ...curRows0.map(r => r.dept), ...prevRows0.map(r => r.dept)])].sort((a, b) => a.localeCompare(b, 'tr')),
+    years: allYears,
+    months: BUTCE_MONTHS,
+    monthIdx,
+    monthly: BUTCE_MONTHS.map((m, i) => ({ month: m, current: curMT[i], prev: prevMT[i] })),
+    totals: {
+      currentYearAvg: yearAvg(cur),
+      prevYearAvg: yearAvg(prev),
+      currentMonth: { label: BUTCE_MONTHS[monthIdx], current: curMT[monthIdx], prev: prevMT[monthIdx] }
+    },
+    positions
+  });
+}));
+
+// Bütçe / Gerçekleşen: departman satırlı, her ay = geçen yıl gerç. | bu yıl bütçe | bu yıl gerç.
+app.get('/api/personel-butcesi/butce-gerceklesen', asyncRoute(async (req, res) => {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const dm = isDepartmentManager(user);
+  if (!all && !dm) return res.status(403).json({ error: 'Yetkiniz yok' });
+
+  const excel = await butceExcelInfo();
+  const entryYearRows = (await pool.query('select distinct butce_yili from personel_butce_giris')).rows;
+  const entryYears = new Set(entryYearRows.map(r => String(r.butce_yili)));
+  const excelMax = excel.years.length ? Math.max(...excel.years.map(Number)) : new Date().getFullYear();
+  for (let y = excelMax + 1; y <= Math.max(new Date().getFullYear() + 1, excelMax + 1); y++) entryYears.add(String(y));
+  const allYears = [...new Set([...excel.years, ...entryYears])].sort();
+  const year = allYears.includes(clean(req.query.year)) ? clean(req.query.year) : allYears[allYears.length - 1];
+  const prevYear = String(Number(year) - 1);
+  const editableYear = !excel.years.includes(year);
+
+  const scopeDept = await butceResolveScope(user, all, req.query.department, excel.departments);
+
+  const aggBudget = async y => {
+    const rows = await butcePositionRows(y, excel);
+    const m = {};
+    rows.forEach(r => { const a = (m[r.dept] = m[r.dept] || Array(12).fill(0)); r.aylar.forEach((v, i) => { if (v) a[i] += v; }); });
+    return m;
+  };
+  const exAct = await butceExcelActuals();
+  const actualsFor = async y => {
+    if (exAct[y]) return exAct[y];
+    const m = {};
+    (await pool.query('select departman, aylar from personel_gerceklesen_giris where butce_yili=$1', [Number(y)])).rows
+      .forEach(r => { m[r.departman] = (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12).map(v => (v == null ? null : Number(v))); });
+    return m;
+  };
+  const budgetCur = await aggBudget(year);
+  const actCur = await actualsFor(year);
+  const actPrev = await actualsFor(prevYear);
+
+  const allDepts = [...new Set([...excel.departments, ...Object.keys(budgetCur), ...Object.keys(actCur), ...Object.keys(actPrev)])].filter(Boolean);
+  const pick = (map, dept) => map[dept] || map[Object.keys(map).find(k => looseDeptMatch(k, dept))] || Array(12).fill(null);
+  let depts = allDepts;
+  if (scopeDept) { depts = allDepts.filter(d => d === scopeDept || looseDeptMatch(d, scopeDept)); if (!depts.length) depts = [scopeDept]; }
+  depts.sort((a, b) => a.localeCompare(b, 'tr'));
+
+  const sum = arr => { const nz = arr.filter(v => v != null); return nz.length ? Math.round(nz.reduce((a, v) => a + v, 0) * 100) / 100 : null; };
+  const rows = depts.map(dept => {
+    const budget = (pick(budgetCur, dept)).map(v => Math.round((v || 0) * 100) / 100);
+    const actual = pick(actCur, dept).map(v => v == null ? null : Math.round(v * 100) / 100);
+    const prevActual = pick(actPrev, dept).map(v => v == null ? null : Math.round(v * 100) / 100);
+    const fark = budget.map((b, i) => actual[i] == null ? null : Math.round((actual[i] - b) * 100) / 100);
+    const budgetToDate = sum(budget.map((b, i) => actual[i] == null ? null : b));
+    return {
+      dept, prevActual, budget, actual, fark,
+      totals: {
+        prevActual: sum(prevActual), budget: sum(budget), budgetToDate,
+        actual: sum(actual), fark: sum(fark)
+      }
+    };
+  });
+
+  if (!scopeDept && rows.length > 1) {
+    const col = (key, i) => sum(rows.map(r => r[key][i]));
+    const gt = { dept: 'GENEL TOPLAM', grand: true };
+    gt.prevActual = BUTCE_MONTHS.map((_, i) => col('prevActual', i));
+    gt.budget = BUTCE_MONTHS.map((_, i) => col('budget', i));
+    gt.actual = BUTCE_MONTHS.map((_, i) => col('actual', i));
+    gt.fark = gt.budget.map((b, i) => gt.actual[i] == null ? null : Math.round((gt.actual[i] - (b || 0)) * 100) / 100);
+    gt.totals = {
+      prevActual: sum(gt.prevActual), budget: sum(gt.budget),
+      budgetToDate: sum(gt.budget.map((b, i) => gt.actual[i] == null ? null : b)),
+      actual: sum(gt.actual), fark: sum(gt.fark)
+    };
+    rows.push(gt);
+  }
+
+  res.json({
+    year, prevYear, years: allYears,
+    scope: all ? 'all' : 'department', department: scopeDept,
+    departments: allDepts.sort((a, b) => a.localeCompare(b, 'tr')),
+    months: BUTCE_MONTHS,
+    monthIdx: Math.min(11, new Date().getMonth()),
+    editable: editableYear && !!scopeDept && (all || dm),
+    editableYear,
+    rows
+  });
+}));
+
+app.put('/api/personel-butcesi/:year/gerceklesen', asyncRoute(async (req, res) => {
+  const ctx = await butceWriteContext(req, res, req.params.year, req.body?.department);
+  if (!ctx) return;
+  const aylar = sanitizeAylar(req.body?.aylar);
+  const row = (await pool.query(
+    `insert into personel_gerceklesen_giris(butce_yili,departman,aylar,updated_by) values($1,$2,$3::jsonb,$4)
+     on conflict(butce_yili,departman) do update set aylar=excluded.aylar, updated_by=excluded.updated_by, updated_at=now()
+     returning *`,
+    [ctx.year, ctx.department, JSON.stringify(aylar), ctx.user.name])).rows[0];
+  res.json({ department: row.departman, aylar: row.aylar });
+}));
+
+// Pozisyon bazında gerçekleşen — İK girer, tüm yıllar (Excel yılları dahil)
+async function butceActualWriteContext(req, res, yearParam, bodyDept) {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const dm = isDepartmentManager(user);
+  if (!all && !dm) { res.status(403).json({ error: 'Bu işlem için yetkiniz yok' }); return null; }
+  const year = Number(yearParam);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) { res.status(400).json({ error: 'Geçersiz yıl' }); return null; }
+  const excel = await butceExcelInfo();
+  const scopeDept = await butceResolveScope(user, all, bodyDept, excel.departments);
+  if (!all) {
+    if (!scopeDept) { res.status(400).json({ error: 'Departmanınız belirlenemedi' }); return null; }
+    if (bodyDept && !looseDeptMatch(bodyDept, scopeDept)) { res.status(403).json({ error: 'Yalnızca kendi departmanınızı düzenleyebilirsiniz' }); return null; }
+  } else if (!scopeDept) { res.status(400).json({ error: 'Departman gerekli' }); return null; }
+  return { user, all, dm, year, department: scopeDept };
+}
+
+app.put('/api/personel-butcesi/:year/pozisyon-gerceklesen', asyncRoute(async (req, res) => {
+  const ctx = await butceActualWriteContext(req, res, req.params.year, req.body?.department);
+  if (!ctx) return;
+  const pozisyon = clean(req.body?.pozisyon).slice(0, 200);
+  if (!pozisyon) return res.status(400).json({ error: 'Pozisyon gerekli' });
+  const aylar = sanitizeAylar(req.body?.aylar);
+  const row = (await pool.query(
+    `insert into personel_pozisyon_gerceklesen(butce_yili,departman,pozisyon,aylar,updated_by) values($1,$2,$3,$4::jsonb,$5)
+     on conflict(butce_yili,departman,pozisyon) do update set aylar=excluded.aylar, updated_by=excluded.updated_by, updated_at=now()
+     returning *`,
+    [ctx.year, ctx.department, pozisyon, JSON.stringify(aylar), ctx.user.name])).rows[0];
+  res.json({ department: row.departman, pozisyon: row.pozisyon, aylar: row.aylar });
+}));
+
+// --- Personel Bütçesi girişleri (Excel'de olmayan yıllar) ---
+async function butceWriteContext(req, res, yearParam, bodyDept) {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const dm = isDepartmentManager(user);
+  if (!all && !dm) { res.status(403).json({ error: 'Bu işlem için yetkiniz yok' }); return null; }
+  const year = Number(yearParam);
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) { res.status(400).json({ error: 'Geçersiz yıl' }); return null; }
+  const excel = await butceExcelInfo();
+  if (excel.years.includes(String(year))) { res.status(400).json({ error: year + ' bütçesi Excel\'den geliyor, buradan düzenlenemez' }); return null; }
+  if (year <= new Date().getFullYear()) { res.status(400).json({ error: 'Bütçe yalnızca gelecek yıllar için düzenlenebilir; ' + year + ' için sadece gerçekleşen girilir' }); return null; }
+  const scopeDept = await butceResolveScope(user, all, bodyDept, excel.departments);
+  if (!all) {
+    if (!scopeDept) { res.status(400).json({ error: 'Departmanınız belirlenemedi' }); return null; }
+    if (bodyDept && !looseDeptMatch(bodyDept, scopeDept)) { res.status(403).json({ error: 'Yalnızca kendi departmanınızın bütçesini düzenleyebilirsiniz' }); return null; }
+  } else if (!scopeDept) { res.status(400).json({ error: 'Departman seçilmeli' }); return null; }
+  return { user, all, dm, year, department: scopeDept };
+}
+const sanitizeAylar = v => {
+  const arr = Array.isArray(v) ? v : [];
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const n = arr[i] == null || arr[i] === '' ? null : Number(arr[i]);
+    out.push(Number.isFinite(n) && n >= 0 && n <= 10000 ? Math.round(n * 100) / 100 : null);
+  }
+  return out;
+};
+
+app.post('/api/personel-butcesi/:year/entries', asyncRoute(async (req, res) => {
+  const ctx = await butceWriteContext(req, res, req.params.year, req.body?.department);
+  if (!ctx) return;
+  const b = req.body || {};
+  const row = (await pool.query(
+    `insert into personel_butce_giris(butce_yili,departman,alt_departman,bolum,pozisyon,aylar,sira,updated_by)
+     values($1,$2,$3,$4,$5,$6::jsonb,$7,$8) returning *`,
+    [ctx.year, ctx.department, clean(b.altDept).slice(0, 120), clean(b.bolum).slice(0, 120),
+     clean(b.pozisyon).slice(0, 200), JSON.stringify(sanitizeAylar(b.aylar)), Number(b.sira) || 0, ctx.user.name])).rows[0];
+  res.status(201).json(butceEntryRow(row));
+}));
+
+// Önceki yılın pozisyon listesini bu yıla toplu kopyala (yalnız henüz giriş yoksa)
+app.post('/api/personel-butcesi/:year/entries/seed', asyncRoute(async (req, res) => {
+  const ctx = await butceWriteContext(req, res, req.params.year, req.body?.department);
+  if (!ctx) return;
+  const existing = (await pool.query('select count(*)::int n from personel_butce_giris where butce_yili=$1 and departman=$2',
+    [ctx.year, ctx.department])).rows[0].n;
+  if (existing) return res.status(409).json({ error: 'Bu departmanın ' + ctx.year + ' bütçesi zaten başlatılmış' });
+  const excel = await butceExcelInfo();
+  const prev = excelPositionsForDept(excel.sheets || [], ctx.department);
+  if (!prev.rows.length) return res.status(404).json({ error: 'Önceki yıl bütçesinde bu departman için pozisyon bulunamadı' });
+  const keepValues = req.body?.keepValues === true; // varsayılan: sayılar boş, departman girer
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    for (let i = 0; i < prev.rows.length; i++) {
+      const p = prev.rows[i];
+      await client.query(
+        `insert into personel_butce_giris(butce_yili,departman,alt_departman,bolum,pozisyon,aylar,sira,updated_by)
+         values($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`,
+        [ctx.year, ctx.department, p.altDepartman || '', p.bolum || '', p.pozisyon || '',
+         JSON.stringify(keepValues ? sanitizeAylar(p.aylar) : Array(12).fill(null)), i, ctx.user.name]);
+    }
+    await client.query('commit');
+  } catch (e) { await client.query('rollback').catch(() => {}); throw e; }
+  finally { client.release(); }
+  res.status(201).json({ count: prev.rows.length, from: prev.year });
+}));
+
+app.put('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res) => {
+  const existing = (await pool.query('select * from personel_butce_giris where id=$1 and butce_yili=$2',
+    [Number(req.params.id) || 0, Number(req.params.year) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Satır bulunamadı' });
+  const ctx = await butceWriteContext(req, res, req.params.year, existing.departman);
+  if (!ctx) return;
+  const b = req.body || {};
+  const row = (await pool.query(
+    `update personel_butce_giris set
+       alt_departman=$2, bolum=$3, pozisyon=$4, aylar=$5::jsonb, sira=$6, updated_by=$7, updated_at=now()
+     where id=$1 returning *`,
+    [existing.id,
+     b.altDept != null ? clean(b.altDept).slice(0, 120) : existing.alt_departman,
+     b.bolum != null ? clean(b.bolum).slice(0, 120) : existing.bolum,
+     b.pozisyon != null ? clean(b.pozisyon).slice(0, 200) : existing.pozisyon,
+     JSON.stringify(b.aylar != null ? sanitizeAylar(b.aylar) : existing.aylar),
+     Number.isFinite(Number(b.sira)) ? Number(b.sira) : existing.sira,
+     ctx.user.name])).rows[0];
+  res.json(butceEntryRow(row));
+}));
+
+app.delete('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res) => {
+  const existing = (await pool.query('select * from personel_butce_giris where id=$1 and butce_yili=$2',
+    [Number(req.params.id) || 0, Number(req.params.year) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Satır bulunamadı' });
+  const ctx = await butceWriteContext(req, res, req.params.year, existing.departman);
+  if (!ctx) return;
+  await pool.query('delete from personel_butce_giris where id=$1', [existing.id]);
   res.json({ ok: true });
 }));
 

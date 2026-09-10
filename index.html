@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>İK Merkezi</title>
-  <link rel="stylesheet" href="styles.css?v=36" />
+  <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="styles.css?v=55" />
 </head>
 <body>
   <div class="auth-overlay" id="login-overlay">
@@ -39,6 +40,8 @@
       <button class="nav-item" data-view="security" onclick="window.__ikNavigate('security')">♢ <span>Güvenlik</span></button>
       <button class="nav-item" data-view="lostfound" onclick="window.__ikNavigate('lostfound')">▱ <span>Kayıp Eşya</span></button>
       <button class="nav-item" data-view="users" onclick="window.__ikNavigate('users')">♙ <span>Kullanıcı ve Yetkiler</span></button>
+      <button class="nav-item" data-view="personel-butcesi" onclick="window.__ikNavigate('personel-butcesi')">₺ <span>Personel Bütçesi</span></button>
+      <button class="nav-item" data-view="guncel-tablo" onclick="window.__ikNavigate('guncel-tablo')">▦ <span>Güncel Tablo</span></button>
     </nav>
     <div class="sidebar-foot"><small>Sunucu sürümü</small><span>● Sistem çalışıyor</span></div>
   </aside>
@@ -53,12 +56,13 @@
   <script src="combobox.js?v=1"></script>
   <script src="enhancements.js?v=15"></script>
   <script src="navigation-fix.js"></script>
+  <script src="mobile-nav.js?v=1"></script>
   <script src="leave-enhancements.js?v=18"></script>
   <script src="attendance.js?v=5"></script>
   <script src="approval.js?v=6"></script>
   <script src="payroll-enhancements.js?v=2"></script>
   <script src="users.js?v=9"></script>
-  <script src="permissions.js?v=16"></script>
+  <script src="permissions.js?v=19"></script>
   <script src="departments.js?v=2"></script>
   <script src="expense-advance.js?v=5"></script>
   <script src="shifts.js?v=10"></script>
@@ -66,14 +70,16 @@
   <script src="notifications.js?v=11"></script>
   <script src="documents.js?v=2"></script>
   <script src="recruitment.js?v=3"></script>
-  <script src="performance.js?v=2"></script>
+  <script src="performance.js?v=3"></script>
   <script src="training.js?v=2"></script>
   <script src="training-dept.js?v=2"></script>
   <script src="employee-details.js?v=4"></script>
   <script src="attendance-paged.js?v=13"></script>
   <script src="attendance-controls.js?v=3"></script>
   <script src="hms.js?v=3"></script>
-  <script src="survey.js?v=19"></script>
+  <script src="survey.js?v=22"></script>
+  <script src="personel-butcesi.js?v=10"></script>
+  <script src="guncel-tablo.js?v=2"></script>
   <script src="dashboard.js?v=7"></script>
 </body>
 </html>

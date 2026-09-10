@@ -32,6 +32,13 @@
   window.__ikSecurityAccess = securityAccess;
   const canSeeSecurity = () => { const a = securityAccess(); return a.admin || a.hr || a.security; };
   const canSeeLostFound = () => { const a = securityAccess(); return a.admin || a.hr || a.lostDept; };
+  const canSeePerformance = () => { const a = securityAccess(); return a.admin || a.hr; };
+  const canSeeGuncel = () => { const a = securityAccess(); return a.admin || a.hr; };
+  const canSeeButce = () => {
+    const u = currentUser() || {};
+    return ['Sistem yöneticisi', 'İK yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Mali İşler', 'Finans yöneticisi', 'Departman yöneticisi'].includes(u.role)
+      || normDept(u.department) === 'İNSAN KAYNAKLARI';
+  };
 
   function users() {
     return JSON.parse(localStorage.getItem(userKey) || 'null') || [{ id: 1, name: 'Sistem yöneticisi', email: 'admin@firma.com', role: 'Sistem yöneticisi', status: 'Aktif' }];
@@ -55,6 +62,9 @@
   window.__ikCan = function (view, action = 'view') {
     if (view === 'security') return canSeeSecurity();
     if (view === 'lostfound') return canSeeLostFound();
+    if (view === 'performance') return canSeePerformance();
+    if (view === 'guncel-tablo') return canSeeGuncel();
+    if (view === 'personel-butcesi') return canSeeButce();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;
     return action === 'view' ? true : Boolean(currentRule[action]);
