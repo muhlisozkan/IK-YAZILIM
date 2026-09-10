@@ -2783,7 +2783,8 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
   const invites = dsel ? allInvites.filter(i => deptOf(i) === dsel) : allInvites;
 
   const sent = invites.length;
-  const delivered = invites.filter(i => i.sent_ok === true).length;
+  // Bağlantıyı kullanan kişi mesajı almış demektir → sent_ok kaydı eksik olsa da "ulaştı" say
+  const delivered = invites.filter(i => i.sent_ok === true || i.used_at).length;
   const failed = sent - delivered;
   const opened = invites.filter(i => i.opened_at || i.used_at).length;
   const responded = invites.filter(i => i.used_at).length;
@@ -2821,6 +2822,283 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
       opened_at: i.opened_at, used_at: i.used_at
     }))
   });
+}));
+
+// --- Anket raporu: yazdırılabilir / PDF HTML -------------------------
+const rptEsc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Halka (donut) grafik + ortada toplam
+function svgDonut(parts, centerLabel) {
+  const size = 148, r = 55, cx = size / 2, cy = size / 2, C = 2 * Math.PI * r;
+  const total = parts.reduce((a, p) => a + (p.value || 0), 0);
+  let off = 0;
+  const segs = total
+    ? parts.filter(p => p.value > 0).map(p => {
+      const len = p.value / total * C;
+      const s = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${p.color}" stroke-width="20" stroke-linecap="butt" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      off += len;
+      return s;
+    }).join('')
+    : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e9edf4" stroke-width="20"/>`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${segs}`
+    + `<text x="${cx}" y="${cy + 8}" text-anchor="middle" font-size="27" font-weight="700" fill="#17233b">${rptEsc(centerLabel ?? total)}</text></svg>`;
+}
+function svgLegend(parts) {
+  const total = parts.reduce((a, p) => a + (p.value || 0), 0) || 1;
+  return `<ul class="lg">${parts.map(p => `<li><i style="background:${p.color}"></i><span>${rptEsc(p.label)}</span><b>${p.value || 0}</b><em>${Math.round((p.value || 0) / total * 100)}%</em></li>`).join('')}</ul>`;
+}
+// Yatay çubuk grafik
+function svgHBars(items, opts = {}) {
+  const rowH = 24, w = 500, labelW = opts.labelW ?? 150, valW = 60;
+  const barW = w - labelW - valW;
+  const max = opts.max || Math.max(1, ...items.map(i => i.value || 0));
+  const h = items.length * rowH + 8;
+  const body = items.map((it, i) => {
+    const y = 4 + i * rowH;
+    const bw = Math.max(it.value > 0 ? 3 : 0, (it.value || 0) / max * barW);
+    const pct = opts.pctOf ? ` · %${Math.round((it.value || 0) / opts.pctOf * 100)}` : '';
+    return `<text x="${labelW - 8}" y="${y + rowH / 2 + 4}" text-anchor="end" font-size="11.5" fill="#3a4763">${rptEsc(String(it.label).slice(0, 32))}</text>`
+      + `<rect x="${labelW}" y="${y + 4}" width="${barW}" height="${rowH - 12}" rx="3" fill="#f0f2f7"/>`
+      + `<rect x="${labelW}" y="${y + 4}" width="${bw.toFixed(1)}" height="${rowH - 12}" rx="3" fill="${it.color || '#3f6fb0'}"/>`
+      + `<text x="${labelW + barW + 6}" y="${y + rowH / 2 + 4}" font-size="10.5" fill="#3a4763">${it.value || 0}${pct}</text>`;
+  }).join('');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
+}
+// Gruplu yatay çubuk (departman başına birden çok seri)
+function svgGroupBars(groups, series) {
+  const w = 500, labelW = 150, valGap = 46;
+  const barW = w - labelW - valGap;
+  const gh = series.length * 13 + 12;
+  const max = Math.max(1, ...groups.flatMap(g => g.values));
+  const h = groups.length * gh + 6;
+  const body = groups.map((g, gi) => {
+    const gy = 4 + gi * gh;
+    const bars = series.map((s, si) => {
+      const y = gy + si * 13;
+      const bw = Math.max(g.values[si] > 0 ? 3 : 0, g.values[si] / max * barW);
+      return `<rect x="${labelW}" y="${y}" width="${bw.toFixed(1)}" height="10" rx="2" fill="${s.color}"/>`
+        + `<text x="${labelW + bw + 5}" y="${y + 8.5}" font-size="9.5" fill="#3a4763">${g.values[si]}</text>`;
+    }).join('');
+    return `<text x="${labelW - 8}" y="${gy + (gh - 12) / 2 + 4}" text-anchor="end" font-size="11" fill="#3a4763">${rptEsc(String(g.label).slice(0, 32))}</text>${bars}`;
+  }).join('');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${body}</svg>`;
+}
+const seriesLegend = series => `<ul class="lg row">${series.map(s => `<li><i style="background:${s.color}"></i><span>${rptEsc(s.name)}</span></li>`).join('')}</ul>`;
+
+app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!survey) return res.status(404).send('Anket bulunamadı');
+  const allInvites = (await pool.query(
+    'select recipient_department,sent_ok,opened_at,used_at,response from survey_invites where survey_id=$1 order by id',
+    [survey.id])).rows;
+  const deptOf = i => clean(i.recipient_department) || '(Departman belirtilmemiş)';
+  const dsel = clean(req.query.department);
+  const invites = dsel ? allInvites.filter(i => deptOf(i) === dsel) : allInvites;
+
+  const sent = invites.length;
+  const delivered = invites.filter(i => i.sent_ok === true || i.used_at).length;
+  const failed = sent - delivered;
+  const opened = invites.filter(i => i.opened_at || i.used_at).length;
+  const responded = invites.filter(i => i.used_at).length;
+  const notResponded = Math.max(0, delivered - responded);
+  const rate = delivered ? Math.round(responded / delivered * 100) : 0;
+  const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
+  const questions = surveyQuestionStats(survey.questions, answered);
+
+  // Departman kırılımı
+  const deptMap = new Map();
+  invites.forEach(i => {
+    const d = deptOf(i);
+    const o = deptMap.get(d) || { department: d, sent: 0, delivered: 0, opened: 0, responded: 0 };
+    o.sent++;
+    if (i.sent_ok === true || i.used_at) o.delivered++;
+    if (i.opened_at || i.used_at) o.opened++;
+    if (i.used_at) o.responded++;
+    deptMap.set(d, o);
+  });
+  const byDept = [...deptMap.values()].map(o => ({
+    ...o, failed: o.sent - o.delivered, notResponded: Math.max(0, o.delivered - o.responded),
+    rate: o.delivered ? Math.round(o.responded / o.delivered * 100) : 0
+  })).sort((a, b) => b.sent - a.sent || a.department.localeCompare(b.department, 'tr'));
+
+  // Puanlanabilir sorular: departman ortalamaları
+  const qList = Array.isArray(survey.questions) ? survey.questions : [];
+  const respByDept = {};
+  invites.filter(i => Array.isArray(i.response)).forEach(i => { (respByDept[deptOf(i)] = respByDept[deptOf(i)] || []).push(i.response); });
+  const compareRows = qList.map((q, idx) => ({ q, idx }))
+    .filter(({ q }) => q.type === 'scale' || (q.type === 'single' && q.scored) || q.type === 'yesno')
+    .map(({ q, idx }) => {
+      const byD = Object.entries(respByDept).map(([department, rs]) => {
+        let s = 0, n = 0;
+        rs.forEach(r => {
+          const raw = r[idx] && (Array.isArray(r[idx].value) ? r[idx].value[0] : r[idx].value);
+          const sc = questionScore(q, raw);
+          if (sc != null) { s += sc; n++; }
+        });
+        return { department, average: n ? +(s / n).toFixed(2) : null, n };
+      }).filter(d => d.n > 0);
+      const allN = byD.reduce((a, d) => a + d.n, 0);
+      const overall = allN ? +(byD.reduce((a, d) => a + d.average * d.n, 0) / allN).toFixed(2) : null;
+      return { title: q.title, byD, overall };
+    });
+  const compareDepts = [...new Set(compareRows.flatMap(r => r.byD.map(x => x.department)))].sort((a, b) => a.localeCompare(b, 'tr'));
+
+  const DIST = ['#3f6fb0', '#5b9bd5', '#8bc34a', '#f4a63b', '#e57373', '#9575cd', '#4db6ac', '#a1887f'];
+  const avgColor = v => v == null ? '#f0f2f7' : v >= 3.5 ? '#d6efdf' : v >= 2.5 ? '#dbe8f7' : '#fbe2d5';
+  const tr1 = n => n == null ? '—' : n.toFixed(2).replace('.', ',');
+  const printedAt = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul', dateStyle: 'long', timeStyle: 'short' });
+
+  // --- Bölümler ---
+  const deliveryParts = [
+    { label: 'Ulaştı', value: delivered, color: '#18a874' },
+    { label: 'Başarısız', value: failed, color: '#e57373' }
+  ];
+  const statusParts = [
+    { label: 'Yanıtladı', value: responded, color: '#18a874' },
+    { label: 'Açtı, yanıtlamadı', value: Math.max(0, opened - responded), color: '#f4a63b' },
+    { label: 'Hiç açmadı', value: Math.max(0, delivered - opened), color: '#c3cad6' }
+  ];
+
+  const kpi = [
+    ['Toplam gönderim', sent], ['Ulaştı', delivered], ['Başarısız', failed],
+    ['Açıldı (tıklandı)', opened], ['Yanıtladı', responded], ['Yanıt oranı', `%${rate}`]
+  ].map(([l, v]) => `<div class="kpi"><b>${rptEsc(v)}</b><span>${l}</span></div>`).join('');
+
+  const deptSection = byDept.length ? `
+    <section class="card">
+      <h2>Departmana göre gönderim ve yanıt</h2>
+      ${seriesLegend([{ name: 'Gönderilen', color: '#3f6fb0' }, { name: 'Ulaştı', color: '#5b9bd5' }, { name: 'Yanıtladı', color: '#18a874' }])}
+      ${svgGroupBars(byDept.map(d => ({ label: d.department, values: [d.sent, d.delivered, d.responded] })),
+        [{ name: 'Gönderilen', color: '#3f6fb0' }, { name: 'Ulaştı', color: '#5b9bd5' }, { name: 'Yanıtladı', color: '#18a874' }])}
+      <table class="tbl">
+        <thead><tr><th>Departman</th><th>Gönderilen</th><th>Ulaştı</th><th>Başarısız</th><th>Yanıtladı</th><th>Yanıtlamadı</th><th>Yanıt oranı</th></tr></thead>
+        <tbody>${byDept.map(d => `<tr><td>${rptEsc(d.department)}</td><td>${d.sent}</td><td>${d.delivered}</td><td>${d.failed}</td><td>${d.responded}</td><td>${d.notResponded}</td><td>%${d.rate}</td></tr>`).join('')}
+        <tr class="tot"><td>Toplam</td><td>${sent}</td><td>${delivered}</td><td>${failed}</td><td>${responded}</td><td>${notResponded}</td><td>%${rate}</td></tr></tbody>
+      </table>
+      <div class="chart-wrap"><h3>Departmana göre yanıt oranı</h3>${svgHBars(byDept.map(d => ({ label: d.department, value: d.rate, color: '#18a874' })), { max: 100, labelW: 150 })}</div>
+    </section>` : '';
+
+  const qCharts = questions.map((q, i) => {
+    if (q.type === 'text') return '';
+    const items = (q.distribution || []).map((d, k) => ({ label: d.label, value: d.count, color: DIST[k % DIST.length] }));
+    if (!items.length) return '';
+    const avg = q.average != null ? `<span class="pill">Ortalama: ${tr1(q.average)}</span>` : '';
+    return `<section class="card q">
+      <h3>${i + 1}. ${rptEsc(q.title || '')}</h3>
+      <div class="q-meta">${q.answered} kişi yanıtladı ${avg}</div>
+      ${svgHBars(items, { pctOf: q.answered || 1, labelW: 160 })}
+    </section>`;
+  }).join('');
+
+  const compareSection = compareRows.length ? `
+    <section class="card break">
+      <h2>Departman karşılaştırması — yetkinlik ortalamaları</h2>
+      <div class="q-meta">Ölçek 1–4 · Evet/Hayır sorularında 1 = Evet. Yeşil ≥ 3,50 · mavi 2,50–3,49 · turuncu &lt; 2,50.</div>
+      <table class="tbl cmp">
+        <thead><tr><th>Yetkinlik</th>${compareDepts.map(d => `<th>${rptEsc(d)}</th>`).join('')}<th>Genel</th></tr></thead>
+        <tbody>${compareRows.map(r => `<tr><td class="q">${rptEsc(r.title)}</td>${compareDepts.map(d => {
+    const x = r.byD.find(y => y.department === d);
+    return `<td style="background:${avgColor(x ? x.average : null)}">${x ? tr1(x.average) : '—'}</td>`;
+  }).join('')}<td style="background:${avgColor(r.overall)}"><b>${tr1(r.overall)}</b></td></tr>`).join('')}</tbody>
+      </table>
+    </section>` : '';
+
+  const textSection = (() => {
+    const tq = questions.map((q, i) => ({ q, i })).filter(x => x.q.type === 'text' && (x.q.texts || []).length);
+    if (!tq.length) return '';
+    return `<section class="card break">
+      <h2>Yazılı değerlendirmeler</h2>
+      ${tq.map(({ q, i }) => `<div class="txtq">
+        <h3>${i + 1}. ${rptEsc(q.title || '')}</h3>
+        <div class="q-meta">${(q.texts || []).length} yazılı yanıt</div>
+        <ul class="txt">${(q.texts || []).map(t => `<li>${rptEsc(t)}</li>`).join('')}</ul>
+      </div>`).join('')}
+    </section>`;
+  })();
+
+  res.type('html').send(`<!doctype html><html lang="tr"><head><meta charset="utf-8">
+<title>Anket Raporu · ${rptEsc(survey.title)}</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:'Segoe UI',Arial,sans-serif;color:#17233b;margin:0;background:#f4f6fa;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .page{max-width:820px;margin:0 auto;padding:28px}
+  .rpt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #17233b;padding-bottom:14px;margin-bottom:18px}
+  .rpt-head h1{font-size:20px;margin:0 0 4px}
+  .rpt-head .sub{color:#667085;font-size:12px}
+  .rpt-head .badge{display:inline-block;background:#e7effb;color:#2c5da3;border-radius:6px;padding:3px 9px;font-size:12px;margin-top:6px}
+  .actions{text-align:right;margin-bottom:16px}
+  .actions button{background:#2c5da3;color:#fff;border:0;border-radius:7px;padding:9px 16px;font-size:13px;cursor:pointer}
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:18px}
+  .kpi{background:#fff;border:1px solid #e4e8f0;border-radius:9px;padding:12px 8px;text-align:center}
+  .kpi b{display:block;font-size:19px}
+  .kpi span{font-size:10.5px;color:#667085}
+  .card{background:#fff;border:1px solid #e4e8f0;border-radius:11px;padding:18px 20px;margin-bottom:16px;break-inside:avoid;page-break-inside:avoid}
+  .card h2{font-size:15px;margin:0 0 12px}
+  .card h3{font-size:13px;margin:0 0 6px}
+  .q-meta{font-size:11.5px;color:#667085;margin-bottom:10px}
+  .pill,.pill{background:#eef1f6;border-radius:20px;padding:2px 9px;font-size:11px;margin-left:6px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .donutbox{display:flex;align-items:center;gap:16px}
+  ul.lg{list-style:none;margin:8px 0 0;padding:0;font-size:12px}
+  ul.lg.row{display:flex;gap:16px;flex-wrap:wrap}
+  ul.lg li{display:flex;align-items:center;gap:6px;margin:3px 0}
+  ul.lg i{width:11px;height:11px;border-radius:3px;display:inline-block;flex:none}
+  ul.lg b{margin-left:auto;font-weight:700}
+  ul.lg.row b{margin-left:0}
+  ul.lg em{font-style:normal;color:#8a93a5;width:38px;text-align:right}
+  table.tbl{width:100%;border-collapse:collapse;margin-top:12px;font-size:11.5px}
+  table.tbl th,table.tbl td{border:1px solid #e0e4ec;padding:6px 8px;text-align:center}
+  table.tbl th{background:#f3f6fb;font-size:10.5px;text-transform:uppercase;letter-spacing:.02em}
+  table.tbl td:first-child,table.tbl th:first-child{text-align:left}
+  table.tbl tr.tot td{background:#f3f6fb;font-weight:700}
+  table.cmp td.q{text-align:left;max-width:230px}
+  .chart-wrap{margin-top:14px}
+  .txtq{margin-bottom:14px;break-inside:avoid}
+  ul.txt{margin:6px 0 0;padding-left:18px;font-size:12px}
+  ul.txt li{margin:4px 0;padding:2px 0}
+  .break{page-break-before:auto}
+  svg{max-width:100%;height:auto}
+  @media print{
+    body{background:#fff}
+    .page{max-width:none;padding:0}
+    .actions{display:none}
+    .card,.kpi{border-color:#d5dae4}
+  }
+  @page{margin:14mm}
+</style></head><body><div class="page">
+  <div class="actions"><button onclick="window.print()">Yazdır / PDF olarak kaydet</button></div>
+  <div class="rpt-head">
+    <div>
+      <h1>${rptEsc(survey.title)}</h1>
+      <div class="sub">Anket raporu · ${printedAt}</div>
+      ${dsel ? `<span class="badge">Departman filtresi: ${rptEsc(dsel)}</span>` : ''}
+    </div>
+  </div>
+
+  <div class="kpis">${kpi}</div>
+
+  <div class="two">
+    <section class="card">
+      <h2>Gönderim durumu</h2>
+      <div class="donutbox">${svgDonut(deliveryParts, sent)}<div>${svgLegend(deliveryParts)}</div></div>
+    </section>
+    <section class="card">
+      <h2>Yanıt durumu <span class="q-meta">(ulaşan ${delivered} kişi üzerinden)</span></h2>
+      <div class="donutbox">${svgDonut(statusParts, `%${rate}`)}<div>${svgLegend(statusParts)}</div></div>
+    </section>
+  </div>
+
+  ${deptSection}
+
+  ${qCharts ? `<h2 style="font-size:16px;margin:22px 0 12px">Soru bazında dağılımlar</h2>${qCharts}` : ''}
+
+  ${compareSection}
+
+  ${textSection}
+
+  <p style="text-align:center;color:#9aa3b2;font-size:11px;margin-top:24px">İK Merkezi · ${rptEsc(survey.title)} · ${printedAt}</p>
+</div></body></html>`);
 }));
 
 app.post('/api/eom/templates/:id/invites', asyncRoute(async (req, res) => {

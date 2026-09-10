@@ -218,7 +218,7 @@
     const hasCompare=(rep.departmentCompare||[]).length>0;
     const depts=rep.departmentList||[];
     const cur=['summary','texts','compare'].includes(repTab)?repTab:'summary';
-    const deptSel=depts.length?`<select class="select" id="rep-dept" style="margin-left:auto;font-size:12px;padding:6px 9px">
+    const deptSel=depts.length?`<select class="select" id="rep-dept" style="margin-left:8px;font-size:12px;padding:6px 9px">
         <option value="">Tüm departmanlar</option>
         ${depts.map(d=>`<option value="${esc(d)}" ${repDept===d?'selected':''}>${esc(d)}</option>`).join('')}
       </select>`:'';
@@ -226,6 +226,7 @@
       <button type="button" class="rtab${cur==='summary'?' on':''}" data-rtab="summary">Özet ve grafikler</button>
       <button type="button" class="rtab${cur==='texts'?' on':''}" data-rtab="texts">Yazılı değerlendirmeler <span class="rtab-badge">${n}</span></button>
       ${hasCompare?`<button type="button" class="rtab${cur==='compare'?' on':''}" data-rtab="compare">Departman karşılaştırma</button>`:''}
+      <button type="button" class="btn ghost" id="rep-pdf" style="margin-left:auto;font-size:12px;padding:6px 10px" title="Tüm grafikleri içeren yazdırılabilir rapor">⬇ PDF rapor</button>
       ${deptSel}
     </div>`;
   }
@@ -240,6 +241,11 @@
     });
     const ds=bar.querySelector('#rep-dept');
     if(ds)ds.onchange=()=>{repDept=ds.value;reloadReport();};
+    const pb=bar.querySelector('#rep-pdf');
+    if(pb)pb.onclick=()=>{
+      if(!repRepId)return;
+      window.open('/api/surveys/'+repRepId+'/report/print'+(repDept?'?department='+encodeURIComponent(repDept):''),'_blank','noopener');
+    };
   }
   function avgClass(v){ if(v==null)return ''; return v>=3.5?'avg-hi':(v>=2.5?'avg-mid':'avg-lo'); }
   function compareHtml(rep){
