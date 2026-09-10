@@ -426,10 +426,10 @@
       : `<div class="lf-trow">
           <div class="field"><label>Durum</label><select class="select" id="tr-status">${TR_STATUSES.map(s=>`<option ${s===curStatus?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field"><label>Teslim Eden</label><input class="input" id="tr-sender" list="tr-sender-list" value="${esc(senderList[0]||'')}" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-sender-list">${senderList.map(n=>`<option value="${esc(n)}">`).join('')}</datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
-          <div class="field"><label>Transfer Departmanı</label><select class="select" id="tr-target">${targets.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
-          <div class="field"><label>Teslim Alan</label><input class="input" id="tr-receiver" list="tr-receiver-list" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-receiver-list"></datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
+          <div class="field"><label>Transfer Departmanı</label><select class="select" id="tr-target"><option value="">— Teslim alacak departmanı seçin —</option>${targets.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+          <div class="field lf-combo"><label>Teslim Alan</label><input class="input" id="tr-receiver" autocomplete="off" placeholder="Önce departman seçin"><div class="lf-combo-menu" id="tr-rec-menu" hidden></div><span class="lf-hint">Hedef departmanın personeli listelenir; elle isim de yazabilirsiniz.</span></div>
         </div>
-        <div class="field" style="max-width:280px;margin-top:12px"><label>Saklandığı Yer</label><input class="input" id="tr-storage" value="${esc(targets[0]||'')}" readonly></div>
+        <div class="field" style="max-width:280px;margin-top:12px"><label>Saklandığı Yer</label><input class="input" id="tr-storage" value="" placeholder="Departman seçilince belirlenir" readonly></div>
         ${canEdit?`<button class="lf-transfer-btn" type="button" id="tr-send">▶▶ Transfer</button><span class="lf-await" id="tr-await" hidden></span>`:''}`;
     return `<div class="transfer-box">
       <div class="lf-band">Transfer</div>
@@ -441,18 +441,37 @@
   function bindTransfer(row){
     const box=document.querySelector('.modal');
     const targetSel=box.querySelector('#tr-target');
-    const recList=box.querySelector('#tr-receiver-list');
     const storageInput=box.querySelector('#tr-storage');
-    const refresh=()=>{
-      if(!targetSel)return;
-      if(recList)recList.innerHTML=deptEmployees(targetSel.value).map(n=>`<option value="${esc(n)}">`).join('');
-      if(storageInput)storageInput.value=targetSel.value;
+    const recInput=box.querySelector('#tr-receiver');
+    const recMenu=box.querySelector('#tr-rec-menu');
+    const norm=s=>String(s||'').toLocaleLowerCase('tr-TR');
+    const targetPeople=()=>targetSel&&targetSel.value?deptEmployees(targetSel.value):[];
+    const drawMenu=()=>{
+      if(!recMenu)return;
+      const q=norm(recInput.value);
+      const list=targetPeople().filter(n=>!q||norm(n).includes(q));
+      recMenu.innerHTML=list.length
+        ? list.map(n=>`<button type="button" class="lf-combo-opt">${esc(n)}</button>`).join('')
+        : `<span class="lf-combo-empty">${targetSel&&targetSel.value?'Eşleşen personel yok — elle yazabilirsiniz':'Önce transfer departmanını seçin'}</span>`;
     };
-    if(targetSel){targetSel.onchange=()=>{if(box.querySelector('#tr-receiver'))box.querySelector('#tr-receiver').value='';refresh();};refresh();}
+    if(recInput&&recMenu){
+      recInput.onfocus=()=>{if(!targetSel.value){toast('Önce transfer departmanını seçin');return;}drawMenu();recMenu.hidden=false;};
+      recInput.oninput=()=>{drawMenu();recMenu.hidden=false;};
+      recInput.onblur=()=>setTimeout(()=>{recMenu.hidden=true;},160);
+      recMenu.onmousedown=e=>{const b=e.target.closest('.lf-combo-opt');if(b){e.preventDefault();recInput.value=b.textContent;recMenu.hidden=true;}};
+    }
+    if(targetSel)targetSel.onchange=()=>{
+      if(recInput){recInput.value='';recInput.placeholder=targetSel.value?`${targetSel.value} personeli — seçin veya yazın`:'Önce departman seçin';}
+      if(storageInput)storageInput.value=targetSel.value;
+      if(recMenu)recMenu.hidden=true;
+    };
     const send=box.querySelector('#tr-send');
     if(send)send.onclick=async()=>{
-      const target=targetSel.value,sender=box.querySelector('#tr-sender').value.trim(),receiver=box.querySelector('#tr-receiver').value.trim();
-      if(!target||!sender||!receiver)return toast('Transfer departmanı, teslim eden ve teslim alan zorunludur');
+      const target=targetSel.value,sender=box.querySelector('#tr-sender').value.trim(),receiver=recInput.value.trim();
+      if(box.querySelector('#tr-status')?.value!=='Beklemede')return toast('Transfer yalnızca durumu "Beklemede" olan eşyalar için yapılabilir');
+      if(!target)return toast('Teslim alacak departmanı seçin');
+      if(!sender)return toast('Teslim eden zorunludur');
+      if(!receiver)return toast('Teslim alan zorunludur');
       send.disabled=true;
       try{
         await api(`/api/hms/lost-items/${row.id}/transfer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetDepartment:target,sender,receiver})});
