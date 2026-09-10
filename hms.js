@@ -41,7 +41,7 @@
     staff_status:[['name','İsim'],['entry','Giriş',fromInput],['status','Durum'],['exit','Çıkış Tarihi',fromInput],['title','Ünvan'],['department','Departman']],
     lost_items:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['storage','Saklandığı Yer'],['status','Durum'],['receiver','Teslim Alan'],['approval','Onay Durumu']],
     lost_approvals:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['fromDepartment','Gönderen'],['targetDepartment','Hedef'],['transferReceiver','Teslim Alan'],['status','Durum']],
-    lost_delivered:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['storage','Saklandığı Yer'],['receiver','Teslim Alan'],['status','Durum']]
+    lost_delivered:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['receiver','Teslim Alan'],['status','Durum']]
   };
   const fields={
     visitors:()=>[['date','Ziyaret Tarihi','datetime-local'],['type','Ziyaret Tipi','select',['Misafir','Personel','Mağaza','Günübirlik']],['name','Ziyaretçinin Adı Soyadı'],['company','Firma'],['plate','Plaka'],['identity','Kimlik Tipi','select',['Kart Verilmedi','Kimlik Kartı','Pasaport','Ehliyet']],['count','Kişi Sayısı','number'],['department','Departman','select',deptList()],['status','Durum','select',['İçeride','Çıkış Yaptı']],['exit','Çıkış Tarihi','datetime-local'],['notes','Notlar','textarea']],
@@ -97,7 +97,7 @@
   }
 
   // --- Kolon filtreleri (HMS ile aynı davranış) ----------------------
-  const COMBO_FILTER_COLS={lost_items:['category','status','storage'],lost_approvals:['category','status'],lost_delivered:['category','storage'],visitors:['type']};
+  const COMBO_FILTER_COLS={lost_items:['category','status','storage'],lost_approvals:['category','status'],lost_delivered:['category'],visitors:['type']};
   // "2026-09-10" gibi bir tarih filtresini "10.09.2026" metnine çevirerek eşle
   function colFilterMatch(row,key,raw){
     const val=String(raw||'').trim();

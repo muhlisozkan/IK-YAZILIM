@@ -2162,7 +2162,22 @@ app.patch('/api/hms/:module/:id', asyncRoute(async (req, res) => {
   const body = req.body || {};
   const data = { ...existing.data, ...hmsCleanBody(body) };
   if (!hmsImageOk(data)) return res.status(400).json({ error: 'Resim çok büyük (en fazla ~600 KB)' });
-  const department = hmsPerm(req.user, module) === 'full' && body.department != null ? clean(body.department) : existing.department;
+  let department = hmsPerm(req.user, module) === 'full' && body.department != null ? clean(body.department) : existing.department;
+  // Eşya teslim edildiğinde artık hiçbir departmana ait değildir; "Teslim Edilenler"e geçer.
+  if (module === 'lost_items' && data.status === 'Teslim Edildi' && existing.data.status !== 'Teslim Edildi') {
+    department = '';
+    data.storage = '';
+    data.currentLocation = 'Teslim Edildi';
+    data.transferStatus = '—';
+    data.targetDepartment = '';
+    const hist = Array.isArray(data.history) ? data.history.slice() : [];
+    hist.push({
+      processDate: hmsNow(), transferStatus: 'Teslim edildi', status: 'Teslim edildi',
+      transferSender: req.user?.name || '', transferReceiver: clean(data.receiver) || '',
+      targetDepartment: '', storage: ''
+    });
+    data.history = hist;
+  }
   res.json(await hmsUpdate(existing.id, department, data));
 }));
 
@@ -2239,17 +2254,21 @@ app.post('/api/hms/lost-items/:id/movements/delete-last', asyncRoute(async (req,
   if (['Onaylandı', 'Reddedildi'].includes(lastTs) && clean(history[history.length - 1]?.transferStatus) === 'Beklemede') history.pop();
   if (!history.length) return res.status(400).json({ error: 'İlk kayıt hareketi silinemez' });
   const prev = history[history.length - 1];
-  const restoredStorage = clean(prev.storage) || clean(item.data.storage) || 'KAT HİZMETLERİ';
+  const restoredStorage = clean(prev.storage) || 'KAT HİZMETLERİ';
   const nextData = {
     ...item.data, history,
     storage: restoredStorage, currentLocation: restoredStorage,
     transferStatus: '—', targetDepartment: '', transferSender: '', transferReceiver: ''
   };
+  // "Teslim edildi" hareketi geri alınırsa eşya yeniden aktif duruma döner
+  if (lastTs === 'Teslim edildi') nextData.status = 'Beklemede';
   const saved = await hmsUpdate(item.id, normalizeDepartmentValue(restoredStorage) || item.department, nextData);
-  // İlgili onay kaydını da kaldır (bekleyen ya da sonuçlanmış son onay)
-  await pool.query(
-    "delete from hms_records where id = (select id from hms_records where module='lost_approvals' and (data->>'sourceLostId')::bigint = $1 order by id desc limit 1)",
-    [item.id]);
+  // Transfer/onay hareketi geri alındıysa ilgili onay kaydını da kaldır
+  if (['Beklemede', 'Onaylandı', 'Reddedildi'].includes(lastTs)) {
+    await pool.query(
+      "delete from hms_records where id = (select id from hms_records where module='lost_approvals' and (data->>'sourceLostId')::bigint = $1 order by id desc limit 1)",
+      [item.id]);
+  }
   res.json(saved);
 }));
 
