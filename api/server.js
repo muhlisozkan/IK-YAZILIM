@@ -2126,7 +2126,7 @@ app.post('/api/hms/:module', asyncRoute(async (req, res) => {
     data.processDate = hmsNow();
     // Kayıt hangi departman girdiyse orada başlar; oradan transfer edilir (kullanıcı isteği).
     data.storage = department || 'KAT HİZMETLERİ';
-    data.status = clean(data.status) || 'Beklemede';
+    data.status = 'Beklemede'; // yeni kayıtta durum daima Beklemede (kullanıcı isteği)
     data.receiver = clean(data.receiver) || '—';
     data.approval = 'Onaylandı';
     data.transferStatus = '—';

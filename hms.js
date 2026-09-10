@@ -268,13 +268,15 @@
       else if(module==='visitors'&&key==='company'){
         ctrl=`<input class="input" name="company" id="vis-company" list="vis-companies" value="${esc(val)}" autocomplete="off">`;
       }
+      else if(isLost&&key==='status'&&!editing){
+        // Yeni kayıtta durum otomatik "Beklemede" ve değiştirilemez
+        ctrl=`<input class="input lf-ro lf-ro-strong" name="status" value="Beklemede" readonly title="Yeni kayıtta durum otomatik olarak Beklemede'dir">`;
+      }
       else if(isLost&&key==='receiver'){
-        // Teslim Alan: eşyanın bulunduğu (yeni kayıtta: kullanıcının) departmanının personeli
+        // Teslim Alan: eşyanın bulunduğu (yeni kayıtta: giriş yapan) departmanın personeli — yazarak ara/seç
         const dep=row?.storage||myDept;
         const people=dep?deptEmployees(dep):[];
-        ctrl=people.length
-          ? `<select class="select" name="receiver">${['',...people].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select><small class="muted" style="display:block;font-size:11px">${esc(dep)} personeli</small>`
-          : `<input class="input" name="receiver" value="${esc(val)}" list="lf-receivers" placeholder="Teslim alan kişi"><datalist id="lf-receivers">${people.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`;
+        ctrl=`<input class="input" name="receiver" value="${esc(val)}" list="lf-receivers" autocomplete="off" placeholder="${esc(dep||'Teslim alan')} — listeden seçin veya yazarak arayın"><datalist id="lf-receivers">${people.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>${dep&&!people.length?`<small class="muted" style="display:block;font-size:11px">${esc(dep)} için kayıtlı personel bulunamadı; elle yazabilirsiniz</small>`:''}`;
       }
       else if(type==='select')ctrl=`<select class="select" name="${key}">${['',...opts].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
       else if(type==='textarea')ctrl=`<textarea class="input" name="${key}">${esc(val)}</textarea>`;
