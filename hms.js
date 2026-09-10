@@ -76,12 +76,23 @@
     const vt=visibleTabs();
     const meta=VIEW_META[currentView];
     return `<div class="section-title"><div><h2>${meta.title}</h2><span class="muted">${meta.subtitle}</span></div></div>
-      <div class="leave-tabs" style="margin-bottom:16px;flex-wrap:wrap">${vt.map(([k,l])=>`<button class="btn ${tab===k?'':'secondary'}" data-hms-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="leave-tabs" style="margin-bottom:16px;flex-wrap:wrap">${vt.map(([k,l])=>`<button class="btn ${tab===k?'':'secondary'} hms-tabbtn" data-hms-tab="${k}">${l}${k==='lost_approvals'?'<span class="hms-tab-badge" id="lost-appr-badge" hidden></span>':''}</button>`).join('')}</div>
       <div id="hms-body">${body}</div>`;
   }
   function mount(body){
     $('#app').innerHTML=shellHtml(body);
     document.querySelectorAll('[data-hms-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.hmsTab;sessionStorage.setItem(tabKey(),tab);render();});
+    if(currentView==='lostfound')refreshApprovalBadge();
+  }
+  // "Onay Bekleyenler" sekmesindeki bekleyen talep sayısı (hedef departmana göre)
+  async function refreshApprovalBadge(){
+    const el=$('#lost-appr-badge');if(!el)return;
+    let rows;
+    try{rows=await api('/api/hms/lost_approvals');}catch(_){return;}
+    cache.lost_approvals=rows;
+    const n=rows.filter(r=>r.status==='Beklemede').length;
+    el.textContent=n>99?'99+':String(n);
+    el.hidden=n===0;
   }
 
   // --- Kolon filtreleri (HMS ile aynı davranış) ----------------------
