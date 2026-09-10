@@ -106,7 +106,8 @@
     const f=filters[module]||(filters[module]={q:'',cols:{}});
     if(!f.cols)f.cols={};
     const isApprovals=module==='lost_approvals';
-    const showReport=module==='lost_items'&&currentView==='lostfound';
+    const isLF=currentView==='lostfound';
+    const showReport=module==='lost_items'&&isLF;
     const comboCols=COMBO_FILTER_COLS[module]||[];
     const dateCol=l=>/tarih/i.test(l);
     const optsFor=k=>[...new Set(rows.map(r=>String(r[k]??'').trim()).filter(Boolean))].sort(trSort);
@@ -129,14 +130,23 @@
         ${cols.map(([k,,fmt])=>`<td>${esc(fmt?fmt(row[k]):(row[k]??'—'))}</td>`).join('')}
         <td class="row-actions">${rowActions(module,row)}</td>
       </tr>`).join('')||`<tr><td colspan="${cols.length+1}" class="empty">Kayıt bulunamadı</td></tr>`;
-    const body=`<div class="card">
-      <div class="toolbar">
-        <input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}">
-        ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
-        <span class="muted" id="hms-count"></span>
-      </div>
+    const toolbar=isLF
+      ? `<div class="toolbar">
+          <div class="lf-search"><input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}"></div>
+          ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
+          <button class="btn lf-refresh" id="hms-refresh">↻ Yenile</button>
+          <span class="lf-count" id="hms-count"></span>
+        </div>`
+      : `<div class="toolbar">
+          <input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}">
+          ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
+          <span class="muted" id="hms-count"></span>
+        </div>`;
+    const headCell=([k,l],i)=>`<th>${l}${isLF&&i===0?' <span class="lf-sort">↓</span>':''}</th>`;
+    const body=`<div class="card${isLF?' lf-list':''}">
+      ${toolbar}
       <div style="overflow:auto"><table class="hms-table"><thead>
-        <tr>${cols.map(([,l])=>`<th>${l}</th>`).join('')}<th>Eylemler</th></tr>
+        <tr>${cols.map(headCell).join('')}<th>Eylemler</th></tr>
         <tr class="hms-filters">${cols.map(filterCell).join('')}<th></th></tr>
       </thead><tbody id="hms-tbody"></tbody></table></div>
     </div>${showReport?reportPanelHtml():''}`;
@@ -145,9 +155,11 @@
     const paint=()=>{
       const list=filteredList();
       const tb=$('#hms-tbody');if(tb)tb.innerHTML=rowsHtml(list);
-      const c=$('#hms-count');if(c)c.textContent=`${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}`;
+      const c=$('#hms-count');
+      if(c)c.innerHTML=isLF?`Kalıcı kayıt <b>${list.length} kayıt</b>`:`${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}`;
       $('#hms-body').querySelectorAll('tbody tr[data-id]').forEach(tr=>{
         tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[module]&&canWrite(module))openEditor(module,row);};
+        if(isLF)tr.onclick=e=>{if(e.target.closest('.row-actions'))return;$('#hms-body').querySelectorAll('tbody tr.lf-sel').forEach(x=>x.classList.remove('lf-sel'));tr.classList.add('lf-sel');};
       });
       $('#hms-body').querySelectorAll('[data-hms-toggle]').forEach(b=>b.onclick=()=>toggleStatus(module,b.dataset.hmsToggle));
       $('#hms-body').querySelectorAll('[data-hms-del]').forEach(b=>b.onclick=()=>del(module,b.dataset.hmsDel));
@@ -159,10 +171,12 @@
     document.querySelectorAll('[data-hms-fcol]').forEach(el=>{el.oninput=()=>{f.cols[el.dataset.hmsFcol]=el.value;debouncedPaint();};});
     document.querySelectorAll('[data-hms-fclear]').forEach(b=>b.onclick=()=>{f.cols[b.dataset.hmsFclear]='';const el=document.querySelector(`[data-hms-fcol="${b.dataset.hmsFclear}"]`);if(el)el.value='';paint();});
     if($('#hms-add'))$('#hms-add').onclick=()=>openEditor(module,null);
+    if($('#hms-refresh'))$('#hms-refresh').onclick=()=>{delete cache[module];renderTable(module);};
     if(showReport)bindReportPanel(rows);
     paint();
   }
 
+  const TRASH_SVG='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 10v7M14 10v7"/></svg>';
   function rowActions(module,row){
     if(module==='lost_approvals')
       return canWrite(module)?`<button class="btn ghost" data-hms-approve="${row.id}">Onayla</button><button class="btn ghost danger-text" data-hms-reject="${row.id}">Reddet</button>`:'';
@@ -170,7 +184,9 @@
     if((module==='visitors'||module==='staff_status')&&canWrite(module))
       html+=`<button class="btn ghost" data-hms-toggle="${row.id}">${row.status==='İçeride'?'Çıkış':'Giriş'}</button>`;
     if(canDelete(module))
-      html+=`<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
+      html+=module==='lost_items'
+        ? `<button class="lf-trash" data-hms-del="${row.id}" title="Sil" aria-label="Sil">${TRASH_SVG}</button>`
+        : `<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
     return html;
   }
 
@@ -213,7 +229,8 @@
       let val=row?row[key]:'';
       if(!editing&&(key==='date'||key==='departure'||key==='foundDate'||key==='entry'))val=nowInput();
       if(isLost&&!editing&&key==='storage')val=myDept||'';
-      const wide=(key==='notes'||key==='destination'||key==='fault')?' style="grid-column:1/-1"':'';
+      const wideKey=(key==='notes'||key==='destination'||key==='fault');
+      const wide=isLost?(key==='notes'?' class="field lf-wide"':' class="field"'):(wideKey?' class="field" style="grid-column:1/-1"':' class="field"');
       const lockFound=isLost&&key==='foundDate';
       let ctrl;
       // --- HMS'e özel alanlar ---
@@ -235,16 +252,21 @@
       }
       else if(type==='select')ctrl=`<select class="select" name="${key}">${['',...opts].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
       else if(type==='textarea')ctrl=`<textarea class="input" name="${key}">${esc(val)}</textarea>`;
-      else if(type==='datetime-local')ctrl=`<input class="input" type="datetime-local" name="${key}" value="${esc(toInput(val)||(!editing?val:''))}" ${lockFound?'readonly title="Sistem tarafından otomatik belirlenir"':''}>`;
+      else if(type==='datetime-local')ctrl=`<input class="input${lockFound?' lf-ro':''}" type="datetime-local" name="${key}" value="${esc(toInput(val)||(!editing?val:''))}" ${lockFound?'readonly title="Sistem tarafından otomatik belirlenir"':''}>`;
       else if(type==='number')ctrl=`<input class="input" type="number" name="${key}" value="${esc(val)}">`;
-      else ctrl=`<input class="input" name="${key}" value="${esc(val)}" ${isLost&&key==='storage'?'readonly title="Departmanınızdan otomatik belirlenir"':''}>`;
-      return `<div class="field"${wide}><label>${label}</label>${ctrl}</div>`;
+      else if(isLost&&key==='storage')ctrl=`<input class="input lf-ro lf-ro-strong" name="storage" value="${esc(val)}" readonly title="Departmanınızdan otomatik belirlenir">`;
+      else ctrl=`<input class="input" name="${key}" value="${esc(val)}">`;
+      return `<div${wide}><label>${label}</label>${ctrl}</div>`;
     };
-    const imageBlock=isLost?`<div class="field" style="grid-column:1/-1"><label>Resim</label><input class="input" type="file" accept="image/*" id="hms-image">${row?.image?`<img src="${esc(row.image)}" alt="" style="max-height:120px;margin-top:8px;border-radius:8px">`:''}</div>`:'';
     const dataLists=`${module==='vehicles'?`<datalist id="veh-people">${empNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}${module==='visitors'?`<datalist id="vis-names">${[...new Set(visitorRows.map(v=>String(v.name||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist><datalist id="vis-companies">${[...new Set(visitorRows.map(v=>String(v.company||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}`;
+    const imageCol=`<div class="lf-image"><span>Resim</span><label class="lf-drop" id="lf-drop">${row?.image?`<img src="${esc(row.image)}" alt="">`:`<span class="lf-hatch"></span>Fotoğraf seç`}<input type="file" accept="image/*" id="hms-image"></label></div>`;
     const transferBlock=(isLost&&editing)?transferPanel(row):'';
-    modal(editing?'Kaydı düzenle':'Yeni kayıt',
-      `<div class="form-grid">${cfg.map(inputFor).join('')}</div>${dataLists}${imageBlock}${transferBlock}`,
+    const formInner=cfg.map(inputFor).join('');
+    const bodyHtml=isLost
+      ? `<div class="lf-body"><div class="lf-grid">${formInner}${imageCol}</div>${dataLists}</div>${transferBlock}`
+      : `<div class="form-grid">${formInner}</div>${dataLists}`;
+    modal(isLost?`Kayıp/Bulunan Eşyalar - ${editing?row.id:'Yeni'}`:(editing?'Kaydı düzenle':'Yeni kayıt'),
+      bodyHtml,
       async()=>{
         const box=document.querySelector('.modal');
         const payload={};
@@ -280,6 +302,31 @@
     if(isLost&&editing&&canWrite('lost_items'))bindTransfer(row);
     if(module==='vehicles')bindVehicleEditor(row,fleetRows,editing);
     if(module==='visitors')bindVisitorEditor(visitorRows);
+    if(isLost){
+      const mdl=document.querySelector('.modal');
+      if(mdl){
+        mdl.classList.add('lf-modal');
+        const head=mdl.querySelector('.modal-head');
+        if(head&&!head.querySelector('.lf-role')){
+          const b=document.createElement('span');b.className='lf-role';
+          b.textContent=canWrite('lost_items')?'Yönetici · Düzenleme':'Salt okunur';
+          head.querySelector('.close').before(b);
+        }
+        const sub=mdl.querySelector('.modal-actions .submit');if(sub)sub.textContent='▣ Kaydet';
+        const ccl=mdl.querySelector('.modal-actions .close-action');if(ccl)ccl.textContent='× Vazgeç';
+        const drop=mdl.querySelector('#lf-drop'),fileInput=mdl.querySelector('#hms-image');
+        if(fileInput&&drop)fileInput.onchange=()=>{
+          const f=fileInput.files?.[0];if(!f)return;
+          const rd=new FileReader();
+          rd.onload=()=>{
+            drop.querySelectorAll('img,.lf-hatch').forEach(e=>e.remove());
+            [...drop.childNodes].forEach(n=>{if(n.nodeType===3)n.remove();});
+            const im=document.createElement('img');im.src=rd.result;drop.prepend(im);
+          };
+          rd.readAsDataURL(f);
+        };
+      }
+    }
   }
   function bindVehicleEditor(row,fleetRows,editing){
     const box=document.querySelector('.modal');if(!box)return;
@@ -318,15 +365,15 @@
     };
   }
 
-  // --- Kayıp eşya transfer paneli (HMS ile aynı) --------------------
+  // --- Kayıp eşya transfer paneli (HMS görünümü) -------------------
+  const TR_STATUSES=['Beklemede','Saklama Sonu','Teslim Edildi','Reddedildi'];
   function movementsTable(row,canEdit){
     const src=Array.isArray(row.history)&&row.history.length?row.history
       :[{processDate:row.processDate,transferStatus:row.transferStatus||row.status,transferSender:row.transferSender,transferReceiver:row.transferReceiver,targetDepartment:row.targetDepartment,storage:row.storage}];
-    return `<h3 style="font-size:13px;margin:16px 0 6px">Hareketler</h3>
-      <div style="overflow:auto"><table class="hms-mov"><thead><tr><th>İşlem Tarihi</th><th>Durum</th><th>Teslim Eden</th><th>Teslim Alan</th><th>Saklandığı Yer</th><th></th></tr></thead><tbody>
+    return `<table class="lf-mov"><thead><tr><th>İşlem Tarihi</th><th>Durum</th><th>Teslim Eden</th><th>Teslim Alan</th><th>Saklandığı Yer</th><th>Eylem</th></tr></thead><tbody>
       ${src.map((m,i)=>`<tr><td>${esc(m.processDate||'—')}</td><td>${esc(m.transferStatus||m.status||'—')}</td><td>${esc(m.transferSender||'—')}</td><td>${esc(m.transferReceiver||m.receiver||'—')}</td><td>${esc(m.targetDepartment||m.storage||'—')}</td>
-        <td>${canEdit&&Array.isArray(row.history)&&row.history.length&&i===src.length-1?`<button class="btn ghost danger-text" type="button" id="mov-del">Sil</button>`:''}</td></tr>`).join('')}
-      </tbody></table></div>`;
+        <td>${canEdit&&Array.isArray(row.history)&&row.history.length&&i===src.length-1?`<button class="lf-mov-del" type="button" id="mov-del">Sil</button>`:''}</td></tr>`).join('')}
+      </tbody></table>`;
   }
   function transferPanel(row){
     const canEdit=canWrite('lost_items');
@@ -334,20 +381,22 @@
     const pending=row.transferStatus==='Beklemede';
     const targets=HMS_DEPTS.filter(d=>normDept(d)!==normDept(from));
     const senderList=deptEmployees(from);
+    const curStatus=row.transferStatus&&row.transferStatus!=='—'?row.transferStatus:(row.status||'Beklemede');
     const form=pending
-      ? `<div class="formula" style="margin-top:10px">Bu eşya için <strong>${esc(row.targetDepartment||'—')}</strong> departmanına transfer onayı bekleniyor. İptal için aşağıdaki son hareketi silin.</div>`
-      : `<div class="form-grid" style="margin-top:10px">
-          <div class="field"><label>Durum</label><input class="input" value="${esc(row.transferStatus&&row.transferStatus!=='—'?row.transferStatus:(row.status||'Beklemede'))}" readonly></div>
-          <div class="field"><label>Teslim Eden</label><input class="input" id="tr-sender" list="tr-sender-list" value="${esc(senderList[0]||'')}" placeholder="Kişi seçin veya yazın"><datalist id="tr-sender-list">${senderList.map(n=>`<option value="${esc(n)}">`).join('')}</datalist></div>
+      ? `<p class="lf-pending">Bu eşya için <strong>${esc(row.targetDepartment||'—')}</strong> departmanına transfer onayı bekleniyor. İptal etmek için “Hareketler” bölümündeki son satırı silin.</p>`
+      : `<div class="lf-trow">
+          <div class="field"><label>Durum</label><select class="select" id="tr-status">${TR_STATUSES.map(s=>`<option ${s===curStatus?'selected':''}>${s}</option>`).join('')}</select></div>
+          <div class="field"><label>Teslim Eden</label><input class="input" id="tr-sender" list="tr-sender-list" value="${esc(senderList[0]||'')}" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-sender-list">${senderList.map(n=>`<option value="${esc(n)}">`).join('')}</datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
           <div class="field"><label>Transfer Departmanı</label><select class="select" id="tr-target">${targets.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
-          <div class="field"><label>Teslim Alan</label><input class="input" id="tr-receiver" list="tr-receiver-list" placeholder="Kişi seçin veya yazın"><datalist id="tr-receiver-list"></datalist></div>
-          <div class="field"><label>Saklandığı Yer</label><input class="input" id="tr-storage" value="${esc(targets[0]||'')}" readonly></div>
+          <div class="field"><label>Teslim Alan</label><input class="input" id="tr-receiver" list="tr-receiver-list" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-receiver-list"></datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
         </div>
-        ${canEdit?`<button class="btn secondary" type="button" id="tr-send" style="margin-top:10px">▶▶ Transfer</button>`:''}`;
-    return `<div class="transfer-box" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
-      <h3 style="font-size:13px;margin:0 0 4px">Transfer</h3>
-      ${form}
-      ${movementsTable(row,canEdit)}
+        <div class="field" style="max-width:280px;margin-top:12px"><label>Saklandığı Yer</label><input class="input" id="tr-storage" value="${esc(targets[0]||'')}" readonly></div>
+        ${canEdit?`<button class="lf-transfer-btn" type="button" id="tr-send">▶▶ Transfer</button>`:''}`;
+    return `<div class="transfer-box">
+      <div class="lf-band">Transfer</div>
+      <div class="lf-section">${form}</div>
+      <div class="lf-band">Hareketler</div>
+      <div class="lf-section" style="border-bottom:0">${movementsTable(row,canEdit)}</div>
     </div>`;
   }
   function bindTransfer(row){
@@ -384,15 +433,14 @@
 
   // --- Raporlar -----------------------------------------------------
   function reportPanelHtml(){
-    return `<div class="card hms-report" style="margin-top:16px">
-      <div class="card-head"><div><h2>Kayıp Eşya Raporu</h2><span class="muted">En az bir kriter seçerek PDF raporu oluşturabilirsiniz.</span></div></div>
-      <div class="form-grid">
-        <div class="field"><label>Başlangıç tarihi</label><input class="input" type="date" id="lr-from"></div>
-        <div class="field"><label>Bitiş tarihi</label><input class="input" type="date" id="lr-to"></div>
-        <div class="field"><label>Durum</label><select class="select" id="lr-status"><option value="">Tümü</option></select></div>
-        <div class="field"><label>Saklandığı yer</label><select class="select" id="lr-storage"><option value="">Tümü</option></select></div>
-      </div>
-      <div style="margin-top:12px"><button class="btn" id="lr-go">PDF Raporu Al</button> <button class="btn secondary" type="button" id="lr-clear">Temizle</button></div>
+    return `<div class="lf-report-bar">
+      <div class="lf-rb-title"><strong>Rapor</strong><small>En az bir kriter seçerek PDF raporu oluşturabilirsiniz.</small></div>
+      <div><label>Başlangıç tarihi</label><input class="input" type="date" id="lr-from"></div>
+      <div><label>Bitiş tarihi</label><input class="input" type="date" id="lr-to"></div>
+      <div><label>Durum</label><select class="select" id="lr-status"><option value="">Tümü</option></select></div>
+      <div><label>Saklandığı yer</label><select class="select" id="lr-storage"><option value="">Tümü</option></select></div>
+      <button class="btn" id="lr-go">PDF Raporu Al</button>
+      <button class="lf-rb-clear" type="button" id="lr-clear" title="Temizle">×</button>
     </div>`;
   }
   async function bindReportPanel(fallbackRows){
@@ -411,7 +459,7 @@
       let lost;
       try{lost=await load('lost_items');}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
       if(tab!=='report'||currentView!=='lostfound')return;
-      mount(reportPanelHtml());
+      mount(`<div class="lf-list">${reportPanelHtml()}</div>`);
       bindReportPanel(lost);
       return;
     }
