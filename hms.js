@@ -35,16 +35,16 @@
   let currentView='security';
 
   const columns={
-    visitors:[['date','Ziyaret Tarihi',fromInput],['type','Tip'],['name','İsim'],['company','Firma'],['plate','Plaka'],['department','Departman'],['status','Durum'],['exit','Çıkış',fromInput],['identity','Kimlik'],['count','Kişi']],
-    vehicles:[['departure','Çıkış Tarihi',fromInput],['plate','Plaka'],['brand','Marka'],['model','Model'],['driver','Sürücü'],['destination','Gideceği Yer'],['status','Durum'],['km','Çıkış Km'],['returnDate','Dönüş',fromInput],['returnKm','Dönüş Km'],['requester','Talep Eden'],['fault','Hata']],
+    visitors:[['date','Ziyaret Tarihi',fromInput],['type','Ziyaret Tipi'],['name','İsim'],['company','Firma'],['plate','Plaka'],['status','Durum'],['exit','Çıkış Tarihi',fromInput],['identity','Kimlik Tipi'],['count','Kişi Sayısı']],
+    vehicles:[['plate','Plaka'],['brand','Marka'],['model','Model'],['driver','Sürücü'],['destination','Gideceği Yer'],['departure','Çıkış Tarihi',fromInput],['status','Durum'],['km','Km'],['returnDate','Dönüş Tarihi',fromInput],['returnKm','Dönüş Km'],['requester','Talep Eden'],['fault','Araç Hata Durumu']],
     fleet:[['plate','Plaka'],['brand','Marka'],['model','Model'],['startKm','Başlangıç Km'],['lastKm','Son Km'],['disabled','Kullanım Dışı']],
-    staff_status:[['name','İsim'],['entry','Giriş',fromInput],['status','Durum'],['exit','Çıkış',fromInput],['title','Ünvan'],['department','Departman']],
+    staff_status:[['name','İsim'],['entry','Giriş',fromInput],['status','Durum'],['exit','Çıkış Tarihi',fromInput],['title','Ünvan'],['department','Departman']],
     lost_items:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['storage','Saklandığı Yer'],['status','Durum'],['receiver','Teslim Alan'],['approval','Onay Durumu']],
     lost_approvals:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['fromDepartment','Gönderen'],['targetDepartment','Hedef'],['transferReceiver','Teslim Alan'],['status','Durum']]
   };
   const fields={
-    visitors:()=>[['date','Ziyaret Tarihi','datetime-local'],['type','Ziyaret Tipi','select',['Misafir','Personel','Mağaza','Günübirlik']],['name','Adı Soyadı'],['company','Firma'],['plate','Plaka'],['identity','Kimlik Tipi','select',['Kart Verilmedi','Kimlik Kartı','Pasaport','Ehliyet']],['count','Kişi Sayısı','number'],['department','Departman','select',deptList()],['status','Durum','select',['İçeride','Çıkış Yaptı']],['exit','Çıkış Tarihi','datetime-local'],['notes','Notlar','textarea']],
-    vehicles:()=>[['departure','Çıkış Tarihi','datetime-local'],['plate','Araç Plakası'],['brand','Marka'],['model','Model'],['driver','Sürücü'],['requester','Talep Eden'],['destination','Gideceği Yer'],['status','Durum','select',['Ayrıldı','Çıkış Yaptı','Dönüş Yaptı']],['km','Çıkış Km','number'],['returnDate','Dönüş Tarihi','datetime-local'],['returnKm','Dönüş Km','number'],['fault','Araç Hata Durumu','select',['Yok','Var']],['notes','Notlar','textarea']],
+    visitors:()=>[['date','Ziyaret Tarihi','datetime-local'],['type','Ziyaret Tipi','select',['Misafir','Personel','Mağaza','Günübirlik']],['name','Ziyaretçinin Adı Soyadı'],['company','Firma'],['plate','Plaka'],['identity','Kimlik Tipi','select',['Kart Verilmedi','Kimlik Kartı','Pasaport','Ehliyet']],['count','Kişi Sayısı','number'],['department','Departman','select',deptList()],['status','Durum','select',['İçeride','Çıkış Yaptı']],['exit','Çıkış Tarihi','datetime-local'],['notes','Notlar','textarea']],
+    vehicles:()=>[['departure','Çıkış Tarihi','datetime-local'],['plate','Araç'],['driver','Sürücü'],['requester','Talep Eden'],['destination','Gideceği Yer'],['status','Durum','select',['Ayrıldı','Çıkış Yaptı','Dönüş Yaptı']],['km','Çıkış Km','number'],['returnDate','Dönüş Tarihi','datetime-local'],['returnKm','Dönüş Km','number'],['fault','Araç Hata Durumu','select',['Yok','Var']],['notes','Notlar','textarea']],
     fleet:()=>[['plate','Plaka'],['brand','Marka'],['model','Model'],['startKm','Başlangıç Km','number'],['lastKm','Son Km','number'],['disabled','Kullanım Dışı','select',['Hayır','Evet']]],
     staff_status:()=>[['name','İsim'],['entry','Giriş','datetime-local'],['status','Durum','select',['İçeride','Henüz Giriş Yapmadı','Çıkış Yaptı']],['exit','Çıkış Tarihi','datetime-local'],['title','Ünvan'],['department','Departman','select',deptList()],['notes','Notlar','textarea']],
     lost_items:()=>[['foundDate','Kayıp/Bulunma Tarihi ve Saati','datetime-local'],['category','Kategori','select',lostCategories],['item','Eşya'],['location','Nerede Bulundu'],['notes','Notlar','textarea'],['status','Durum','select',['Beklemede','Saklama Sonu','Teslim Edildi']],['storage','Saklandığı Yer'],['receiver','Teslim Alan'],['approval','Onay Durumu','select',['Onay Bekliyor','Onaylandı','Reddedildi']]]
@@ -120,7 +120,12 @@
       shown=shown.filter(row=>cols.every(([k])=>colFilterMatch(row,k,f.cols[k])));
       return isApprovals?shown.filter(r=>r.status==='Beklemede'):shown;
     };
-    const rowsHtml=list=>list.map(row=>`<tr data-id="${row.id}">
+    const rowClass=row=>{
+      if((module==='visitors'||module==='staff_status')&&row.status==='İçeride')return ' class="hms-inside"';
+      if(module==='vehicles'&&['Dönüş Yaptı','Giriş Yaptı'].includes(String(row.status)))return ' class="hms-vehin"';
+      return '';
+    };
+    const rowsHtml=list=>list.map(row=>`<tr data-id="${row.id}"${rowClass(row)}>
         ${cols.map(([k,,fmt])=>`<td>${esc(fmt?fmt(row[k]):(row[k]??'—'))}</td>`).join('')}
         <td class="row-actions">${rowActions(module,row)}</td>
       </tr>`).join('')||`<tr><td colspan="${cols.length+1}" class="empty">Kayıt bulunamadı</td></tr>`;
@@ -192,9 +197,15 @@
   }
 
   // --- Kayıt ekle/düzenle modalı -------------------------------------
-  function openEditor(module,row){
+  const empNames=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>e.name).filter(Boolean))].sort(trSort);
+  async function openEditor(module,row){
     const editing=Boolean(row);
     const isLost=module==='lost_items';
+    // Araç/ziyaretçi formu için yardımcı listeler (HMS ile aynı davranış)
+    if(module==='vehicles'){try{await load('fleet');}catch(_){}}
+    if(module==='visitors'){try{await load('visitors');}catch(_){}}
+    const fleetRows=(cache.fleet||[]).filter(v=>v.disabled!=='Evet');
+    const visitorRows=cache.visitors||[];
     // Yeni kayıp eşya kaydında "Onay Durumu" alanı gizli (HMS ile aynı) — onay yalnızca transferde
     const cfg=fields[module]().filter(([k])=>!(isLost&&!editing&&k==='approval'));
     const myDept=normDept((window.__ikCurrentUser&&window.__ikCurrentUser()?.department)||window.__ikAuthUser?.department||'');
@@ -202,10 +213,27 @@
       let val=row?row[key]:'';
       if(!editing&&(key==='date'||key==='departure'||key==='foundDate'||key==='entry'))val=nowInput();
       if(isLost&&!editing&&key==='storage')val=myDept||'';
-      const wide=key==='notes'?' style="grid-column:1/-1"':'';
+      const wide=(key==='notes'||key==='destination'||key==='fault')?' style="grid-column:1/-1"':'';
       const lockFound=isLost&&key==='foundDate';
       let ctrl;
-      if(type==='select')ctrl=`<select class="select" name="${key}">${['',...opts].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+      // --- HMS'e özel alanlar ---
+      if(module==='vehicles'&&key==='plate'){
+        ctrl=`<select class="select" name="plate" id="veh-plate"><option value="" ${!val?'selected':''} disabled>Araç seçin</option>${fleetRows.map(v=>`<option value="${esc(v.plate)}" ${String(val)===String(v.plate)?'selected':''}>${esc(v.plate)} · ${esc(v.brand||'')} ${esc(v.model||'')}</option>`).join('')}</select>
+          <input type="hidden" name="brand" id="veh-brand" value="${esc(row?.brand||'')}"><input type="hidden" name="model" id="veh-model" value="${esc(row?.model||'')}">`;
+      }
+      else if(module==='vehicles'&&key==='km'){
+        ctrl=`<input class="input" type="number" name="km" id="veh-km" value="${esc(val)}" readonly title="Son dönüş kilometresinden otomatik alınır"><small class="muted" id="veh-km-hint" style="display:block;font-size:11px"></small>`;
+      }
+      else if(module==='vehicles'&&(key==='driver'||key==='requester')){
+        ctrl=`<input class="input" name="${key}" list="veh-people" value="${esc(val)}" placeholder="Kişi seçin veya yazın">`;
+      }
+      else if(module==='visitors'&&key==='name'){
+        ctrl=`<input class="input" name="name" id="vis-name" list="vis-names" value="${esc(val)}" autocomplete="off"><small class="muted" style="display:block;font-size:11px">Yazdıkça önceki ziyaretçiler listelenir.</small>`;
+      }
+      else if(module==='visitors'&&key==='company'){
+        ctrl=`<input class="input" name="company" id="vis-company" list="vis-companies" value="${esc(val)}" autocomplete="off">`;
+      }
+      else if(type==='select')ctrl=`<select class="select" name="${key}">${['',...opts].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
       else if(type==='textarea')ctrl=`<textarea class="input" name="${key}">${esc(val)}</textarea>`;
       else if(type==='datetime-local')ctrl=`<input class="input" type="datetime-local" name="${key}" value="${esc(toInput(val)||(!editing?val:''))}" ${lockFound?'readonly title="Sistem tarafından otomatik belirlenir"':''}>`;
       else if(type==='number')ctrl=`<input class="input" type="number" name="${key}" value="${esc(val)}">`;
@@ -213,9 +241,10 @@
       return `<div class="field"${wide}><label>${label}</label>${ctrl}</div>`;
     };
     const imageBlock=isLost?`<div class="field" style="grid-column:1/-1"><label>Resim</label><input class="input" type="file" accept="image/*" id="hms-image">${row?.image?`<img src="${esc(row.image)}" alt="" style="max-height:120px;margin-top:8px;border-radius:8px">`:''}</div>`:'';
+    const dataLists=`${module==='vehicles'?`<datalist id="veh-people">${empNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}${module==='visitors'?`<datalist id="vis-names">${[...new Set(visitorRows.map(v=>String(v.name||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist><datalist id="vis-companies">${[...new Set(visitorRows.map(v=>String(v.company||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}`;
     const transferBlock=(isLost&&editing)?transferPanel(row):'';
     modal(editing?'Kaydı düzenle':'Yeni kayıt',
-      `<div class="form-grid">${cfg.map(inputFor).join('')}</div>${imageBlock}${transferBlock}`,
+      `<div class="form-grid">${cfg.map(inputFor).join('')}</div>${dataLists}${imageBlock}${transferBlock}`,
       async()=>{
         const box=document.querySelector('.modal');
         const payload={};
@@ -224,6 +253,11 @@
           if(type==='datetime-local')v=fromInput(v);
           payload[key]=v;
         });
+        if(module==='vehicles'){
+          payload.brand=box.querySelector('#veh-brand')?.value||'';
+          payload.model=box.querySelector('#veh-model')?.value||'';
+          payload.km=box.querySelector('#veh-km')?.value||'';
+        }
         if(isLost&&!editing)delete payload.storage;
         const img=box.querySelector('#hms-image')?.files?.[0];
         const send=async(extra)=>{
@@ -244,6 +278,44 @@
         }else send({});
       });
     if(isLost&&editing&&canWrite('lost_items'))bindTransfer(row);
+    if(module==='vehicles')bindVehicleEditor(row,fleetRows,editing);
+    if(module==='visitors')bindVisitorEditor(visitorRows);
+  }
+  function bindVehicleEditor(row,fleetRows,editing){
+    const box=document.querySelector('.modal');if(!box)return;
+    const plate=box.querySelector('#veh-plate'),brand=box.querySelector('#veh-brand'),model=box.querySelector('#veh-model');
+    const km=box.querySelector('#veh-km'),hint=box.querySelector('#veh-km-hint'),status=box.querySelector('[name="status"]'),retKm=box.querySelector('[name="returnKm"]');
+    const norm=p=>String(p||'').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g,' ');
+    const applyPlate=()=>{
+      const f=fleetRows.find(v=>norm(v.plate)===norm(plate&&plate.value));
+      if(f){if(brand)brand.value=f.brand||'';if(model)model.value=f.model||'';}
+      if(editing)return; // düzenlemede km korunur (HMS ile aynı)
+      const trips=(cache.vehicles||[]).filter(v=>norm(v.plate)===norm(plate&&plate.value))
+        .sort((a,b)=>Number(b.id)-Number(a.id))
+        .find(v=>v.returnKm&&v.returnKm!=='—'&&Number.isFinite(Number(v.returnKm))&&Number(v.returnKm)>0);
+      if(trips){if(km)km.value=trips.returnKm;if(hint)hint.textContent=`Son dönüş kilometresi: ${trips.returnKm}`;}
+      else if(f&&(f.lastKm||f.startKm)&&String(f.lastKm||f.startKm)!=='—'){if(km)km.value=f.lastKm||f.startKm;if(hint)hint.textContent=`Kayıtlı son kilometre: ${f.lastKm||f.startKm}`;}
+      else{if(km)km.value='';if(hint)hint.textContent='Bu araç için kayıtlı kilometre bulunamadı.';}
+    };
+    if(plate){plate.onchange=applyPlate;if(plate.value)applyPlate();}
+    if(status)status.onchange=()=>{
+      if(!editing||status.value!=='Çıkış Yaptı')return;
+      const last=String((retKm&&retKm.value)||row?.returnKm||'');
+      if(last&&last!=='—'&&Number.isFinite(Number(last))){
+        if(km)km.value=last;if(retKm)retKm.value='';
+        const rd=box.querySelector('[name="returnDate"]');if(rd)rd.value='';
+        if(hint)hint.textContent=`Son dönüş kilometresi ${last}, yeni çıkış kilometresine aktarıldı.`;
+      }
+    };
+  }
+  function bindVisitorEditor(visitorRows){
+    const box=document.querySelector('.modal');if(!box)return;
+    const name=box.querySelector('#vis-name'),company=box.querySelector('#vis-company');
+    if(name)name.oninput=()=>{
+      const key=name.value.trim().toLocaleLowerCase('tr-TR');if(!key)return;
+      const prev=[...visitorRows].sort((a,b)=>Number(b.id)-Number(a.id)).find(v=>String(v.name||'').toLocaleLowerCase('tr-TR')===key);
+      if(prev&&prev.company&&company)company.value=prev.company;
+    };
   }
 
   // --- Kayıp eşya transfer paneli (HMS ile aynı) --------------------
@@ -382,7 +454,9 @@
     });
     const list=Object.values(groups).sort((a,b)=>trSort(a.plate,b.plate));
     const body=list.map(g=>`<tr><td>${esc(g.plate)}</td><td>${g.trips}</td><td>${g.km} km</td></tr>`).join('');
-    printHtml(`<!doctype html><meta charset="utf-8"><title>Araç Kullanım Raporu</title><style>body{font-family:Arial;color:#172b4d;padding:24px}h1{margin:0 0 6px}p{color:#64748b}table{width:100%;border-collapse:collapse;margin-top:16px;font-size:12px}th,td{border:1px solid #334155;padding:8px}th{background:#dbe5f1}</style><h1>Araç Kullanım Raporu</h1><p>Dönem: ${esc(month||'Tüm dönem')} · Araç: ${esc(plate||'Tümü')} · ${new Date().toLocaleString('tr-TR')}</p><table><thead><tr><th>Araç</th><th>Çıkış Sayısı</th><th>Ay Toplamı</th></tr></thead><tbody>${body}</tbody></table>`);
+    const maxKm=Math.max(1,...list.map(g=>g.km));
+    const chart=list.map(g=>`<div style="display:flex;align-items:center;gap:8px;margin:6px 0"><span style="width:110px">${esc(g.plate)}</span><i style="height:16px;flex:1;border:1px solid #64748b;display:block"><b style="display:block;height:100%;background:#2563eb;width:${Math.min(100,g.km/maxKm*100)}%"></b></i><strong>${g.km} km</strong></div>`).join('');
+    printHtml(`<!doctype html><meta charset="utf-8"><title>Araç Kullanım Raporu</title><style>@page{size:A4 landscape;margin:14mm}body{font-family:Arial;color:#172b4d;padding:24px}h1{margin:0 0 6px}h2{font-size:15px;margin:22px 0 8px}p{color:#64748b}table{width:100%;border-collapse:collapse;margin-top:16px;font-size:12px}th,td{border:1px solid #334155;padding:8px}th{background:#dbe5f1}</style><h1>Araç Kullanım Raporu</h1><p>Dönem: ${esc(month||'Tüm dönem')} · Araç: ${esc(plate||'Tümü')} · ${new Date().toLocaleString('tr-TR')}</p><table><thead><tr><th>Araç</th><th>Çıkış Sayısı</th><th>Ay Toplamı</th></tr></thead><tbody>${body}</tbody></table><h2>Araçların Aylık Kilometre Grafiği</h2>${chart||'<p>Kayıt yok</p>'}`);
   }
 
   function render(){

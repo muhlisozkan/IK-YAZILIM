@@ -142,6 +142,9 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 #hms-body table tbody tr:nth-child(even) td{background:#f5f7fb}
 #hms-body table tbody tr:hover td{background:#eef1ff}
 #hms-body .row-actions{white-space:nowrap}
+/* Durum renklendirmesi (HMS: içeride / araç döndü) */
+#hms-body tbody tr.hms-inside td{background:#e7f4ea}
+#hms-body tbody tr.hms-vehin td{background:#e6eefb}
 /* Kolon filtre satırı */
 #hms-body tr.hms-filters th{padding:5px 6px;background:#fafbfd;border-bottom:1px solid var(--line)}
 #hms-body tr.hms-filters .input{min-width:0;width:100%;padding:5px 7px;font-size:12px}
