@@ -2070,9 +2070,10 @@ const hmsInLostDept = user => HMS_LOST_DEPARTMENTS.includes(normalizeDepartmentV
 // Yetki seviyesi: 'full' (sil dahil) | 'operate' (ekle/düzenle, sil yok) | 'read' (görüntüle+rapor) | 'none'
 function hmsPerm(user, module) {
   if (user.role === 'Sistem yöneticisi') return 'full';
+  // Kayıp Eşya: yalnızca ilgili departmanlar; İK dahil DEĞİL (kullanıcı isteği 2026-09).
+  if (HMS_LOST_MODULES.has(module)) return hmsInLostDept(user) ? 'operate' : 'none';
   if (hmsIsHr(user)) return 'read';
   if (HMS_GUV_MODULES.has(module)) return user.role === 'Güvenlik' ? 'operate' : 'none';
-  if (HMS_LOST_MODULES.has(module)) return hmsInLostDept(user) ? 'operate' : 'none';
   return 'none';
 }
 const hmsCanWrite = (user, module) => ['full', 'operate'].includes(hmsPerm(user, module));
@@ -2123,10 +2124,13 @@ app.post('/api/hms/:module', asyncRoute(async (req, res) => {
   if (module === 'lost_items') {
     data.foundDate = clean(data.foundDate) || hmsNow();
     data.processDate = hmsNow();
+    // Kayıt hangi departman girdiyse orada başlar; oradan transfer edilir (kullanıcı isteği).
     data.storage = department || 'KAT HİZMETLERİ';
     data.status = clean(data.status) || 'Beklemede';
+    data.receiver = clean(data.receiver) || '—';
     data.approval = 'Onaylandı';
     data.transferStatus = '—';
+    data.currentLocation = data.storage;
     data.history = [];
   }
   if (['visitors', 'staff_status'].includes(module)) data.status = clean(data.status) || 'İçeride';
@@ -2208,6 +2212,37 @@ app.post('/api/hms/lost-approvals/:id/decision', asyncRoute(async (req, res) => 
   }
   await hmsUpdate(appr.id, appr.department, { ...appr.data, status: decision });
   res.json({ ok: true, decision });
+}));
+
+// Son transfer hareketini geri al (HMS'teki "Sil" davranışı)
+app.post('/api/hms/lost-items/:id/movements/delete-last', asyncRoute(async (req, res) => {
+  if (!hmsCanWrite(req.user, 'lost_items')) return res.status(403).json({ error: 'Yetkiniz yok' });
+  const item = await hmsGet(req.params.id);
+  if (!item || item.module !== 'lost_items') return res.status(404).json({ error: 'Eşya bulunamadı' });
+  if (!hmsRecordInScope(req.user, 'lost_items', item)) {
+    return res.status(403).json({ error: 'Yalnızca kendi departmanınızın eşyasında işlem yapabilirsiniz' });
+  }
+  const history = Array.isArray(item.data.history) ? item.data.history.slice() : [];
+  if (!history.length) return res.status(400).json({ error: 'Silinecek hareket yok' });
+  const last = history.pop();
+  const prev = history.length ? history[history.length - 1] : null;
+  const restoredStorage = clean(prev?.storage) || clean(item.data.storage) || 'KAT HİZMETLERİ';
+  const nextData = {
+    ...item.data, history,
+    storage: restoredStorage, currentLocation: restoredStorage,
+    transferStatus: clean(prev?.transferStatus) || '—',
+    targetDepartment: clean(prev?.targetDepartment) || '',
+    transferSender: clean(prev?.transferSender) || '',
+    transferReceiver: clean(prev?.transferReceiver) || ''
+  };
+  const saved = await hmsUpdate(item.id, normalizeDepartmentValue(restoredStorage) || item.department, nextData);
+  // Silinen hareket bekleyen bir transferse, ilgili onay kaydını da kaldır
+  if (clean(last?.transferStatus) === 'Beklemede') {
+    await pool.query(
+      "delete from hms_records where module='lost_approvals' and (data->>'sourceLostId')::bigint = $1 and data->>'status' = 'Beklemede'",
+      [item.id]);
+  }
+  res.json(saved);
 }));
 
 async function seedHmsIfEmpty() {

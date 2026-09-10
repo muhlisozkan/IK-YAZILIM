@@ -142,6 +142,18 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 #hms-body table tbody tr:nth-child(even) td{background:#f5f7fb}
 #hms-body table tbody tr:hover td{background:#eef1ff}
 #hms-body .row-actions{white-space:nowrap}
+/* Kolon filtre satırı */
+#hms-body tr.hms-filters th{padding:5px 6px;background:#fafbfd;border-bottom:1px solid var(--line)}
+#hms-body tr.hms-filters .input{min-width:0;width:100%;padding:5px 7px;font-size:12px}
+#hms-body .hms-fcombo{position:relative;display:flex}
+#hms-body .hms-fcombo .input{padding-right:22px}
+#hms-body .hms-fclear{position:absolute;right:2px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:var(--muted);font-size:15px;line-height:1;cursor:pointer;padding:2px 5px}
+#hms-body .hms-fclear:hover{color:var(--ink)}
+/* Transfer paneli + hareketler tablosu (modal içinde) */
+.transfer-box .hms-mov{width:100%;border-collapse:collapse;font-size:12px}
+.transfer-box .hms-mov th,.transfer-box .hms-mov td{border:1px solid var(--line);padding:5px 7px;text-align:left}
+.transfer-box .hms-mov th{background:#f3f6fb;font-size:10.5px;text-transform:uppercase;letter-spacing:.03em}
+.transfer-box h3{color:var(--ink)}
 
 /* İzin talebinde haftalık izin (of) günü seçici */
 .wk-grid{display:flex;flex-wrap:wrap;gap:6px}

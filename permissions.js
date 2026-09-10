@@ -31,7 +31,8 @@
   }
   window.__ikSecurityAccess = securityAccess;
   const canSeeSecurity = () => { const a = securityAccess(); return a.admin || a.hr || a.security; };
-  const canSeeLostFound = () => { const a = securityAccess(); return a.admin || a.hr || a.lostDept; };
+  // Kayıp Eşya: yalnızca Sistem yöneticisi (tam) ve ilgili departmanlar (Misafir İlişkileri / Kat Hizmetleri). İK dahil değil.
+  const canSeeLostFound = () => { const a = securityAccess(); return a.admin || a.lostDept; };
   const canSeePerformance = () => { const a = securityAccess(); return a.admin || a.hr; };
   const canSeeGuncel = () => { const a = securityAccess(); return a.admin || a.hr; };
   const canSeeButce = () => {
