@@ -24,9 +24,9 @@ button,input,select,textarea{font-family:inherit}
 .att-table td.att-type{position:sticky;left:180px;z-index:4;color:#fff!important}
 .att-table td.att-type.normal{background:#4f6274!important}
 .att-table td.att-type.extra{background:#5e8bc0!important}
-/* Zebra: her çalışan (Normal+Fazla ikilisi) bir beyaz bir pastel kırmızı.*/
+/* Zebra: her çalışan (Normal+Fazla ikilisi) bir beyaz bir açık gri.*/
 .att-table tbody tr:nth-child(4n+3) td,
-.att-table tbody tr:nth-child(4n+4) td{background:#f4d6d6}
+.att-table tbody tr:nth-child(4n+4) td{background:#ebedf1}
 .approval-card{margin-top:18px}.approval-row{display:grid;grid-template-columns:1.3fr 1fr 24px 1fr 24px 1fr;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.approval-row:last-child{border-bottom:0}.approval-row strong{color:var(--ink)}.approval-row span{text-align:center;color:var(--muted);font-weight:700}@media(max-width:900px){.approval-row{grid-template-columns:1fr 1fr 20px 1fr 20px 1fr;font-size:12px}}
 .approval-row{grid-template-columns:180px 1fr auto}.approval-steps{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.approval-step-wrap{display:flex!important;align-items:center;gap:2px}.approval-step{min-width:175px}.approval-arrow{font-weight:700;color:var(--muted)}.approval-remove{border:0;background:transparent;color:var(--muted);font-size:20px;cursor:pointer}.approval-add{white-space:nowrap}@media(max-width:900px){.approval-row{grid-template-columns:1fr}.approval-step{min-width:150px}}
 .session-user{max-width:260px;padding:9px 34px 9px 11px;font-size:12px}.finance-stats{margin-bottom:18px}.finance-list{margin-top:18px}.row-actions{white-space:nowrap}.row-actions .btn{margin:2px}.danger-text{color:#b42318!important}.nav-item[hidden]{display:none!important}@media(max-width:850px){.session-user{max-width:180px}.finance-stats{grid-template-columns:1fr 1fr}}@media(max-width:560px){.session-user{display:none}.finance-stats{grid-template-columns:1fr}}
@@ -117,10 +117,10 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .shift-table tr.shift-row-normal td{border-bottom:0}
 .shift-table tr.shift-row-fazla td{border-bottom:2px solid #e7ebf2}
 .shift-select.shift-locked{background:#fff5df;border-color:#f0d9a8}
-/* Zebra: her çalışan (Normal+Fazla ikilisi) bir beyaz bir pastel kırmızı.
+/* Zebra: her çalışan (Normal+Fazla ikilisi) bir beyaz bir açık gri.
    Çalışma tipi sütunu (.att-type) kendi rengini !important ile korur. */
 .shift-table tbody tr:nth-child(4n+3) td,
-.shift-table tbody tr:nth-child(4n+4) td{background:#f4d6d6}
+.shift-table tbody tr:nth-child(4n+4) td{background:#ebedf1}
 
 /* Yazdıkça filtrelenen select (combobox) */
 .cb-wrap{position:relative;display:inline-block}
