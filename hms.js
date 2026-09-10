@@ -8,8 +8,18 @@
   const lostCategories=['Ayakkabı/Terlik','Bebek Malzemeleri','Çanta','Değerli Eşya','Deniz/Havuz Malzemeleri','Diğer','Elektronik','Gözlük','Kozmetik','Kitap','Oyuncak','Takı','Tekstil','Termos','Toplu Kayıp'];
   const HMS_DEPTS=['ÖN BÜRO','MALİ İŞLER','KAT HİZMETLERİ','TEKNİK SERVİS','MİSAFİR İLİŞKİLERİ','GÜVENLİK'];
   const normDept=d=>String(d||'').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g,' ');
-  const deptList=()=>[...new Set([...(state.employees||[]).map(e=>normDept(e.department)).filter(Boolean),...HMS_DEPTS])].sort(trSort);
-  const deptEmployees=d=>(state.employees||[]).filter(e=>normDept(e.department)===normDept(d)).map(e=>e.name).sort(trSort);
+  // Departman-personel listesi: state.employees departman kapsamlı olabildiği için
+  // HMS'e özel kapsamsız uçtan yüklenir (transfer teslim alan/eden seçimi için tüm departmanlar).
+  let hmsPeople=null;
+  async function loadPeople(){
+    if(hmsPeople)return hmsPeople;
+    try{hmsPeople=await api('/api/hms/people');}
+    catch(_){hmsPeople=(state.employees||[]).map(e=>({name:e.name,department:e.department}));}
+    return hmsPeople;
+  }
+  const peopleSrc=()=>(hmsPeople&&hmsPeople.length?hmsPeople:(state.employees||[]));
+  const deptList=()=>[...new Set([...peopleSrc().map(e=>normDept(e.department)).filter(Boolean),...HMS_DEPTS])].sort(trSort);
+  const deptEmployees=d=>peopleSrc().filter(e=>normDept(e.department)===normDept(d)).map(e=>e.name).filter(Boolean).sort(trSort);
 
   const GUV_TABS=['visitors','vehicles','fleet','staff_status'];
   const LOST_TABS=['lost_items','lost_approvals','lost_delivered'];
@@ -231,10 +241,11 @@
   }
 
   // --- Kayıt ekle/düzenle modalı -------------------------------------
-  const empNames=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>e.name).filter(Boolean))].sort(trSort);
+  const empNames=()=>[...new Set(peopleSrc().map(e=>e.name).filter(Boolean))].sort(trSort);
   async function openEditor(module,row){
     const editing=Boolean(row);
     const isLost=module==='lost_items';
+    await loadPeople();
     // Araç/ziyaretçi formu için yardımcı listeler (HMS ile aynı davranış)
     if(module==='vehicles'){try{await load('fleet');}catch(_){}}
     if(module==='visitors'){try{await load('visitors');}catch(_){}}
@@ -591,6 +602,7 @@
       if(window.__ikCan&&!window.__ikCan(state.view)){state.view='dashboard';baseShell();return;}
       currentView=state.view;
       tab=sessionStorage.getItem(tabKey())||TABDEFS[currentView][0][0];
+      loadPeople().then(()=>{if(state.view==='security'||state.view==='lostfound')render();});
       render();
     }else baseShell();
   };

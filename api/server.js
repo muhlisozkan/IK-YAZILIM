@@ -2098,6 +2098,15 @@ const hmsCleanBody = body => {
 };
 const hmsImageOk = data => !data.image || String(data.image).length <= 900000;
 
+// Departman-personel listesi (kapsamsız): transfer teslim eden/alan seçimi için tüm departmanların personeli
+app.get('/api/hms/people', asyncRoute(async (req, res) => {
+  const hasHmsAccess = req.user.role === 'Sistem yöneticisi'
+    || [...HMS_MODULES].some(m => hmsPerm(req.user, m) !== 'none');
+  if (!hasHmsAccess) return res.status(403).json({ error: 'Yetkiniz yok' });
+  const rows = (await pool.query("select name, department from employees where status <> 'Pasif' and coalesce(btrim(name),'') <> '' order by name")).rows;
+  res.json(rows);
+}));
+
 app.get('/api/hms/:module', asyncRoute(async (req, res) => {
   const module = clean(req.params.module);
   if (!HMS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
