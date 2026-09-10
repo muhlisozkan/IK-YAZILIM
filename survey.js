@@ -863,8 +863,11 @@
       if(done){closeModal();if(kind==='makeitright')renderMakeItRight();else if(kind==='performans')renderPerformance();return;}
       const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:normPhone(r.phone),employee_id:r.employee_id||undefined})).filter(r=>r.name||r.email||r.phone);
       if(!recipients.length)return toast('En az bir alıcı girin');
-      if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresi olmalı (e-postası olmayanları çıkarın)');
-      if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarası olmalı (numarası olmayanları çıkarın)');
+      // İletişim bilgisi boş olanlara gönderilmez; en az bir gönderilebilir alıcı gerekir
+      const missing=recipients.filter(r=>channel==='sms'?!r.phone:!r.email);
+      const sendable=recipients.length-missing.length;
+      if(!sendable)return toast(channel==='sms'?'Telefon numarası olan alıcı yok':'E-posta adresi olan alıcı yok');
+      if(missing.length&&!confirm(`${missing.length} alıcının ${channel==='sms'?'telefon numarası':'e-posta adresi'} yok — onlara gönderilmeyecek, sayıma dahil edilmeyecek ve sonuçta ayrı listelenecek.\n\n${sendable} alıcıya gönderilsin mi?`))return;
       const submit=document.querySelector('.modal .submit');if(submit)submit.disabled=true;
       try{
         const res=await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel,greet,message:curMsg(),recipients})});
@@ -913,7 +916,7 @@
         <div class="field"><label>Mesaj (opsiyonel)</label>
           <textarea class="input" id="inv-msg" placeholder="Boş bırakılırsa standart metin gönderilir. {ad} = Ad SOYAD, {link} = bağlantı.">${esc(curMsg())}</textarea>
         </div>
-        <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. ${channel==='sms'?'Telefon':'E-posta'}sı olmayan satırlar kırmızı gösterilir; göndermeden önce çıkarın.</p>`;
+        <p class="muted" style="font-size:12px;margin:0">Her alıcıya kişiye özel, <strong>tek kullanımlık</strong> bir bağlantı oluşturulur. ${channel==='sms'?'Telefon':'E-posta'}sı olmayan satırlar kırmızı gösterilir; onlara gönderim yapılmaz, sayıma girmez ve sonuçta “Gönderilmedi” sekmesinde listelenir.</p>`;
       bind();
     }
     function bind(){
@@ -954,15 +957,29 @@
     loadGroups().then(redraw);
     function showResult(res){
       done=true;
-      box().innerHTML=`<div class="inv-result">
-        <p><strong>${res.sent}</strong> gönderildi${res.failed?` · <strong class="danger-text">${res.failed}</strong> başarısız`:''}.
-        ${res.base_url?`<br><span class="muted" style="font-size:12px">Bağlantı adresi: ${esc(res.base_url)}</span>`:''}</p>
-        <ul class="inv-result-list">${(res.results||[]).map(r=>`<li>
+      const skipped=res.skipped||[];
+      const resultsHtml=`<ul class="inv-result-list">${(res.results||[]).map(r=>`<li>
           <div>${r.ok?'✅':'❌'} ${esc(r.name||'(isimsiz)')}${r.ok?'':' — '+esc(r.error||'')}</div>
           ${r.link?`<div class="inv-link"><input class="input" readonly value="${esc(r.link)}"><button type="button" class="btn ghost" data-copy="${esc(r.link)}">Kopyala</button></div>`:''}
-        </li>`).join('')}</ul>
+        </li>`).join('')||'<li class="muted">Gönderim yapılmadı</li>'}</ul>`;
+      const skippedHtml=`<div class="muted" style="font-size:12px;margin-bottom:8px">Bu alıcıların ${channel==='sms'?'telefon numarası':'e-posta adresi'} boş olduğu için gönderim yapılmadı; yukarıdaki sayılara dahil değildir.</div>
+        <ul class="inv-result-list">${skipped.map(s=>`<li><div>⚠️ ${esc(s.name||'(isimsiz)')}${s.department?` <span class="muted">· ${esc(s.department)}</span>`:''} — ${esc(s.reason||'İletişim bilgisi yok')}</div></li>`).join('')}</ul>`;
+      box().innerHTML=`<div class="inv-result">
+        <p><strong>${res.sent}</strong> gönderildi${res.failed?` · <strong class="danger-text">${res.failed}</strong> başarısız`:''}${skipped.length?` · <strong>${skipped.length}</strong> gönderilmedi (bilgi yok)`:''}.
+        ${res.base_url?`<br><span class="muted" style="font-size:12px">Bağlantı adresi: ${esc(res.base_url)}</span>`:''}</p>
+        <div class="rep-tabs" id="inv-res-tabs">
+          <button type="button" class="rtab on" data-itab="results">Sonuç (${(res.results||[]).length})</button>
+          ${skipped.length?`<button type="button" class="rtab" data-itab="skipped">Gönderilmedi <span class="rtab-badge">${skipped.length}</span></button>`:''}
+        </div>
+        <div data-ipanel="results">${resultsHtml}</div>
+        ${skipped.length?`<div data-ipanel="skipped" hidden>${skippedHtml}</div>`:''}
       </div>`;
-      box().querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+      const wrap=box();
+      wrap.querySelectorAll('#inv-res-tabs .rtab').forEach(b=>b.onclick=()=>{
+        wrap.querySelectorAll('#inv-res-tabs .rtab').forEach(x=>x.classList.toggle('on',x===b));
+        wrap.querySelectorAll('[data-ipanel]').forEach(p=>{p.hidden=p.dataset.ipanel!==b.dataset.itab;});
+      });
+      wrap.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
         navigator.clipboard?.writeText(b.dataset.copy).then(()=>toast('Bağlantı kopyalandı'),()=>toast('Kopyalanamadı'));
       });
       const submit=document.querySelector('.modal .submit');

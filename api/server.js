@@ -2543,12 +2543,25 @@ async function dispatchInvites(req, { kind, surveyId, periodId, recipients, chan
        r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name,
        info.department || clean(r.department)]);
   };
+  // İletişim bilgisi (kanala göre telefon/e-posta) boş olan alıcıya gönderim yapılmaz;
+  // sent/başarılı/başarısız sayımına girmez, sonuçta ayrı listelenir.
+  const hasContact = r => channel === 'sms' ? clean(r.phone) !== '' : clean(r.email) !== '';
+  const skipped = recipients.filter(r => !hasContact(r)).map(r => ({
+    name: r.name, email: r.email, phone: r.phone,
+    department: infoFor(r).department || clean(r.department),
+    reason: channel === 'sms' ? 'Telefon numarası yok' : 'E-posta adresi yok'
+  }));
+  const sendList = recipients.filter(hasContact);
+
   const results = [];
-  const summary = () => ({ sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results });
+  const summary = () => ({
+    sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length,
+    skipped, skipped_count: skipped.length, base_url: inviteBaseUrl(req), results
+  });
 
   if (channel === 'sms') {
     // Kişiye özel toplu (DynamicSms): tüm mesajlar tek istekte gönderilir
-    const prepared = recipients.map(r => {
+    const prepared = sendList.map(r => {
       const token = newInviteToken();
       const link = inviteLink(req, token);
       const phone = normalizeGsm(r.phone);
@@ -2575,7 +2588,7 @@ async function dispatchInvites(req, { kind, surveyId, periodId, recipients, chan
   }
 
   // E-posta: alıcı başına ayrı gönderim (kişiye özel içerik)
-  for (const r of recipients) {
+  for (const r of sendList) {
     if (!emailAddress(r.email)) { results.push({ name: r.name, ok: false, error: 'Geçersiz e-posta adresi' }); continue; }
     const token = newInviteToken();
     const link = inviteLink(req, token);
