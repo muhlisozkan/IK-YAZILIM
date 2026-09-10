@@ -2077,7 +2077,9 @@ function hmsPerm(user, module) {
   return 'none';
 }
 const hmsCanWrite = (user, module) => ['full', 'operate'].includes(hmsPerm(user, module));
-const hmsScoped = (user, module) => HMS_LOST_MODULES.has(module) && hmsPerm(user, module) === 'operate';
+// Kapsam yalnızca "Onay Bekleyenler"e uygulanır: her departman kendi hedefindeki transferleri görür/karara bağlar.
+// Kayıp/bulunan eşyaların tamamını (nerede saklandığından bağımsız) Misafir İlişkileri ve Kat Hizmetleri birlikte görür/yönetir.
+const hmsScoped = (user, module) => module === 'lost_approvals' && hmsPerm(user, module) === 'operate';
 const hmsNow = () => new Date().toLocaleString('tr-TR');
 const hmsRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
 const hmsGet = async id => (await pool.query('select * from hms_records where id=$1', [Number(id) || 0])).rows[0] || null;
