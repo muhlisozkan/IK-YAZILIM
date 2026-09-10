@@ -3,6 +3,11 @@
   const roles=['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi','Güvenlik','Personel','Sadece görüntüleme'];
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const departments=()=>[...new Set((state.employees||[]).map(e=>e.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
+  const foldAscii=s=>String(s||'').replace(/İ/g,'i').replace(/I/g,'ı').toLocaleLowerCase('tr-TR')
+    .replace(/ı/g,'i').replace(/ş/g,'s').replace(/ğ/g,'g').replace(/ü/g,'u').replace(/ö/g,'o').replace(/ç/g,'c')
+    .normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z ]/g,'').replace(/\s+/g,' ').trim();
+  const suggestUsername=name=>{const p=foldAscii(name).split(' ').filter(Boolean);return p.length>1?p[0]+'.'+p[p.length-1]:(p[0]||'');};
+  const normTel=v=>{let d=String(v||'').replace(/\D+/g,'');if(d.startsWith('0090'))d=d.slice(2);if(d.startsWith('90')&&d.length===12)d=d.slice(2);if(d.length===10&&d[0]==='5')d='0'+d;return d;};
   const api=async(path,options)=>{
     const response=await fetch(path,options);
     const data=response.status===204?null:await response.json().catch(()=>({}));
@@ -74,7 +79,22 @@
       }catch(error){toast(error.message)}
       finally{if(submit)submit.disabled=false}
     });
-    $('#u-employee').onchange=()=>{const employee=(state.employees||[]).find(e=>String(e.id)===$('#u-employee').value);if(employee)$('#u-department').value=employee.department};
+    // Bağlı personel seçilince form alanlarını çalışan kaydından doldur
+    $('#u-employee').onchange=()=>{
+      const employee=(state.employees||[]).find(e=>String(e.id)===$('#u-employee').value);
+      if(!employee)return;
+      const set=(id,val)=>{const el=$('#'+id);if(el&&val)el.value=val;};
+      set('u-name',employee.name);
+      set('u-email',employee.email);
+      set('u-phone',normTel(employee.phone));
+      const dept=$('#u-department');
+      if(dept&&employee.department){
+        if(![...dept.options].some(o=>o.value===employee.department))dept.add(new Option(employee.department,employee.department));
+        dept.value=employee.department;
+      }
+      const un=$('#u-username');
+      if(un&&!un.value.trim())un.value=suggestUsername(employee.name);
+    };
   }
 
   const baseShell=shell;
