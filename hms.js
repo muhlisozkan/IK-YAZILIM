@@ -250,6 +250,14 @@
       else if(module==='visitors'&&key==='company'){
         ctrl=`<input class="input" name="company" id="vis-company" list="vis-companies" value="${esc(val)}" autocomplete="off">`;
       }
+      else if(isLost&&key==='receiver'){
+        // Teslim Alan: eşyanın bulunduğu (yeni kayıtta: kullanıcının) departmanının personeli
+        const dep=row?.storage||myDept;
+        const people=dep?deptEmployees(dep):[];
+        ctrl=people.length
+          ? `<select class="select" name="receiver">${['',...people].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select><small class="muted" style="display:block;font-size:11px">${esc(dep)} personeli</small>`
+          : `<input class="input" name="receiver" value="${esc(val)}" list="lf-receivers" placeholder="Teslim alan kişi"><datalist id="lf-receivers">${people.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`;
+      }
       else if(type==='select')ctrl=`<select class="select" name="${key}">${['',...opts].map(o=>`<option ${String(val)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
       else if(type==='textarea')ctrl=`<textarea class="input" name="${key}">${esc(val)}</textarea>`;
       else if(type==='datetime-local')ctrl=`<input class="input${lockFound?' lf-ro':''}" type="datetime-local" name="${key}" value="${esc(toInput(val)||(!editing?val:''))}" ${lockFound?'readonly title="Sistem tarafından otomatik belirlenir"':''}>`;
