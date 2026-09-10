@@ -566,7 +566,7 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
    Zemin: #2f5c9c → #274d84 · Vurgu: beyaz
    ============================================================ */
 .sidebar{
-  background:linear-gradient(180deg,#2f5c9c 0%,#274d84 100%);
+  background:linear-gradient(180deg,#254c84 0%,#1b3a62 100%);
   border-right:1px solid rgba(255,255,255,.1);
   box-shadow:1px 0 0 rgba(0,0,0,.08);
   padding:20px 13px 12px;
@@ -575,10 +575,10 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .sidebar>nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,.24);border-radius:6px}
 
 /* Marka */
-.sidebar .brand{padding:6px 8px 16px;margin-bottom:10px;border-bottom:1px solid rgba(255,255,255,.14)}
+.sidebar .brand{padding:6px 8px 16px;margin-bottom:10px;border-bottom:1px solid rgba(255,255,255,.16)}
 .sidebar .brand-mark{
   width:36px;height:36px;border-radius:10px;
-  background:#fff;color:#274d84;font-weight:800;letter-spacing:.01em;
+  background:#fff;color:#1b3a62;font-weight:800;letter-spacing:.01em;
   box-shadow:0 6px 16px rgba(0,0,0,.22);
 }
 .sidebar .brand strong{color:#fff;font-weight:650;font-size:14.5px;letter-spacing:-.01em}
