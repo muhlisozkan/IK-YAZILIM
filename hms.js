@@ -107,7 +107,6 @@
     if(!f.cols)f.cols={};
     const isApprovals=module==='lost_approvals';
     const isLF=currentView==='lostfound';
-    const showReport=module==='lost_items'&&isLF;
     const comboCols=COMBO_FILTER_COLS[module]||[];
     const dateCol=l=>/tarih/i.test(l);
     const optsFor=k=>[...new Set(rows.map(r=>String(r[k]??'').trim()).filter(Boolean))].sort(trSort);
@@ -149,7 +148,7 @@
         <tr>${cols.map(headCell).join('')}<th>Eylemler</th></tr>
         <tr class="hms-filters">${cols.map(filterCell).join('')}<th></th></tr>
       </thead><tbody id="hms-tbody"></tbody></table></div>
-    </div>${showReport?reportPanelHtml():''}`;
+    </div>`;
     mount(body);
     // Filtreleri yerinde uygula — tüm kabuğu yeniden çizmeden, odak kaybolmadan
     const paint=()=>{
@@ -172,7 +171,6 @@
     document.querySelectorAll('[data-hms-fclear]').forEach(b=>b.onclick=()=>{f.cols[b.dataset.hmsFclear]='';const el=document.querySelector(`[data-hms-fcol="${b.dataset.hmsFclear}"]`);if(el)el.value='';paint();});
     if($('#hms-add'))$('#hms-add').onclick=()=>openEditor(module,null);
     if($('#hms-refresh'))$('#hms-refresh').onclick=()=>{delete cache[module];renderTable(module);};
-    if(showReport)bindReportPanel(rows);
     paint();
   }
 
