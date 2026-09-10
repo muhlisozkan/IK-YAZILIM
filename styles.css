@@ -172,6 +172,9 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 .lf-list .lf-count b{color:var(--ink-soft)}
 .lf-list .lf-count b::before{content:"● ";color:var(--green)}
 .lf-list thead tr:first-child th .lf-sort{color:var(--blue);margin-left:4px;font-weight:700}
+/* ID dar, Eşya geniş */
+.lf-list .hms-table th:first-child,.lf-list .hms-table td:first-child{width:54px;min-width:54px;white-space:nowrap}
+.lf-list .hms-table th:nth-child(4),.lf-list .hms-table td:nth-child(4){min-width:300px;white-space:normal}
 .lf-list tbody tr.lf-sel td{background:#eef4ff;box-shadow:inset 3px 0 0 var(--blue)}
 .lf-trash{border:1px solid #f0c9c9;background:#fdf3f3;color:var(--red);border-radius:7px;padding:5px 7px;cursor:pointer;display:inline-flex}
 .lf-trash:hover{background:#fbe6e6}
