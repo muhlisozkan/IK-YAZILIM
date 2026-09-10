@@ -723,13 +723,21 @@
 
   // --- Alıcı grupları --------------------------------------------
   const isEmail=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim());
+  // Cep numarasını ulusal biçime getir: boşluk/işaretleri at, başında 0 yoksa ekle
+  const normPhone=v=>{
+    let d=String(v||'').replace(/\D+/g,'');
+    if(d.startsWith('0090'))d=d.slice(2);              // 0090XXXXXXXXXX -> 90XXXXXXXXXX
+    if(d.startsWith('90')&&d.length===12)d=d.slice(2); // 90XXXXXXXXXX   -> XXXXXXXXXX
+    if(d.length===10&&d[0]==='5')d='0'+d;              // 5XXXXXXXXX     -> 05XXXXXXXXX
+    return d;
+  };
   const empDepartments=()=>[...new Set((state.employees||[]).filter(e=>e.status!=='Pasif').map(e=>String(e.department||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
   const deptMembers=dept=>{
     const key=String(dept||'').trim().toLocaleLowerCase('tr-TR');
     if(!key)return [];
     return (state.employees||[])
       .filter(e=>e.status!=='Pasif'&&String(e.department||'').trim().toLocaleLowerCase('tr-TR')===key)
-      .map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
+      .map(e=>({name:e.name||'',email:e.email||'',phone:normPhone(e.phone),employee_id:e.id}));
   };
 
   async function recipientGroupsModal(afterChange){
@@ -820,13 +828,13 @@
     const path=kind==='makeitright'?'/api/eom/templates/'+opts.templateId+'/invites':'/api/surveys/'+opts.surveyId+'/invites';
     const rkey=r=>((r.email||'').trim().toLowerCase())||((r.phone||'').replace(/\D/g,''))||((r.name||'').trim().toLowerCase());
     const allActiveEmps=()=>(state.employees||[]).filter(e=>e.status!=='Pasif')
-      .map(e=>({name:e.name||'',email:e.email||'',phone:e.phone||'',employee_id:e.id}));
+      .map(e=>({name:e.name||'',email:e.email||'',phone:normPhone(e.phone),employee_id:e.id}));
     function addRecipients(list){
       const seen=new Set(rows.map(rkey).filter(Boolean));
       let added=0;
       (list||[]).forEach(r=>{
         const k=rkey(r);if(!k||seen.has(k))return;
-        seen.add(k);rows.push({name:r.name||'',email:r.email||'',phone:r.phone||'',employee_id:r.employee_id||null});added++;
+        seen.add(k);rows.push({name:r.name||'',email:r.email||'',phone:normPhone(r.phone),employee_id:r.employee_id||null});added++;
       });
       rows=rows.filter(r=>r.name||r.email||r.phone)
         .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
@@ -837,7 +845,7 @@
     const loadGroups=async()=>{try{groups=await api('/api/recipient-groups');}catch(_){groups=[];}};
     modal('Link gönder'+(opts.title?' · '+opts.title:''),'<div id="inv-body">Yükleniyor…</div>',async()=>{
       if(done){closeModal();if(kind==='makeitright')renderMakeItRight();else if(kind==='performans')renderPerformance();return;}
-      const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:r.phone.trim(),employee_id:r.employee_id||undefined})).filter(r=>r.name||r.email||r.phone);
+      const recipients=rows.map(r=>({name:r.name.trim(),email:r.email.trim(),phone:normPhone(r.phone),employee_id:r.employee_id||undefined})).filter(r=>r.name||r.email||r.phone);
       if(!recipients.length)return toast('En az bir alıcı girin');
       if(channel==='email'&&recipients.some(r=>!isEmail(r.email)))return toast('Tüm alıcıların geçerli e-posta adresi olmalı (e-postası olmayanları çıkarın)');
       if(channel==='sms'&&recipients.some(r=>!r.phone))return toast('Tüm alıcıların telefon numarası olmalı (numarası olmayanları çıkarın)');
@@ -914,13 +922,14 @@
       const sg=box().querySelector('#inv-savegroup');
       if(sg)sg.onclick=async()=>{
         const name=prompt('Grup adı:');if(!name||!name.trim())return;
-        const members=rows.filter(r=>r.name||r.email||r.phone).map(r=>({name:r.name,email:r.email,phone:r.phone,employee_id:r.employee_id||undefined}));
+        const members=rows.filter(r=>r.name||r.email||r.phone).map(r=>({name:r.name,email:r.email,phone:normPhone(r.phone),employee_id:r.employee_id||undefined}));
         try{await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name.trim(),members})});await loadGroups();redraw();toast('Grup kaydedildi');}
         catch(err){toast(err.message);}
       };
       box().querySelectorAll('.inv-row [data-k]').forEach(el=>{
         const i=Number(el.closest('.inv-row').dataset.i),k=el.dataset.k;
         el.oninput=()=>{rows[i][k]=el.value;};
+        if(k==='phone')el.onblur=()=>{const n=normPhone(el.value);rows[i].phone=n;if(el.value!==n){el.value=n;el.closest('.inv-row').classList.toggle('inv-row-miss',channel==='sms'&&!n);}};
       });
       box().querySelectorAll('[data-del]').forEach(el=>el.onclick=()=>{
         rows.splice(Number(el.dataset.del),1);if(!rows.length)rows=[{name:'',email:'',phone:'',employee_id:null}];redraw();
