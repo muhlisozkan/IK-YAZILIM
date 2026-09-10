@@ -314,6 +314,15 @@
         }
         const sub=mdl.querySelector('.modal-actions .submit');if(sub)sub.textContent='▣ Kaydet';
         const ccl=mdl.querySelector('.modal-actions .close-action');if(ccl)ccl.textContent='× Vazgeç';
+        // Transfer onayı bekleyen eşya: Sistem yöneticisi dışında tüm form kilitli
+        const locked=editing&&row&&row.transferStatus==='Beklemede'&&!canDelete('lost_items');
+        if(locked){
+          mdl.querySelectorAll('.lf-body input,.lf-body select,.lf-body textarea,#hms-image,#tr-status,#tr-sender,#tr-target,#tr-receiver,#tr-send').forEach(el=>{el.disabled=true;});
+          if(sub)sub.style.display='none';
+          const lb=document.createElement('div');lb.className='lf-locked';
+          lb.textContent=`Bu eşya "${row.targetDepartment||'—'}" departmanının onayını bekliyor; onay ya da ret verilene kadar üzerinde işlem yapılamaz.`;
+          mdl.querySelector('.lf-body').prepend(lb);
+        }
         const drop=mdl.querySelector('#lf-drop'),fileInput=mdl.querySelector('#hms-image');
         if(fileInput&&drop)fileInput.onchange=()=>{
           const f=fileInput.files?.[0];if(!f)return;
@@ -367,12 +376,14 @@
 
   // --- Kayıp eşya transfer paneli (HMS görünümü) -------------------
   const TR_STATUSES=['Beklemede','Saklama Sonu','Teslim Edildi','Reddedildi'];
-  function movementsTable(row,canEdit){
-    const src=Array.isArray(row.history)&&row.history.length?row.history
+  function movementsTable(row){
+    const hist=Array.isArray(row.history)&&row.history.length?row.history
       :[{processDate:row.processDate,transferStatus:row.transferStatus||row.status,transferSender:row.transferSender,transferReceiver:row.transferReceiver,targetDepartment:row.targetDepartment,storage:row.storage}];
+    // Sil yalnızca Sistem yöneticisinde, yalnız son harekette, ilk kayıt hariç
+    const canDelLast=canDelete('lost_items')&&Array.isArray(row.history)&&row.history.length>1;
     return `<table class="lf-mov"><thead><tr><th>İşlem Tarihi</th><th>Durum</th><th>Teslim Eden</th><th>Teslim Alan</th><th>Saklandığı Yer</th><th>Eylem</th></tr></thead><tbody>
-      ${src.map((m,i)=>`<tr><td>${esc(m.processDate||'—')}</td><td>${esc(m.transferStatus||m.status||'—')}</td><td>${esc(m.transferSender||'—')}</td><td>${esc(m.transferReceiver||m.receiver||'—')}</td><td>${esc(m.targetDepartment||m.storage||'—')}</td>
-        <td>${canEdit&&Array.isArray(row.history)&&row.history.length&&i===src.length-1?`<button class="lf-mov-del" type="button" id="mov-del">Sil</button>`:''}</td></tr>`).join('')}
+      ${hist.map((m,i)=>`<tr><td>${esc(m.processDate||'—')}</td><td>${esc(m.transferStatus||m.status||'—')}</td><td>${esc(m.transferSender||'—')}</td><td>${esc(m.transferReceiver||m.receiver||'—')}</td><td>${esc(m.targetDepartment||m.storage||'—')}</td>
+        <td>${canDelLast&&i===hist.length-1?`<button class="lf-mov-del" type="button" id="mov-del">Sil</button>`:'—'}</td></tr>`).join('')}
       </tbody></table>`;
   }
   function transferPanel(row){
@@ -383,7 +394,7 @@
     const senderList=deptEmployees(from);
     const curStatus=row.transferStatus&&row.transferStatus!=='—'?row.transferStatus:(row.status||'Beklemede');
     const form=pending
-      ? `<p class="lf-pending">Bu eşya için <strong>${esc(row.targetDepartment||'—')}</strong> departmanına transfer onayı bekleniyor. İptal etmek için “Hareketler” bölümündeki son satırı silin.</p>`
+      ? `<p class="lf-pending"><strong>${esc(row.targetDepartment||'—')}</strong> departmanının onaylaması bekleniyor. Bu eşya üzerinde, hedef departman onay ya da ret verene kadar işlem yapılamaz.</p>`
       : `<div class="lf-trow">
           <div class="field"><label>Durum</label><select class="select" id="tr-status">${TR_STATUSES.map(s=>`<option ${s===curStatus?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field"><label>Teslim Eden</label><input class="input" id="tr-sender" list="tr-sender-list" value="${esc(senderList[0]||'')}" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-sender-list">${senderList.map(n=>`<option value="${esc(n)}">`).join('')}</datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
@@ -391,12 +402,12 @@
           <div class="field"><label>Teslim Alan</label><input class="input" id="tr-receiver" list="tr-receiver-list" placeholder="Kullanıcı veya personel yazın"><datalist id="tr-receiver-list"></datalist><span class="lf-hint">Listeden seçebilir veya manuel yazabilirsiniz.</span></div>
         </div>
         <div class="field" style="max-width:280px;margin-top:12px"><label>Saklandığı Yer</label><input class="input" id="tr-storage" value="${esc(targets[0]||'')}" readonly></div>
-        ${canEdit?`<button class="lf-transfer-btn" type="button" id="tr-send">▶▶ Transfer</button>`:''}`;
+        ${canEdit?`<button class="lf-transfer-btn" type="button" id="tr-send">▶▶ Transfer</button><span class="lf-await" id="tr-await" hidden></span>`:''}`;
     return `<div class="transfer-box">
       <div class="lf-band">Transfer</div>
       <div class="lf-section">${form}</div>
       <div class="lf-band">Hareketler</div>
-      <div class="lf-section" style="border-bottom:0">${movementsTable(row,canEdit)}</div>
+      <div class="lf-section" style="border-bottom:0">${movementsTable(row)}</div>
     </div>`;
   }
   function bindTransfer(row){
@@ -414,9 +425,19 @@
     if(send)send.onclick=async()=>{
       const target=targetSel.value,sender=box.querySelector('#tr-sender').value.trim(),receiver=box.querySelector('#tr-receiver').value.trim();
       if(!target||!sender||!receiver)return toast('Transfer departmanı, teslim eden ve teslim alan zorunludur');
-      try{await api(`/api/hms/lost-items/${row.id}/transfer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetDepartment:target,sender,receiver})});
-        delete cache.lost_items;delete cache.lost_approvals;closeModal();renderTable(tab==='lost_approvals'?'lost_approvals':'lost_items');toast(`${target} departmanına onay için gönderildi`);
-      }catch(err){toast(err.message)}
+      send.disabled=true;
+      try{
+        await api(`/api/hms/lost-items/${row.id}/transfer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetDepartment:target,sender,receiver})});
+        // Transfer butonunun altında bekleme ibaresi
+        const aw=box.querySelector('#tr-await');
+        if(aw){aw.textContent=`${target} departmanının onaylaması bekleniyor`;aw.hidden=false;}
+        toast(`${target} departmanına onay için gönderildi`);
+        delete cache.lost_items;delete cache.lost_approvals;
+        // Güncel kaydı çekip modalı bekleme durumuyla yeniden aç
+        let fresh=null;
+        try{fresh=(await load('lost_items',true)).find(r=>String(r.id)===String(row.id));}catch(_){}
+        setTimeout(()=>{closeModal();if(fresh)openEditor('lost_items',fresh);renderTable(tab==='lost_approvals'?'lost_approvals':'lost_items');},700);
+      }catch(err){send.disabled=false;toast(err.message)}
     };
     const movDel=box.querySelector('#mov-del');
     if(movDel)movDel.onclick=()=>deleteMovement(row);

@@ -2131,7 +2131,12 @@ app.post('/api/hms/:module', asyncRoute(async (req, res) => {
     data.approval = 'Onaylandı';
     data.transferStatus = '—';
     data.currentLocation = data.storage;
-    data.history = [];
+    // İlk kayıt da bir hareket adımı olarak geçmişe yazılır (silinemez).
+    data.history = [{
+      processDate: data.processDate, transferStatus: 'Kayıt oluşturuldu',
+      transferSender: req.user?.name || '', transferReceiver: '',
+      targetDepartment: data.storage, storage: data.storage, status: 'Kayıt oluşturuldu'
+    }];
   }
   if (['visitors', 'staff_status'].includes(module)) data.status = clean(data.status) || 'İçeride';
   res.status(201).json(await hmsInsert(module, department, data, req.user));
@@ -2147,6 +2152,10 @@ app.patch('/api/hms/:module/:id', asyncRoute(async (req, res) => {
   if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
   if (!hmsRecordInScope(req.user, module, existing)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızın kayıtlarını düzenleyebilirsiniz' });
+  }
+  // Transfer onayı bekleyen eşyada, hedef departman karar verene kadar işlem yapılamaz (Sistem yöneticisi hariç).
+  if (module === 'lost_items' && existing.data.transferStatus === 'Beklemede' && hmsPerm(req.user, module) !== 'full') {
+    return res.status(409).json({ error: 'Bu eşya transfer onayı bekliyor; hedef departman karar verene kadar üzerinde işlem yapılamaz' });
   }
   const body = req.body || {};
   const data = { ...existing.data, ...hmsCleanBody(body) };
@@ -2216,32 +2225,29 @@ app.post('/api/hms/lost-approvals/:id/decision', asyncRoute(async (req, res) => 
 
 // Son transfer hareketini geri al (HMS'teki "Sil" davranışı)
 app.post('/api/hms/lost-items/:id/movements/delete-last', asyncRoute(async (req, res) => {
-  if (!hmsCanWrite(req.user, 'lost_items')) return res.status(403).json({ error: 'Yetkiniz yok' });
+  // Hareket silme yalnızca Sistem yöneticisinde (kullanıcı isteği 2026-09).
+  if (hmsPerm(req.user, 'lost_items') !== 'full') return res.status(403).json({ error: 'Hareket silme yetkisi yalnızca Sistem yöneticisindedir' });
   const item = await hmsGet(req.params.id);
   if (!item || item.module !== 'lost_items') return res.status(404).json({ error: 'Eşya bulunamadı' });
-  if (!hmsRecordInScope(req.user, 'lost_items', item)) {
-    return res.status(403).json({ error: 'Yalnızca kendi departmanınızın eşyasında işlem yapabilirsiniz' });
-  }
   const history = Array.isArray(item.data.history) ? item.data.history.slice() : [];
-  if (!history.length) return res.status(400).json({ error: 'Silinecek hareket yok' });
+  if (history.length <= 1) return res.status(400).json({ error: 'İlk kayıt hareketi silinemez' });
   const last = history.pop();
-  const prev = history.length ? history[history.length - 1] : null;
-  const restoredStorage = clean(prev?.storage) || clean(item.data.storage) || 'KAT HİZMETLERİ';
+  const lastTs = clean(last?.transferStatus);
+  // Bir karar hareketi (Onaylandı/Reddedildi) silinirse, öncesindeki "Beklemede" adımı da geri alınır
+  if (['Onaylandı', 'Reddedildi'].includes(lastTs) && clean(history[history.length - 1]?.transferStatus) === 'Beklemede') history.pop();
+  if (!history.length) return res.status(400).json({ error: 'İlk kayıt hareketi silinemez' });
+  const prev = history[history.length - 1];
+  const restoredStorage = clean(prev.storage) || clean(item.data.storage) || 'KAT HİZMETLERİ';
   const nextData = {
     ...item.data, history,
     storage: restoredStorage, currentLocation: restoredStorage,
-    transferStatus: clean(prev?.transferStatus) || '—',
-    targetDepartment: clean(prev?.targetDepartment) || '',
-    transferSender: clean(prev?.transferSender) || '',
-    transferReceiver: clean(prev?.transferReceiver) || ''
+    transferStatus: '—', targetDepartment: '', transferSender: '', transferReceiver: ''
   };
   const saved = await hmsUpdate(item.id, normalizeDepartmentValue(restoredStorage) || item.department, nextData);
-  // Silinen hareket bekleyen bir transferse, ilgili onay kaydını da kaldır
-  if (clean(last?.transferStatus) === 'Beklemede') {
-    await pool.query(
-      "delete from hms_records where module='lost_approvals' and (data->>'sourceLostId')::bigint = $1 and data->>'status' = 'Beklemede'",
-      [item.id]);
-  }
+  // İlgili onay kaydını da kaldır (bekleyen ya da sonuçlanmış son onay)
+  await pool.query(
+    "delete from hms_records where id = (select id from hms_records where module='lost_approvals' and (data->>'sourceLostId')::bigint = $1 order by id desc limit 1)",
+    [item.id]);
   res.json(saved);
 }));
 
