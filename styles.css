@@ -586,14 +586,14 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 
 /* Menü öğeleri */
 .sidebar .nav-item{
-  color:#b3b9c4;font-weight:500;font-size:13px;letter-spacing:.006em;
-  border-radius:9px;padding:9px 11px;margin:1px 0;
+  color:#eef1f6;font-weight:600;font-size:14px;letter-spacing:.008em;
+  border-radius:9px;padding:10px 11px;margin:1px 0;
   transition:background .14s,color .14s,box-shadow .14s;
 }
-.sidebar .nav-item:hover{background:rgba(255,255,255,.055);color:#eef0f3}
+.sidebar .nav-item:hover{background:rgba(255,255,255,.07);color:#fff}
 .sidebar .nav-item.active{
-  background:linear-gradient(90deg,rgba(47,182,115,.20),rgba(47,182,115,.07));
-  color:#fff;font-weight:600;
+  background:linear-gradient(90deg,rgba(47,182,115,.22),rgba(47,182,115,.08));
+  color:#fff;font-weight:700;
   box-shadow:inset 3px 0 0 #2fb673;
 }
 
