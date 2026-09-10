@@ -154,6 +154,9 @@ button.notif-item:hover{background:#f7f8fc;border-color:#d9deea}
 #hms-body .hms-fclear:hover{color:var(--ink)}
 
 /* ===== Kayıp Eşya — HMS görünümü ===== */
+/* Sayfayı tam genişlik kullan (sağda boşluk kalmasın) */
+.content:has(.lf-list){max-width:none;width:100%}
+.content:has(.lf-list) .lf-list,.content:has(.lf-list) .lf-report-bar{width:100%}
 /* Liste */
 .lf-list .toolbar{gap:8px}
 .lf-list .lf-search{position:relative;flex:0 0 320px}
