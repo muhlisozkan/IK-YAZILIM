@@ -2531,18 +2531,18 @@ function parseInviteBody(body) {
 }
 
 async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject, greet = true }) {
-  // Alıcıların departmanını (departman bazlı rapor için) çalışan kaydından çöz
-  const empIds = [...new Set(recipients.map(r => Number(r.employee_id)).filter(Boolean))];
-  const deptById = {};
-  if (empIds.length) {
-    (await pool.query('select id, department from employees where id = any($1::bigint[])', [empIds]))
-      .rows.forEach(e => { deptById[e.id] = clean(e.department); });
-  }
-  const insertInvite = (token, r, phone, ok, err) => pool.query(
-    `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by,recipient_department)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
-    [token, kind, surveyId, periodId, r.employee_id, r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name,
-     deptById[Number(r.employee_id)] || clean(r.department)]);
+  // Her alıcıyı çalışan kaydına eşle (employee_id / telefon / ad) → departman raporu + demografik kırılım
+  const resolveInvite = await buildInviteResolver();
+  const infoFor = r => resolveInvite({ employee_id: r.employee_id, recipient_phone: r.phone, recipient_name: r.name, recipient_department: r.department });
+  const insertInvite = (token, r, phone, ok, err) => {
+    const info = infoFor(r);
+    return pool.query(
+      `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by,recipient_department)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
+      [token, kind, surveyId, periodId, (info.employee && info.employee.id) || r.employee_id || null,
+       r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name,
+       info.department || clean(r.department)]);
+  };
   const results = [];
   const summary = () => ({ sent: results.filter(x => x.ok).length, failed: results.filter(x => !x.ok).length, base_url: inviteBaseUrl(req), results });
 
@@ -2727,6 +2727,85 @@ app.get('/api/surveys/sent', asyncRoute(async (req, res) => {
   res.json(rows);
 }));
 
+// --- Anket davetini çalışan kaydına eşle: departman + demografik bilgiler ----
+const normNameKey = s => clean(s).toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
+// Aksan/Türkçe karakter farklarını yok sayan ad anahtarı ("Tanju YUCE" ↔ "Tanju Yüce")
+const foldNameKey = s => clean(s).toLocaleUpperCase('tr-TR')
+  .replace(/İ/g, 'I').replace(/Ş/g, 'S').replace(/Ğ/g, 'G').replace(/Ü/g, 'U').replace(/Ö/g, 'O').replace(/Ç/g, 'C')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, '').replace(/\s+/g, ' ').trim();
+const AGE_ORDER = ['24 ve altı', '25–34', '35–44', '45–54', '55 ve üstü'];
+function ageBandFromBirth(birth) {
+  if (!birth) return '';
+  const d = new Date(birth);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  if (age < 15 || age > 100) return '';
+  if (age <= 24) return AGE_ORDER[0];
+  if (age <= 34) return AGE_ORDER[1];
+  if (age <= 44) return AGE_ORDER[2];
+  if (age <= 54) return AGE_ORDER[3];
+  return AGE_ORDER[4];
+}
+// Davet satırlarını (employee_id / telefon / ad) çalışan kaydıyla eşleyen çözümleyici döndürür.
+async function buildInviteResolver() {
+  const emps = (await pool.query(
+    `select id, name, department, phone,
+       btrim(coalesce(payroll_details->>'CİNSİYET','')) as gender,
+       coalesce(payroll_details->>'DOĞUM TARİHİ','') as birth
+     from employees`)).rows;
+  const byId = new Map(), byPhone = new Map(), byName = new Map(), nameCount = new Map(), byFold = new Map(), foldCount = new Map();
+  for (const e of emps) {
+    byId.set(String(e.id), e);
+    const p = normalizeGsm(e.phone);
+    if (/^5\d{9}$/.test(p) && !byPhone.has(p)) byPhone.set(p, e);
+    const nk = normNameKey(e.name);
+    if (nk) { nameCount.set(nk, (nameCount.get(nk) || 0) + 1); byName.set(nk, e); }
+    const fk = foldNameKey(e.name);
+    if (fk) { foldCount.set(fk, (foldCount.get(fk) || 0) + 1); byFold.set(fk, e); }
+  }
+  const genderLabel = g => g === 'ERKEK' ? 'Erkek' : g === 'KADIN' ? 'Kadın' : '';
+  return invite => {
+    let e = null;
+    if (invite.employee_id) e = byId.get(String(invite.employee_id)) || null;
+    if (!e) { const p = normalizeGsm(invite.recipient_phone); if (/^5\d{9}$/.test(p)) e = byPhone.get(p) || null; }
+    if (!e) { const nk = normNameKey(invite.recipient_name); if (nk && nameCount.get(nk) === 1) e = byName.get(nk) || null; }
+    if (!e) { const fk = foldNameKey(invite.recipient_name); if (fk && foldCount.get(fk) === 1) e = byFold.get(fk) || null; }
+    return {
+      employee: e,
+      department: (e && clean(e.department)) || clean(invite.recipient_department) || '',
+      gender: e ? genderLabel(e.gender) : '',
+      age: e ? ageBandFromBirth(e.birth) : ''
+    };
+  };
+}
+// Demografik dağılımı "ankette soru varmış gibi" bir rapor bloğuna çevirir
+function demographicBlocks(resolvedList) {
+  const build = (title, key, order) => {
+    const counts = new Map();
+    resolvedList.forEach(r => { const v = r[key] || 'Belirtilmemiş'; counts.set(v, (counts.get(v) || 0) + 1); });
+    const labels = [...counts.keys()].sort((a, b) => {
+      if (order) { const ia = order.indexOf(a), ib = order.indexOf(b); if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib); }
+      if (a === 'Belirtilmemiş') return 1;
+      if (b === 'Belirtilmemiş') return -1;
+      return a.localeCompare(b, 'tr');
+    });
+    return {
+      key, title, type: 'single', synthetic: true,
+      answered: resolvedList.filter(r => (r[key] || '') !== '').length,
+      distribution: labels.map(l => ({ label: l, count: counts.get(l) })),
+      average: null
+    };
+  };
+  return [
+    build('Departman (sistemden)', 'department', null),
+    build('Cinsiyet (sistemden)', 'gender', ['Erkek', 'Kadın']),
+    build('Yaş aralığı (sistemden)', 'age', AGE_ORDER)
+  ].filter(b => b.distribution.length);
+}
+
 // Bir sorunun tek bir yanıt değerini sayısal puana çevirir (ortalama için)
 function questionScore(q, value) {
   if (q.type === 'scale') { const n = Number(value); return Number.isFinite(n) ? n : null; }
@@ -2773,10 +2852,13 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
   const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
   const allInvites = (await pool.query(
-    'select recipient_name,recipient_department,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
+    'select employee_id,recipient_name,recipient_phone,recipient_department,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
     [survey.id])).rows;
-  const deptOf = i => clean(i.recipient_department) || '(Departman belirtilmemiş)';
-  const departmentList = [...new Set(allInvites.map(i => clean(i.recipient_department)).filter(Boolean))]
+  // Her davetin departman/cinsiyet/yaş bilgisini çalışan kaydından çöz
+  const resolveInvite = await buildInviteResolver();
+  const infoOf = new Map(allInvites.map(i => [i, resolveInvite(i)]));
+  const deptOf = i => (infoOf.get(i) || {}).department || '(Departman belirtilmemiş)';
+  const departmentList = [...new Set(allInvites.map(deptOf).filter(d => d && d !== '(Departman belirtilmemiş)'))]
     .sort((a, b) => a.localeCompare(b, 'tr'));
 
   const dsel = clean(req.query.department);
@@ -2790,6 +2872,8 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
   const responded = invites.filter(i => i.used_at).length;
   const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
   const questions = surveyQuestionStats(survey.questions, answered);
+  // "Ankette soru varmış gibi" demografik dağılımlar — yanıtlayan kişiler üzerinden
+  const demographics = demographicBlocks(invites.filter(i => i.used_at).map(i => infoOf.get(i) || {}));
 
   // Departman karşılaştırması: puanlanabilir her soru için departman departman ortalama
   const qList = (Array.isArray(survey.questions) ? survey.questions : []);
@@ -2816,6 +2900,7 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
     departmentList,
     totals: { sent, delivered, failed, opened, responded },
     questions,
+    demographics,
     departmentCompare,
     invites: invites.map(i => ({
       name: i.recipient_name, department: deptOf(i), channel: i.channel, sent_ok: i.sent_ok, sent_error: i.sent_error,
@@ -2890,9 +2975,11 @@ app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
   const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!survey) return res.status(404).send('Anket bulunamadı');
   const allInvites = (await pool.query(
-    'select recipient_department,sent_ok,opened_at,used_at,response from survey_invites where survey_id=$1 order by id',
+    'select employee_id,recipient_name,recipient_phone,recipient_department,sent_ok,opened_at,used_at,response from survey_invites where survey_id=$1 order by id',
     [survey.id])).rows;
-  const deptOf = i => clean(i.recipient_department) || '(Departman belirtilmemiş)';
+  const resolveInvite = await buildInviteResolver();
+  const infoOf = new Map(allInvites.map(i => [i, resolveInvite(i)]));
+  const deptOf = i => (infoOf.get(i) || {}).department || '(Departman belirtilmemiş)';
   const dsel = clean(req.query.department);
   const invites = dsel ? allInvites.filter(i => deptOf(i) === dsel) : allInvites;
 
@@ -2905,6 +2992,7 @@ app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
   const rate = delivered ? Math.round(responded / delivered * 100) : 0;
   const answered = invites.filter(i => Array.isArray(i.response)).map(i => i.response);
   const questions = surveyQuestionStats(survey.questions, answered);
+  const demographics = demographicBlocks(invites.filter(i => i.used_at).map(i => infoOf.get(i) || {}));
 
   // Departman kırılımı
   const deptMap = new Map();
@@ -2991,10 +3079,20 @@ app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
     </section>`;
   }).join('');
 
+  const demoSection = demographics.length ? `
+    <section class="card break">
+      <h2>Yanıtlayanların profili <span class="q-meta">(sistemdeki çalışan kaydından)</span></h2>
+      <div class="q-meta">${responded} kişi yanıtladı. Departman, cinsiyet ve yaş bilgileri ankette sorulmasa da çalışan kaydından alınmıştır.</div>
+      <div class="demo-grid">${demographics.map(b => `<div class="demo">
+        <h3>${rptEsc(b.title)}</h3>
+        ${svgHBars(b.distribution.map((d, k) => ({ label: d.label, value: d.count, color: DIST[k % DIST.length] })), { pctOf: b.answered || responded || 1, labelW: 120 })}
+      </div>`).join('')}</div>
+    </section>` : '';
+
   const compareSection = compareRows.length ? `
     <section class="card break">
       <h2>Departman karşılaştırması — yetkinlik ortalamaları</h2>
-      <div class="q-meta">Ölçek 1–4 · Evet/Hayır sorularında 1 = Evet. Yeşil ≥ 3,50 · mavi 2,50–3,49 · turuncu &lt; 2,50.</div>
+      <div class="q-meta">Departman, her davetin gönderildiği çalışanın sistem kaydından alınır. Ölçek 1–4 · Evet/Hayır sorularında 1 = Evet. Yeşil ≥ 3,50 · mavi 2,50–3,49 · turuncu &lt; 2,50.</div>
       <table class="tbl cmp">
         <thead><tr><th>Yetkinlik</th>${compareDepts.map(d => `<th>${rptEsc(d)}</th>`).join('')}<th>Genel</th></tr></thead>
         <tbody>${compareRows.map(r => `<tr><td class="q">${rptEsc(r.title)}</td>${compareDepts.map(d => {
@@ -3039,6 +3137,8 @@ app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
   .q-meta{font-size:11.5px;color:#667085;margin-bottom:10px}
   .pill,.pill{background:#eef1f6;border-radius:20px;padding:2px 9px;font-size:11px;margin-left:6px}
   .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px}
+  .demo h3{margin:0 0 4px}
   .donutbox{display:flex;align-items:center;gap:16px}
   ul.lg{list-style:none;margin:8px 0 0;padding:0;font-size:12px}
   ul.lg.row{display:flex;gap:16px;flex-wrap:wrap}
@@ -3088,6 +3188,8 @@ app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
       <div class="donutbox">${svgDonut(statusParts, `%${rate}`)}<div>${svgLegend(statusParts)}</div></div>
     </section>
   </div>
+
+  ${demoSection}
 
   ${deptSection}
 

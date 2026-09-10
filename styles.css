@@ -254,6 +254,12 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .rep-dot{width:12px;height:12px;border-radius:3px}
 .rep-texts{margin:10px 0 0;padding-left:18px;font-size:13px}
 .rep-texts li{padding:3px 0}
+.rep-demo{display:grid;grid-template-columns:1fr 1fr;gap:14px 26px;margin-top:12px}
+.rep-demo .rep-chart{margin-top:4px;gap:14px}
+.rep-demo .rep-pie{width:96px;height:96px}
+.rep-demo .rep-legend{min-width:150px}
+.rep-demo .rep-legend li{font-size:12px;padding:4px 0}
+@media(max-width:640px){.rep-demo{grid-template-columns:1fr}}
 .rep-recips{margin-top:16px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .rep-recips summary{cursor:pointer;font-weight:650;font-size:13px}
 .rep-recips table{margin-top:10px}

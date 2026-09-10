@@ -274,6 +274,14 @@
         <div class="muted" style="font-size:12px">${q.answered} kişi yanıtladı</div>
         ${pieHtml((q.distribution||[]).map(d=>({label:d.label,count:d.count})))}
       </div>`).join('');
+    const demoHtml=(rep.demographics||[]).length
+      ? `<div class="rep-q"><div class="rep-q-h">Yanıtlayanların profili <span class="muted" style="font-weight:400">(sistemdeki çalışan kaydından — ankette sorulmasa da)</span></div>
+          <div class="rep-demo">${rep.demographics.map(b=>`<div>
+            <div class="muted" style="font-size:12px;margin-bottom:4px">${esc(b.title)}</div>
+            ${pieHtml((b.distribution||[]).map(d=>({label:d.label,count:d.count})))}
+          </div>`).join('')}</div>
+        </div>`
+      : '';
     const textQs=qList.filter(x=>x.q.type==='text');
     const textHtml=textQs.length
       ? textQs.map(({q,i})=>`<div class="rep-q">
@@ -297,6 +305,7 @@
           <div class="rep-stat"><b>${t.responded}</b><span>Yanıtladı</span></div>
         </div>
         <div class="rep-q"><div class="rep-q-h">Yanıt durumu <span class="muted" style="font-weight:400">(ulaşan ${delivered} kişi üzerinden)</span></div>${pieHtml(statusParts)}</div>
+        ${demoHtml}
         ${chartHtml||'<div class="empty">Bu ankette grafikli soru yok</div>'}
         ${repRecipTable(rep.invites)}
       </div>
@@ -311,6 +320,7 @@
     const t=rep.totals||{};
     return [rep.department||'',t.sent,t.delivered,t.failed,t.opened,t.responded,
       (rep.questions||[]).map(q=>q.type==='text'?q.answered+'x'+((q.texts||[]).length):(q.distribution||[]).map(d=>d.count).join('.')).join('|'),
+      (rep.demographics||[]).map(b=>b.distribution.map(d=>d.count).join('.')).join('|'),
       (rep.departmentCompare||[]).map(r=>r.byDept.map(x=>x.average).join('.')).join('|')
     ].join(';');
   }
