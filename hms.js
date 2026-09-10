@@ -12,7 +12,7 @@
   const deptEmployees=d=>(state.employees||[]).filter(e=>normDept(e.department)===normDept(d)).map(e=>e.name).sort(trSort);
 
   const GUV_TABS=['visitors','vehicles','fleet','staff_status'];
-  const LOST_TABS=['lost_items','lost_approvals'];
+  const LOST_TABS=['lost_items','lost_approvals','lost_delivered'];
   function access(){
     const a=window.__ikSecurityAccess?.()||{};
     const guv=a.admin?'full':(a.hr?'read':(a.security?'operate':'none'));
@@ -26,7 +26,7 @@
 
   const TABDEFS={
     security:[['visitors','Ziyaretçiler'],['vehicles','Araç Takipleri'],['fleet','Araçlar'],['staff_status','Çalışan Takipleri'],['report','Rapor']],
-    lostfound:[['lost_items','Kayıp/Bulunan Eşyalar'],['lost_approvals','Onay Bekleyenler'],['report','Rapor']]
+    lostfound:[['lost_items','Kayıp/Bulunan Eşyalar'],['lost_approvals','Onay Bekleyenler'],['lost_delivered','Teslim Edilenler'],['report','Rapor']]
   };
   const VIEW_META={
     security:{title:'Güvenlik',subtitle:'Ziyaretçi, araç ve çalışan giriş/çıkış takibi'},
@@ -40,7 +40,8 @@
     fleet:[['plate','Plaka'],['brand','Marka'],['model','Model'],['startKm','Başlangıç Km'],['lastKm','Son Km'],['disabled','Kullanım Dışı']],
     staff_status:[['name','İsim'],['entry','Giriş',fromInput],['status','Durum'],['exit','Çıkış Tarihi',fromInput],['title','Ünvan'],['department','Departman']],
     lost_items:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['storage','Saklandığı Yer'],['status','Durum'],['receiver','Teslim Alan'],['approval','Onay Durumu']],
-    lost_approvals:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['fromDepartment','Gönderen'],['targetDepartment','Hedef'],['transferReceiver','Teslim Alan'],['status','Durum']]
+    lost_approvals:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['fromDepartment','Gönderen'],['targetDepartment','Hedef'],['transferReceiver','Teslim Alan'],['status','Durum']],
+    lost_delivered:[['id','ID'],['foundDate','Kayıp/Bulunma Tarihi'],['processDate','İşlem Tarihi'],['item','Eşya'],['category','Kategori'],['location','Nerede Bulundu'],['storage','Saklandığı Yer'],['receiver','Teslim Alan'],['status','Durum']]
   };
   const fields={
     visitors:()=>[['date','Ziyaret Tarihi','datetime-local'],['type','Ziyaret Tipi','select',['Misafir','Personel','Mağaza','Günübirlik']],['name','Ziyaretçinin Adı Soyadı'],['company','Firma'],['plate','Plaka'],['identity','Kimlik Tipi','select',['Kart Verilmedi','Kimlik Kartı','Pasaport','Ehliyet']],['count','Kişi Sayısı','number'],['department','Departman','select',deptList()],['status','Durum','select',['İçeride','Çıkış Yaptı']],['exit','Çıkış Tarihi','datetime-local'],['notes','Notlar','textarea']],
@@ -96,7 +97,7 @@
   }
 
   // --- Kolon filtreleri (HMS ile aynı davranış) ----------------------
-  const COMBO_FILTER_COLS={lost_items:['category','status','storage'],lost_approvals:['category','status'],visitors:['type']};
+  const COMBO_FILTER_COLS={lost_items:['category','status','storage'],lost_approvals:['category','status'],lost_delivered:['category','storage'],visitors:['type']};
   // "2026-09-10" gibi bir tarih filtresini "10.09.2026" metnine çevirerek eşle
   function colFilterMatch(row,key,raw){
     const val=String(raw||'').trim();
@@ -110,13 +111,17 @@
   // --- Genel tablo görünümü -------------------------------------------
   async function renderTable(module){
     mount('<div class="card empty">Yükleniyor…</div>');
+    // "Teslim Edilenler" sanal sekmesi lost_items verisini kullanır
+    const dataModule=module==='lost_delivered'?'lost_items':module;
+    const editModule=module==='lost_delivered'?'lost_items':module;
     let rows;
-    try{rows=await load(module);}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    try{rows=await load(dataModule);}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
     if(tab!==module)return;
     const cols=columns[module];
     const f=filters[module]||(filters[module]={q:'',cols:{}});
     if(!f.cols)f.cols={};
     const isApprovals=module==='lost_approvals';
+    const isDelivered=module==='lost_delivered';
     const isLF=currentView==='lostfound';
     const comboCols=COMBO_FILTER_COLS[module]||[];
     const dateCol=l=>/tarih/i.test(l);
@@ -124,12 +129,15 @@
     const filterCell=([k,l])=>comboCols.includes(k)
       ? `<th><div class="hms-fcombo"><input class="input" list="hmsf-${k}" data-hms-fcol="${k}" placeholder="${esc(l)}…" value="${esc(f.cols[k]||'')}"><button type="button" class="hms-fclear" data-hms-fclear="${k}" title="Temizle">×</button><datalist id="hmsf-${k}">${optsFor(k).map(o=>`<option value="${esc(o)}">`).join('')}</datalist></div></th>`
       : `<th><input class="input" type="${dateCol(l)?'date':'text'}" data-hms-fcol="${k}" placeholder="${dateCol(l)?'gg.aa.yyyy':''}" value="${esc(f.cols[k]||'')}"></th>`;
-    const canAdd=fields[module]&&canWrite(module)&&!isApprovals;
+    const canAdd=fields[module]&&canWrite(module)&&!isApprovals&&!isDelivered;
     const filteredList=()=>{
       const q=f.q.toLocaleLowerCase('tr-TR');
       let shown=rows.filter(row=>!q||Object.values(row).join(' ').toLocaleLowerCase('tr-TR').includes(q));
       shown=shown.filter(row=>cols.every(([k])=>colFilterMatch(row,k,f.cols[k])));
-      return isApprovals?shown.filter(r=>r.status==='Beklemede'):shown;
+      if(isApprovals)return shown.filter(r=>r.status==='Beklemede');
+      if(isDelivered)return shown.filter(r=>r.status==='Teslim Edildi');
+      if(module==='lost_items')return shown.filter(r=>r.status!=='Teslim Edildi');
+      return shown;
     };
     const rowClass=row=>{
       if((module==='visitors'||module==='staff_status')&&row.status==='İçeride')return ' class="hms-inside"';
@@ -168,7 +176,7 @@
       const c=$('#hms-count');
       if(c)c.innerHTML=isLF?`Kalıcı kayıt <b>${list.length} kayıt</b>`:`${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}`;
       $('#hms-body').querySelectorAll('tbody tr[data-id]').forEach(tr=>{
-        tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[module]&&canWrite(module))openEditor(module,row);};
+        tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[editModule]&&canWrite(editModule))openEditor(editModule,row);};
         if(isLF)tr.onclick=e=>{if(e.target.closest('.row-actions'))return;$('#hms-body').querySelectorAll('tbody tr.lf-sel').forEach(x=>x.classList.remove('lf-sel'));tr.classList.add('lf-sel');};
       });
       $('#hms-body').querySelectorAll('[data-hms-toggle]').forEach(b=>b.onclick=()=>toggleStatus(module,b.dataset.hmsToggle));
@@ -181,7 +189,7 @@
     document.querySelectorAll('[data-hms-fcol]').forEach(el=>{el.oninput=()=>{f.cols[el.dataset.hmsFcol]=el.value;debouncedPaint();};});
     document.querySelectorAll('[data-hms-fclear]').forEach(b=>b.onclick=()=>{f.cols[b.dataset.hmsFclear]='';const el=document.querySelector(`[data-hms-fcol="${b.dataset.hmsFclear}"]`);if(el)el.value='';paint();});
     if($('#hms-add'))$('#hms-add').onclick=()=>openEditor(module,null);
-    if($('#hms-refresh'))$('#hms-refresh').onclick=()=>{delete cache[module];renderTable(module);};
+    if($('#hms-refresh'))$('#hms-refresh').onclick=()=>{delete cache[dataModule];renderTable(module);};
     paint();
   }
 
@@ -193,7 +201,7 @@
     if((module==='visitors'||module==='staff_status')&&canWrite(module))
       html+=`<button class="btn ghost" data-hms-toggle="${row.id}">${row.status==='İçeride'?'Çıkış':'Giriş'}</button>`;
     if(canDelete(module))
-      html+=module==='lost_items'
+      html+=(module==='lost_items'||module==='lost_delivered')
         ? `<button class="lf-trash" data-hms-del="${row.id}" title="Sil" aria-label="Sil">${TRASH_SVG}</button>`
         : `<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
     return html;
@@ -209,8 +217,9 @@
   }
   async function del(module,id){
     if(!confirm('Bu kaydı silmek istediğinize emin misiniz?'))return;
-    try{await api(`/api/hms/${module}/${id}`,{method:'DELETE'});
-      cache[module]=(cache[module]||[]).filter(r=>String(r.id)!==String(id));renderTable(module);toast('Kayıt silindi');
+    const dm=module==='lost_delivered'?'lost_items':module;
+    try{await api(`/api/hms/${dm}/${id}`,{method:'DELETE'});
+      cache[dm]=(cache[dm]||[]).filter(r=>String(r.id)!==String(id));renderTable(tab);toast('Kayıt silindi');
     }catch(err){toast(err.message)}
   }
   async function decideApproval(id,decision){
@@ -308,7 +317,7 @@
             const list=cache[module]||(cache[module]=[]);
             const idx=list.findIndex(r=>String(r.id)===String(saved.id));
             if(idx>=0)list[idx]=saved;else list.unshift(saved);
-            closeModal();renderTable(module);toast(editing?'Kayıt güncellendi':'Kayıt oluşturuldu');
+            closeModal();renderTable(tab);toast(editing?'Kayıt güncellendi':'Kayıt oluşturuldu');
           }catch(err){toast(err.message)}
         };
         if(img){
