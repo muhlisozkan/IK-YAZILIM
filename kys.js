@@ -296,10 +296,12 @@
   const eysExt = name => (name.split('.').pop() || '').toLowerCase();
   const eysPreviewKind = name => {
     const ext = eysExt(name);
-    if (ext === 'pdf') return 'pdf';
+    // .doc/.xls: backend aynı /api/eys/file?inline=1 ucunda LibreOffice ile PDF'e
+    // çevirip gönderiyor — frontend için normal bir PDF önizlemesinden farksız.
+    if (ext === 'pdf' || ext === 'doc' || ext === 'xls') return 'pdf';
     if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'image';
-    if (['xlsx', 'xltx'].includes(ext)) return 'xlsx'; // eski ikili .xls exceljs ile okunamaz
-    if (ext === 'docx') return 'docx'; // eski ikili .doc mammoth ile okunamaz
+    if (ext === 'xlsx' || ext === 'xltx') return 'xlsx';
+    if (ext === 'docx') return 'docx';
     return null;
   };
 

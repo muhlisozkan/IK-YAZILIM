@@ -9,6 +9,10 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promises as fsp } from 'node:fs';
 import mammoth from 'mammoth';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import os from 'node:os';
+const execFileAsync = promisify(execFile);
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://ik:ik@db:5432/ik' });
 const app = express();
@@ -4429,14 +4433,64 @@ app.get('/api/eys/list', asyncRoute(async (req, res) => {
   res.json({ path: target.rel, items });
 }));
 
+// Eski ikili .doc/.xls: exceljs/mammoth okuyamıyor. LibreOffice headless ile
+// PDF'e çevirip mevcut PDF önizleyicisi (iframe) üzerinden gösteriyoruz.
+// Dönüştürme pahalı (1-3sn, tam bir LO süreci) — sonuç mtime+boyuta göre
+// önbellekte tutulur; sunucu paylaşımlı olduğundan aynı anda yalnızca bir
+// dönüştürme çalışır (kuyruk), aksi halde çakışan istekler LO'yu boğabilir.
+const EYS_OFFICE_LEGACY_EXT = new Set(['.doc', '.xls']);
+const eysPdfCache = new Map();
+const EYS_PDF_CACHE_MAX = 12; // PDF'ler büyük olabilir, JSON önbelleğinden daha küçük tutuluyor
+function eysPdfCacheSet(key, buf) {
+  eysPdfCache.set(key, buf);
+  if (eysPdfCache.size > EYS_PDF_CACHE_MAX) eysPdfCache.delete(eysPdfCache.keys().next().value);
+}
+let eysConvertQueue = Promise.resolve();
+function eysQueueConvert(fn) {
+  const run = eysConvertQueue.then(fn, fn);
+  eysConvertQueue = run.then(() => {}, () => {});
+  return run;
+}
+async function eysConvertToPdf(target, st) {
+  const cacheKey = `office-pdf:${target.rel}:${st.mtimeMs}:${st.size}`;
+  const cached = eysPdfCache.get(cacheKey);
+  if (cached) return cached;
+  return eysQueueConvert(async () => {
+    const again = eysPdfCache.get(cacheKey); // kuyrukta beklerken başka istek çevirmiş olabilir
+    if (again) return again;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'eys-conv-'));
+    try {
+      const tmpSrc = path.join(tmpDir, 'src' + path.extname(target.abs).toLowerCase());
+      await fsp.copyFile(target.abs, tmpSrc);
+      await execFileAsync('soffice', [
+        '--headless', '--norestore', '--convert-to', 'pdf', '--outdir', tmpDir, tmpSrc
+      ], { timeout: 60000, env: { ...process.env, HOME: tmpDir } });
+      const pdfBuf = await fsp.readFile(path.join(tmpDir, 'src.pdf'));
+      eysPdfCacheSet(cacheKey, pdfBuf);
+      return pdfBuf;
+    } catch {
+      const e = new Error('Bu dosya önizleyici tarafından dönüştürülemedi'); e.status = 415; throw e;
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+}
+
 app.get('/api/eys/file', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const target = eysSafePath(req.query.path);
   if (!target || !target.rel) return res.status(400).json({ error: 'Geçersiz yol' });
   const st = await fsp.stat(target.abs).catch(() => null);
   if (!st || !st.isFile()) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  const ext = path.extname(target.abs).toLowerCase();
   if (clean(req.query.inline) === '1') {
-    res.set('Content-Type', EYS_MIME[path.extname(target.abs).toLowerCase()] || 'application/octet-stream');
+    if (EYS_OFFICE_LEGACY_EXT.has(ext)) {
+      const pdfBuf = await eysConvertToPdf(target, st);
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', `inline; filename="${encodeURIComponent(path.basename(target.abs, ext))}.pdf"`);
+      return res.send(pdfBuf);
+    }
+    res.set('Content-Type', EYS_MIME[ext] || 'application/octet-stream');
     res.set('Content-Disposition', `inline; filename="${encodeURIComponent(path.basename(target.abs))}"`);
     return res.sendFile(target.abs);
   }
