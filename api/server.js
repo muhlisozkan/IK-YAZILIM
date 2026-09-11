@@ -4214,15 +4214,17 @@ app.delete('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res
 // Genel amaçlı JSON kayıt deposu (hms_records paterni). İskelet aşaması:
 // tüm alt modüller aynı CRUD uçlarını, modül adıyla ayrılmış olarak kullanır.
 const KYS_MODULES = new Set(['dokuman', 'hedefler', 'ygg', 'tedarikci', 'kalibrasyon', 'sikayet', 'denetim', 'haccp']);
-// "Kapatıldı" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
+// Belirli bir "kapanış" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
+const KYS_FIELD_LABELS = { rootCause: 'kök neden', action: 'aksiyon', findings: 'bulgular', correctiveAction: 'düzeltici faaliyet' };
 const KYS_CLOSE_GATES = {
-  sikayet: ['rootCause', 'action'],
-  denetim: ['findings', 'correctiveAction']
+  sikayet: { status: 'Kapatıldı', fields: ['rootCause', 'action'] },
+  denetim: { status: 'Kapatıldı', fields: ['findings', 'correctiveAction'] },
+  haccp: { status: 'Düzeltildi', fields: ['correctiveAction'] }
 };
 const kysCloseGateError = (module, data) => {
   const gate = KYS_CLOSE_GATES[module];
-  if (gate && data.status === 'Kapatıldı' && gate.some(k => !clean(data[k]))) {
-    return { error: `Kapatmadan önce ${gate.map(k => k === 'rootCause' ? 'kök neden' : k === 'action' ? 'aksiyon' : k === 'findings' ? 'bulgular' : 'düzeltici faaliyet').join(' ve ')} alanları doldurulmalıdır` };
+  if (gate && data.status === gate.status && gate.fields.some(k => !clean(data[k]))) {
+    return { error: `"${gate.status}" işaretlemeden önce ${gate.fields.map(k => KYS_FIELD_LABELS[k] || k).join(' ve ')} alanları doldurulmalıdır` };
   }
   return null;
 };

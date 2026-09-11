@@ -148,10 +148,11 @@
   const VIEW_TO_KEY = {};
   Object.keys(MOD).forEach(k => VIEW_TO_KEY[MOD[k].view] = k);
 
-  // "Kapatıldı" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
+  // Belirli bir "kapanış" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
   const CLOSE_GATES = {
-    sikayet: { fields: ['rootCause', 'action'], message: 'Kapatmadan önce kök neden ve aksiyon alanlarını doldurun' },
-    denetim: { fields: ['findings', 'correctiveAction'], message: 'Kapatmadan önce bulgular ve düzeltici faaliyet alanlarını doldurun' }
+    sikayet: { status: 'Kapatıldı', fields: ['rootCause', 'action'], message: 'Kapatmadan önce kök neden ve aksiyon alanlarını doldurun' },
+    denetim: { status: 'Kapatıldı', fields: ['findings', 'correctiveAction'], message: 'Kapatmadan önce bulgular ve düzeltici faaliyet alanlarını doldurun' },
+    haccp: { status: 'Düzeltildi', fields: ['correctiveAction'], message: '"Düzeltildi" işaretlemeden önce düzeltici faaliyet alanını doldurun' }
   };
 
   const S = { cache: {} };
@@ -195,7 +196,7 @@
       cfg.fields.forEach(f => { data[f.key] = document.getElementById('kys-f-' + f.key).value.trim(); });
       if (cfg.fields.some(f => f.required && !data[f.key])) return toast('Zorunlu alanları doldurun');
       const closeGate = CLOSE_GATES[key];
-      if (closeGate && data.status === 'Kapatıldı' && closeGate.fields.some(k => !data[k])) {
+      if (closeGate && data.status === closeGate.status && closeGate.fields.some(k => !data[k])) {
         return toast(closeGate.message);
       }
       const fileInput = cfg.workflow ? document.getElementById('kys-f-file') : null;

@@ -40,14 +40,18 @@
     kysActionPendingAudits.forEach(r=>
       list.push({id:'kys-denetim:'+r.id,cat:'Denetim',kind:'orange',view:'kys-denetim',
         text:`${esc(r.title||'Denetim')} aksiyon bekliyor`}));
+    kysHaccpDeviations.forEach(r=>
+      list.push({id:'kys-haccp:'+r.id,cat:'HACCP',kind:'red',view:'kys-haccp',
+        text:`${esc(r.title||'CCP')} kritik limit sapması`}));
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
 
-  // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon + aksiyon bekleyen denetim --
+  // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon + aksiyon bekleyen denetim + HACCP sapması --
   let kysPending=[];
   let kysOpenComplaints=[];
   let kysOverdueCalibration=[];
   let kysActionPendingAudits=[];
+  let kysHaccpDeviations=[];
   async function refreshKysPending(){
     try{
       if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
@@ -55,11 +59,12 @@
       kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
     try{
-      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];kysActionPendingAudits=[];return}
-      const [complaints,calib,audits]=await Promise.all([api('/api/kys/sikayet'),api('/api/kys/kalibrasyon'),api('/api/kys/denetim')]);
+      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];kysActionPendingAudits=[];kysHaccpDeviations=[];return}
+      const [complaints,calib,audits,haccp]=await Promise.all([api('/api/kys/sikayet'),api('/api/kys/kalibrasyon'),api('/api/kys/denetim'),api('/api/kys/haccp')]);
       kysOpenComplaints=(complaints||[]).filter(r=>r.status==='Açık');
       kysOverdueCalibration=(calib||[]).filter(r=>r.status==='Süresi Geçti');
       kysActionPendingAudits=(audits||[]).filter(r=>r.status==='Aksiyon Bekliyor');
+      kysHaccpDeviations=(haccp||[]).filter(r=>r.status==='Sapma');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
   }
 
