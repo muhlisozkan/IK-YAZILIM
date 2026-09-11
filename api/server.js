@@ -4245,12 +4245,28 @@ async function kysGetDokumanOr404(id, res) {
   return existing;
 }
 
+// Kalibrasyon: durum elle girilmez, "sonraki kalibrasyon" tarihinden otomatik hesaplanır
+// (kişinin güncellemeyi unutması riskini ortadan kaldırır).
+function kalibrasyonStatus(nextCalibDate) {
+  if (!clean(nextCalibDate)) return null;
+  const next = new Date(nextCalibDate);
+  if (isNaN(next)) return null;
+  const days = Math.floor((next - new Date(new Date().toDateString())) / 86400000);
+  if (days < 0) return 'Süresi Geçti';
+  if (days <= 30) return 'Süresi Yaklaşıyor';
+  return 'Geçerli';
+}
+const kysApplyComputed = (module, row) => {
+  if (module === 'kalibrasyon') return { ...row, status: kalibrasyonStatus(row.nextCalibDate) || row.status };
+  return row;
+};
+
 app.get('/api/kys/:module', asyncRoute(async (req, res) => {
   const module = clean(req.params.module);
   if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' });
   const rows = (await pool.query('select * from kys_records where module=$1 order by id desc', [module])).rows;
-  res.json(rows.map(kysRow));
+  res.json(rows.map(kysRow).map(r => kysApplyComputed(module, r)));
 }));
 
 app.post('/api/kys/:module', asyncRoute(async (req, res) => {
@@ -4268,7 +4284,7 @@ app.post('/api/kys/:module', asyncRoute(async (req, res) => {
   const row = (await pool.query(
     'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
     [module, clean(req.user.department), JSON.stringify(data), req.user?.name || null])).rows[0];
-  res.status(201).json(kysRow(row));
+  res.status(201).json(kysApplyComputed(module, kysRow(row)));
 }));
 
 app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
@@ -4288,7 +4304,7 @@ app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
   }
   const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
     [existing.id, JSON.stringify(data)])).rows[0];
-  res.json(kysRow(row));
+  res.json(kysApplyComputed(module, kysRow(row)));
 }));
 
 app.delete('/api/kys/:module/:id', asyncRoute(async (req, res) => {

@@ -95,8 +95,8 @@
         { key: 'department', label: 'Bölüm' },
         { key: 'lastCalibDate', label: 'Son kalibrasyon', type: 'date' },
         { key: 'nextCalibDate', label: 'Sonraki kalibrasyon', type: 'date' },
-        { key: 'responsible', label: 'Sorumlu' },
-        { key: 'status', label: 'Durum', type: 'select', options: ['Geçerli', 'Süresi Yaklaşıyor', 'Süresi Geçti'], default: 'Geçerli' }
+        { key: 'responsible', label: 'Sorumlu' }
+        // status alanı yok: "sonraki kalibrasyon" tarihinden otomatik hesaplanır.
       ],
       columns: [['title', 'Ekipman'], ['department', 'Bölüm'], ['lastCalibDate', 'Son Kalib.'], ['nextCalibDate', 'Sonraki Kalib.'], ['status', 'Durum']]
     },

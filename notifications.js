@@ -34,12 +34,16 @@
     kysOpenComplaints.forEach(r=>
       list.push({id:'kys-sikayet:'+r.id,cat:'Şikayet',kind:'orange',view:'kys-sikayet',
         text:`${esc(r.title||'Şikayet')} henüz işleme alınmadı`}));
+    kysOverdueCalibration.forEach(r=>
+      list.push({id:'kys-kalibrasyon:'+r.id,cat:'Kalibrasyon',kind:'red',view:'kys-kalibrasyon',
+        text:`${esc(r.title||'Ekipman')} kalibrasyon süresi geçti`}));
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
 
-  // --- KYS: onay bekleyen doküman + açık şikayet bildirimleri -------------
+  // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon --
   let kysPending=[];
   let kysOpenComplaints=[];
+  let kysOverdueCalibration=[];
   async function refreshKysPending(){
     try{
       if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
@@ -47,9 +51,10 @@
       kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
     try{
-      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];return}
-      const rows=await api('/api/kys/sikayet');
-      kysOpenComplaints=(rows||[]).filter(r=>r.status==='Açık');
+      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];return}
+      const [complaints,calib]=await Promise.all([api('/api/kys/sikayet'),api('/api/kys/kalibrasyon')]);
+      kysOpenComplaints=(complaints||[]).filter(r=>r.status==='Açık');
+      kysOverdueCalibration=(calib||[]).filter(r=>r.status==='Süresi Geçti');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
   }
 
