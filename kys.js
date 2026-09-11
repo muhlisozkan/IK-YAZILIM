@@ -513,6 +513,188 @@
     await loadEysFolder();
   }
 
+  // --- DÖF Takip: Kalite bir departmana DÖF açar, departman aksiyon yazıp
+  // kapatma talep eder, Kalite onaylar/reddeder. -------------------------
+  const DOF_VIEW = 'kys-dof';
+  const DOF = { items: [], deptFilter: '', tab: 'open' };
+  const dofNormDept = v => String(v || '').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
+  const dofFmtDate = v => { if (!v) return '—'; const d = new Date(v); return isNaN(d) ? esc(v) : d.toLocaleDateString('tr-TR'); };
+  const dofBadgeClass = status => status === 'Kapatıldı' ? 'green' : status === 'Revizyonda' ? 'red' : 'orange';
+
+  function dofDeptOptions() {
+    const raw = [...new Set((state.employees || []).map(e => e.department).filter(Boolean))];
+    const seen = new Map();
+    raw.forEach(d => { const n = dofNormDept(d); if (!seen.has(n)) seen.set(n, d); });
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1], 'tr'));
+  }
+  const dofDeptSelectHtml = (id, selected) =>
+    `<select class="select" id="${id}">${dofDeptOptions().map(([norm, label]) => `<option value="${esc(norm)}" ${norm === selected ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+
+  async function loadDof() {
+    if (state.view !== DOF_VIEW) return;
+    if (!document.querySelector('#dof-wrap')) $('#app').innerHTML = '<div class="card empty">Yükleniyor…</div>';
+    let rows;
+    try { rows = await api('/api/dof'); }
+    catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    if (state.view !== DOF_VIEW) return;
+    DOF.items = rows;
+    renderDof();
+  }
+
+  function dofRowActions(r, access) {
+    const btns = [];
+    if (r.archived && r.sourcePath) btns.push(`<button class="btn ghost" data-dof-source="${esc(r.sourcePath)}">Kaynak dosya</button>`);
+    if (access.level === 'kalite') {
+      if (r.status === 'Kapatma Bekliyor') {
+        btns.push(`<button class="btn ghost" data-dof-approve="${r.id}">Onayla</button>`);
+        btns.push(`<button class="btn ghost danger-text" data-dof-reject="${r.id}">Reddet</button>`);
+      } else {
+        btns.push(`<button class="btn ghost" data-dof-edit="${r.id}">Düzenle</button>`);
+        if (r.status !== 'Kapatıldı') btns.push(`<button class="btn ghost danger-text" data-dof-del="${r.id}">İptal Et</button>`);
+      }
+    } else if (access.level === 'dept') {
+      if (['Açık', 'Revizyonda'].includes(r.status)) btns.push(`<button class="btn ghost" data-dof-act="${r.id}">Aksiyon Yaz &amp; Kapatma Talep Et</button>`);
+      else if (r.status === 'Kapatma Bekliyor') btns.push('<span class="muted" style="font-size:11.5px">Onay bekliyor</span>');
+    }
+    return btns.join('');
+  }
+
+  function dofRowsHtml(items, access) {
+    const cols = access.level === 'dept' ? 5 : 6;
+    if (!items.length) return `<tr><td colspan="${cols}" class="empty">Kayıt yok</td></tr>`;
+    return items.map(r => `<tr>
+      <td>${esc(r.title)}</td>
+      ${access.level !== 'dept' ? `<td>${esc(r.department)}</td>` : ''}
+      <td>${dofFmtDate(r.dueDate)}</td>
+      <td><span class="badge ${dofBadgeClass(r.status)}">${esc(r.status)}</span></td>
+      <td>${dofFmtDate(r.created_at)}</td>
+      <td class="row-actions">${dofRowActions(r, access)}</td>
+    </tr>`).join('');
+  }
+
+  function dofOpenCreateModal() {
+    const body = `<div class="form-grid">
+      <div class="field"><label>Hedef departman *</label>${dofDeptSelectHtml('dof-f-dept', '')}</div>
+      <div class="field"><label>Termin</label><input class="input" id="dof-f-due" type="date"></div>
+      <div class="field" style="grid-column:1/-1"><label>Konu *</label><input class="input" id="dof-f-title"></div>
+      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><textarea class="input" id="dof-f-desc" rows="4" style="width:100%"></textarea></div>
+    </div>`;
+    modal('Yeni DÖF Aç', body, async () => {
+      const department = document.getElementById('dof-f-dept').value;
+      const title = document.getElementById('dof-f-title').value.trim();
+      const description = document.getElementById('dof-f-desc').value.trim();
+      const dueDate = document.getElementById('dof-f-due').value;
+      if (!title) return toast('Konu zorunludur');
+      try {
+        await api('/api/dof', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ department, title, description, dueDate }) });
+        closeModal(); toast('DÖF açıldı'); loadDof();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  function dofOpenEditModal(r) {
+    if (!r) return;
+    const body = `<div class="form-grid">
+      <div class="field"><label>Hedef departman *</label>${dofDeptSelectHtml('dof-f-dept', r.department)}</div>
+      <div class="field"><label>Termin</label><input class="input" id="dof-f-due" type="date" value="${esc(r.dueDate || '')}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Konu *</label><input class="input" id="dof-f-title" value="${esc(r.title)}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><textarea class="input" id="dof-f-desc" rows="4" style="width:100%">${esc(r.description || '')}</textarea></div>
+    </div>`;
+    modal('DÖF — düzenle', body, async () => {
+      const department = document.getElementById('dof-f-dept').value;
+      const title = document.getElementById('dof-f-title').value.trim();
+      const description = document.getElementById('dof-f-desc').value.trim();
+      const dueDate = document.getElementById('dof-f-due').value;
+      if (!title) return toast('Konu zorunludur');
+      try {
+        await api(`/api/dof/${r.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ department, title, description, dueDate }) });
+        closeModal(); toast('Güncellendi'); loadDof();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  function dofOpenActionModal(r) {
+    if (!r) return;
+    const body = `<div class="form-grid">
+      <div class="field" style="grid-column:1/-1"><label>Konu</label><div class="muted">${esc(r.title)}</div></div>
+      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><div class="muted">${esc(r.description || '—')}</div></div>
+      <div class="field" style="grid-column:1/-1"><label>Alınan aksiyon *</label><textarea class="input" id="dof-f-action" rows="5" style="width:100%">${esc(r.action || '')}</textarea></div>
+    </div>`;
+    modal('Aksiyon yaz ve kapatma talep et', body, async () => {
+      const action = document.getElementById('dof-f-action').value.trim();
+      if (!action) return toast('Aksiyon açıklaması zorunludur');
+      try {
+        await api(`/api/dof/${r.id}/submit-closure`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+        closeModal(); toast('Kapatma talebi gönderildi'); loadDof();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  async function dofApprove(id) {
+    try { await api(`/api/dof/${id}/approve-closure`, { method: 'POST' }); toast('DÖF kapatıldı'); loadDof(); }
+    catch (err) { toast(err.message); }
+  }
+  async function dofReject(id) {
+    const note = prompt('Red gerekçesi (isteğe bağlı):');
+    if (note === null) return;
+    try {
+      await api(`/api/dof/${id}/reject-closure`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }) });
+      toast('Revizyon istendi'); loadDof();
+    } catch (err) { toast(err.message); }
+  }
+  async function dofDelete(id) {
+    if (!confirm('Bu DÖF kaydını iptal etmek istediğinize emin misiniz?')) return;
+    try { await api(`/api/dof/${id}`, { method: 'DELETE' }); toast('DÖF iptal edildi'); loadDof(); }
+    catch (err) { toast(err.message); }
+  }
+
+  function renderDof() {
+    if (state.view !== DOF_VIEW) return;
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
+    syncNavGroup();
+    $('#page-title').textContent = 'DÖF Takip';
+    const access = window.__ikDofAccess ? window.__ikDofAccess() : { level: 'none' };
+    if (access.level === 'none') { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
+
+    let html;
+    if (access.level === 'dept') {
+      const open = DOF.items.filter(r => r.status !== 'Kapatıldı');
+      const closed = DOF.items.filter(r => r.status === 'Kapatıldı');
+      const tabsHtml = `<div class="rep-tabs" id="dof-tabs">
+        <button class="rtab${DOF.tab === 'open' ? ' on' : ''}" data-dof-tab="open">Açık DÖF'lerim <span class="rtab-badge">${open.length}</span></button>
+        <button class="rtab${DOF.tab === 'closed' ? ' on' : ''}" data-dof-tab="closed">Kapatılmış DÖF'lerim <span class="rtab-badge">${closed.length}</span></button>
+      </div>`;
+      const shown = DOF.tab === 'open' ? open : closed;
+      html = `
+        <div class="section-title"><div><h2>DÖF Takip</h2><span class="muted">Departmanınıza açılan düzeltici/önleyici faaliyetler</span></div></div>
+        ${tabsHtml}
+        <div class="card"><div style="overflow:auto"><table><thead><tr><th>Konu</th><th>Termin</th><th>Durum</th><th>Açılış</th><th></th></tr></thead>
+        <tbody>${dofRowsHtml(shown, access)}</tbody></table></div></div>`;
+    } else {
+      const filtered = DOF.deptFilter ? DOF.items.filter(r => r.department === DOF.deptFilter) : DOF.items;
+      html = `
+        <div class="section-title"><div><h2>DÖF Takip</h2><span class="muted">Tüm departmanlara açılan düzeltici/önleyici faaliyetler</span></div>${access.level === 'kalite' ? '<button class="btn" id="dof-add">+ Yeni DÖF Aç</button>' : ''}</div>
+        <div class="toolbar"><select class="select" id="dof-dept-filter"><option value="">Tüm departmanlar</option>${dofDeptOptions().map(([norm, label]) => `<option value="${esc(norm)}" ${norm === DOF.deptFilter ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
+        <div class="card"><div style="overflow:auto"><table><thead><tr><th>Konu</th><th>Departman</th><th>Termin</th><th>Durum</th><th>Açılış</th><th></th></tr></thead>
+        <tbody>${dofRowsHtml(filtered, access)}</tbody></table></div></div>`;
+    }
+    $('#app').innerHTML = `<div id="dof-wrap">${html}</div>`;
+
+    document.getElementById('dof-add')?.addEventListener('click', () => dofOpenCreateModal());
+    document.getElementById('dof-dept-filter')?.addEventListener('change', e => { DOF.deptFilter = e.target.value; renderDof(); });
+    document.querySelectorAll('#dof-tabs [data-dof-tab]').forEach(b => b.onclick = () => { DOF.tab = b.dataset.dofTab; renderDof(); });
+    document.querySelectorAll('[data-dof-act]').forEach(b => b.onclick = () => dofOpenActionModal(DOF.items.find(r => String(r.id) === b.dataset.dofAct)));
+    document.querySelectorAll('[data-dof-edit]').forEach(b => b.onclick = () => dofOpenEditModal(DOF.items.find(r => String(r.id) === b.dataset.dofEdit)));
+    document.querySelectorAll('[data-dof-approve]').forEach(b => b.onclick = () => dofApprove(b.dataset.dofApprove));
+    document.querySelectorAll('[data-dof-reject]').forEach(b => b.onclick = () => dofReject(b.dataset.dofReject));
+    document.querySelectorAll('[data-dof-del]').forEach(b => b.onclick = () => dofDelete(b.dataset.dofDel));
+    document.querySelectorAll('[data-dof-source]').forEach(b => b.onclick = () => {
+      eysSetSource('kayitlar');
+      eysSetPath(b.dataset.dofSource.split('/').slice(0, -1).join('/'));
+      window.__ikNavigate('kys-eys');
+    });
+  }
+
   function syncNavGroup() {
     const group = document.getElementById('kys-nav-group');
     if (!group) return;
@@ -530,6 +712,7 @@
   shell = function () {
     const key = VIEW_TO_KEY[state.view];
     if (state.view === EYS_VIEW) renderEys();
+    else if (state.view === DOF_VIEW) loadDof();
     else if (key) render(key);
     else { baseShell(); syncNavGroup(); }
   };

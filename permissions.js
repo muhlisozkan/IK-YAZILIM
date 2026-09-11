@@ -39,7 +39,7 @@
   function kysAccess() {
     const u = currentUser() || {};
     if (u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI') return 'full';
-    if (normDept(u.department) === 'KALİTE') return 'full';
+    if (normDept(u.department).includes('KALİTE')) return 'full'; // "Eğitim ve Kalite" dahil
     if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(u.role)) return 'read';
     return u.role === 'Sistem yöneticisi' ? 'full' : 'none';
   }
@@ -49,6 +49,15 @@
   window.__ikKysCanApproveDokuman = () => {
     const u = currentUser() || {};
     return u.role === 'Sistem yöneticisi' || u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI';
+  };
+  // DÖF Takip: Kalite (İK/admin/Kalite departmanı) tam yetkili + tüm departmanları görür;
+  // departman yöneticisi yalnız kendi departmanına açılmış DÖF'leri görür/aksiyon yazar.
+  window.__ikDofAccess = () => {
+    const u = currentUser() || {};
+    if (u.role === 'Sistem yöneticisi' || u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI' || normDept(u.department).includes('KALİTE')) return { level: 'kalite' };
+    if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(u.role)) return { level: 'read' };
+    if (u.role === 'Departman yöneticisi' && u.department) return { level: 'dept', dept: normDept(u.department) };
+    return { level: 'none' };
   };
   const canSeeButce = () => {
     const u = currentUser() || {};
@@ -81,6 +90,7 @@
     if (view === 'performance') return canSeePerformance();
     if (view === 'guncel-tablo') return canSeeGuncel();
     if (view === 'personel-butcesi') return canSeeButce();
+    if (view === 'kys-dof') return window.__ikDofAccess().level !== 'none';
     if (view.startsWith('kys-')) return canSeeKYS();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;

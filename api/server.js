@@ -4260,7 +4260,7 @@ const kysCloseGateError = (module, data) => {
 };
 function kysAccess(user) {
   if (isHRUser(user)) return 'full';
-  if (normalizeDepartmentValue(user.department) === 'KALİTE') return 'full';
+  if (normalizeDepartmentValue(user.department).includes('KALİTE')) return 'full'; // "Eğitim ve Kalite" dahil
   if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return 'read';
   return 'none';
 }
@@ -4629,6 +4629,112 @@ app.get('/api/eys/docx', asyncRoute(async (req, res) => {
     eysCacheSet(r.cacheKey, html);
   }
   res.json({ html });
+}));
+
+// --- DÖF Takip (Düzeltici/Önleyici Faaliyet) ----------------------------
+// Kalite departmanı bir departmana DÖF açar; departman aksiyon yazıp kapatma
+// talebi gönderir; Kalite onaylar/reddeder. kys_records tablosu module='dof'
+// ile yeniden kullanılıyor — department kolonu burada HEDEF departmandır
+// (diğer KYS modüllerinde olduğu gibi açanın departmanı değil).
+function dofAccess(user) {
+  if (isHRUser(user) || normalizeDepartmentValue(user.department).includes('KALİTE')) return { level: 'kalite' };
+  if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return { level: 'read' };
+  if (user.role === 'Departman yöneticisi' && clean(user.department)) return { level: 'dept', dept: normalizeDepartmentValue(user.department) };
+  return { level: 'none' };
+}
+const dofRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
+const dofHistPush = (data, entry) => {
+  const hist = Array.isArray(data.history) ? data.history.slice() : [];
+  hist.push({ at: new Date().toISOString(), ...entry });
+  return { ...data, history: hist };
+};
+async function dofSave(id, data) {
+  const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
+    [id, JSON.stringify(data)])).rows[0];
+  return dofRow(row);
+}
+async function dofGetOr404(id, res) {
+  const existing = (await pool.query('select * from kys_records where id=$1', [Number(id) || 0])).rows[0];
+  if (!existing || existing.module !== 'dof') { res.status(404).json({ error: 'DÖF bulunamadı' }); return null; }
+  return existing;
+}
+
+app.get('/api/dof', asyncRoute(async (req, res) => {
+  const access = dofAccess(req.user);
+  if (access.level === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const params = ['dof'];
+  let where = '';
+  if (access.level === 'dept') { where = ' and department=$2'; params.push(access.dept); }
+  const rows = (await pool.query(`select * from kys_records where module=$1${where} order by id desc`, params)).rows;
+  res.json(rows.map(dofRow));
+}));
+
+app.post('/api/dof', asyncRoute(async (req, res) => {
+  if (dofAccess(req.user).level !== 'kalite') return res.status(403).json({ error: 'DÖF açma yetkiniz yok' });
+  const department = normalizeDepartmentValue(req.body?.department);
+  if (!department) return res.status(400).json({ error: 'Hedef departman zorunludur' });
+  const title = clean(req.body?.title);
+  if (!title) return res.status(400).json({ error: 'Konu zorunludur' });
+  let data = { title, description: clean(req.body?.description), dueDate: clean(req.body?.dueDate) || null, status: 'Açık' };
+  data = dofHistPush(data, { by: req.user.name, action: 'DÖF açıldı' });
+  const row = (await pool.query(
+    'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
+    ['dof', department, JSON.stringify(data), req.user?.name || null])).rows[0];
+  res.status(201).json(dofRow(row));
+}));
+
+app.patch('/api/dof/:id', asyncRoute(async (req, res) => {
+  const existing = await dofGetOr404(req.params.id, res); if (!existing) return;
+  if (dofAccess(req.user).level !== 'kalite') return res.status(403).json({ error: 'Düzenleme yetkiniz yok' });
+  const body = req.body || {};
+  const department = body.department != null ? normalizeDepartmentValue(body.department) : existing.department;
+  const data = { ...existing.data };
+  if (body.title != null) data.title = clean(body.title);
+  if (body.description != null) data.description = clean(body.description);
+  if (body.dueDate != null) data.dueDate = clean(body.dueDate) || null;
+  if (!data.title) return res.status(400).json({ error: 'Konu zorunludur' });
+  const row = (await pool.query('update kys_records set department=$2,data=$3::jsonb,updated_at=now() where id=$1 returning *',
+    [existing.id, department, JSON.stringify(data)])).rows[0];
+  res.json(dofRow(row));
+}));
+
+app.post('/api/dof/:id/submit-closure', asyncRoute(async (req, res) => {
+  const existing = await dofGetOr404(req.params.id, res); if (!existing) return;
+  const access = dofAccess(req.user);
+  const canAct = access.level === 'kalite' || (access.level === 'dept' && access.dept === normalizeDepartmentValue(existing.department));
+  if (!canAct) return res.status(403).json({ error: 'Yetkiniz yok' });
+  if (!['Açık', 'Revizyonda'].includes(existing.data.status)) return res.status(409).json({ error: 'Bu DÖF kapatma talebine uygun durumda değil' });
+  const action = clean(req.body?.action);
+  if (!action) return res.status(400).json({ error: 'Aksiyon açıklaması zorunludur' });
+  let data = { ...existing.data, action, status: 'Kapatma Bekliyor' };
+  data = dofHistPush(data, { by: req.user.name, action: 'Kapatma talebi gönderildi' });
+  res.json(await dofSave(existing.id, data));
+}));
+
+app.post('/api/dof/:id/approve-closure', asyncRoute(async (req, res) => {
+  const existing = await dofGetOr404(req.params.id, res); if (!existing) return;
+  if (dofAccess(req.user).level !== 'kalite') return res.status(403).json({ error: 'Onaylama yetkiniz yok' });
+  if (existing.data.status !== 'Kapatma Bekliyor') return res.status(409).json({ error: 'Bu DÖF kapatma onayı beklemiyor' });
+  let data = { ...existing.data, status: 'Kapatıldı', closedBy: req.user.name, closedAt: new Date().toISOString() };
+  data = dofHistPush(data, { by: req.user.name, action: 'Kapatıldı (onaylandı)' });
+  res.json(await dofSave(existing.id, data));
+}));
+
+app.post('/api/dof/:id/reject-closure', asyncRoute(async (req, res) => {
+  const existing = await dofGetOr404(req.params.id, res); if (!existing) return;
+  if (dofAccess(req.user).level !== 'kalite') return res.status(403).json({ error: 'Reddetme yetkiniz yok' });
+  if (existing.data.status !== 'Kapatma Bekliyor') return res.status(409).json({ error: 'Bu DÖF kapatma onayı beklemiyor' });
+  const note = clean(req.body?.note);
+  let data = { ...existing.data, status: 'Revizyonda', rejectNote: note };
+  data = dofHistPush(data, { by: req.user.name, action: 'Reddedildi — revizyon istendi', note });
+  res.json(await dofSave(existing.id, data));
+}));
+
+app.delete('/api/dof/:id', asyncRoute(async (req, res) => {
+  if (dofAccess(req.user).level !== 'kalite') return res.status(403).json({ error: 'Silme yetkiniz yok' });
+  const existing = await dofGetOr404(req.params.id, res); if (!existing) return;
+  await pool.query('delete from kys_records where id=$1', [existing.id]);
+  res.status(204).end();
 }));
 
 app.use((error, _req, res, _next) => {
