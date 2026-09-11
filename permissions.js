@@ -1,10 +1,11 @@
 (function () {
   const userKey = 'ik_users';
   const sessionKey = 'ik_current_user_id';
-  const allViews = ['dashboard','employees','departments','leave','reports','attendance','users','shifts','documents','recruitment','performance','training','security','lostfound','survey'];
+  const allViews = ['dashboard','employees','departments','leave','reports','attendance','users','approval-matrix','smtp-settings','sms-settings','shifts','documents','recruitment','performance','training','security','lostfound','survey'];
+  const USERS_GROUP_VIEWS = ['users','approval-matrix','smtp-settings','sms-settings'];
   const roleRules = {
     'Sistem yöneticisi': { views: allViews, create: true, approve: true },
-    'İK yöneticisi': { views: allViews.filter(v => v !== 'users'), create: true, approve: true },
+    'İK yöneticisi': { views: allViews.filter(v => !USERS_GROUP_VIEWS.includes(v)), create: true, approve: true },
     'Departman yöneticisi': { views: ['dashboard','leave','reports','shifts','recruitment','performance','training'], create: true, approve: false },
     'Mali İşler': { views: ['dashboard','reports'], create: false, approve: true },
     'Finans yöneticisi': { views: ['dashboard','reports'], create: false, approve: true },
@@ -14,7 +15,7 @@
     'Bordro yetkilisi': { views: ['dashboard','reports','attendance'], create: true, approve: true },
     'Güvenlik': { views: ['dashboard','security'], create: true, approve: true },
     'Personel': { views: ['dashboard','leave','documents'], create: true, approve: false },
-    'Sadece görüntüleme': { views: allViews.filter(v => v !== 'users' && v !== 'attendance' && v !== 'security' && v !== 'lostfound' && v !== 'survey'), create: false, approve: false }
+    'Sadece görüntüleme': { views: allViews.filter(v => !USERS_GROUP_VIEWS.includes(v) && v !== 'attendance' && v !== 'security' && v !== 'lostfound' && v !== 'survey'), create: false, approve: false }
   };
   const LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ','KAT HİZMETLERİ'];
   const normDept = value => String(value || '').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
@@ -81,6 +82,8 @@
     return ['Sistem yöneticisi', 'İK yöneticisi', 'Bordro yetkilisi', 'Mali İşler', 'Finans yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Sadece görüntüleme', 'Departman yöneticisi'].includes(u.role)
       || normDept(u.department) === 'İNSAN KAYNAKLARI';
   };
+  // Kullanıcı ve Yetkiler grubu: yalnızca Sistem yöneticisi (4 alt görünümün tamamı da yalnız admin'e açık).
+  const canSeeUsersGroup = () => USERS_GROUP_VIEWS.some(v => rule().views.includes(v));
 
   function users() {
     return JSON.parse(localStorage.getItem(userKey) || 'null') || [{ id: 1, name: 'Sistem yöneticisi', email: 'admin@firma.com', role: 'Sistem yöneticisi', status: 'Aktif' }];
@@ -114,6 +117,7 @@
     // departman erişimi) sahip olan herkese görünür — yoksa departman yöneticisi
     // DÖF Takip/Doküman'a erişebildiği halde menü grubunu hiç göremezdi.
     if (view === 'kys-group') return canSeeKYS() || window.__ikDofAccess().level !== 'none' || canSeeDokuman();
+    if (view === 'users-group') return canSeeUsersGroup();
     if (view.startsWith('kys-')) return canSeeKYS();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;

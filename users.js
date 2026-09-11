@@ -32,14 +32,25 @@
     const rows=users.map(u=>`<tr><td><strong>${esc(u.name)}</strong><small class="muted" style="display:block">@${esc(u.username)}${u.email?' · '+esc(u.email):''}${u.phone?' · '+esc(u.phone):''}</small></td><td>${esc(u.role)}</td><td>${esc(u.department||'-')}<small class="muted" style="display:block">${esc((state.employees||[]).find(e=>String(e.id)===String(u.employee_id))?.name||'Personel bağlantısı yok')}</small></td><td><span class="badge ${u.status==='Aktif'?'green':'red'}">${esc(u.status)}</span>${u.locked?` <span class="badge red" title="Çok fazla hatalı giriş denemesi">Kilitli</span>`:''}</td><td><button class="btn ghost" data-user-edit="${u.id}">Düzenle</button>${u.locked?`<button class="btn ghost" data-user-unlock="${u.id}">Kilidi Aç</button>`:''}<button class="btn ghost danger-text" data-user-delete="${u.id}">Sil</button></td></tr>`).join('');
     const body=loaded?(rows||'<tr><td colspan="5" class="empty">Kullanıcı bulunmuyor</td></tr>'):'<tr><td colspan="5" class="empty">Kullanıcılar yükleniyor…</td></tr>';
     $('#app').innerHTML=`<div class="section-title"><div><h2>Kullanıcı ve yetki yönetimi</h2><span class="muted">Gerçek giriş hesaplarını, rollerini ve personel bağlantılarını yönetin</span></div><button class="btn" id="add-user">+ Kullanıcı ekle</button></div><div class="card"><div class="card-head"><h2>Kullanıcılar</h2><span class="muted">${loaded?users.length:0} hesap</span></div><div style="overflow:auto"><table><thead><tr><th>KULLANICI / GİRİŞ ADI</th><th>ROL</th><th>DEPARTMAN / PERSONEL</th><th>DURUM</th><th></th></tr></thead><tbody>${body}</tbody></table></div></div>`;
-    window.__ikRenderApprovalMatrix?.();
-    window.__ikRenderSmtpSettings?.();
-    window.__ikRenderSmsSettings?.();
     $('#add-user').onclick=()=>userModal();
     document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick=()=>userModal(users.find(u=>String(u.id)===b.dataset.userEdit)));
     document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick=()=>deleteUser(b.dataset.userDelete));
     document.querySelectorAll('[data-user-unlock]').forEach(b=>b.onclick=()=>unlockUser(b.dataset.userUnlock));
+    window.__ikSyncUsersGroup?.();
   }
+
+  function syncUsersNavGroup(){
+    const group=document.getElementById('users-nav-group');
+    if(!group)return;
+    const active=['users','approval-matrix','smtp-settings','sms-settings'].includes(state.view);
+    const toggle=group.querySelector('.nav-group-toggle');
+    if(toggle)toggle.classList.toggle('active',active);
+    if(active)group.classList.add('open');
+  }
+  window.__ikSyncUsersGroup=syncUsersNavGroup;
+  window.__ikToggleUsersMenu=function(){
+    document.getElementById('users-nav-group')?.classList.toggle('open');
+  };
 
   async function unlockUser(id){
     try{

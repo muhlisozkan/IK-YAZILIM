@@ -40,7 +40,15 @@
       <button class="nav-item" data-view="reports" onclick="window.__ikNavigate('reports')">▥ <span>Raporlar</span></button>
       <button class="nav-item" data-view="security" onclick="window.__ikNavigate('security')">♢ <span>Güvenlik</span></button>
       <button class="nav-item" data-view="lostfound" onclick="window.__ikNavigate('lostfound')">▱ <span>Kayıp Eşya</span></button>
-      <button class="nav-item" data-view="users" onclick="window.__ikNavigate('users')">♙ <span>Kullanıcı ve Yetkiler</span></button>
+      <div class="nav-group" id="users-nav-group">
+        <button class="nav-item nav-group-toggle" data-view="users-group" type="button" onclick="window.__ikToggleUsersMenu()">♙ <span>Kullanıcı ve Yetkiler</span><i class="nav-caret">▾</i></button>
+        <div class="nav-sub">
+          <button class="nav-item nav-sub-item" data-view="users" onclick="window.__ikNavigate('users')"><span>Kullanıcılar</span></button>
+          <button class="nav-item nav-sub-item" data-view="approval-matrix" onclick="window.__ikNavigate('approval-matrix')"><span>Onay Matrisi</span></button>
+          <button class="nav-item nav-sub-item" data-view="smtp-settings" onclick="window.__ikNavigate('smtp-settings')"><span>E-posta Ayarları</span></button>
+          <button class="nav-item nav-sub-item" data-view="sms-settings" onclick="window.__ikNavigate('sms-settings')"><span>SMS Entegrasyonu</span></button>
+        </div>
+      </div>
       <button class="nav-item" data-view="personel-butcesi" onclick="window.__ikNavigate('personel-butcesi')">₺ <span>Personel Bütçesi</span></button>
       <button class="nav-item" data-view="guncel-tablo" onclick="window.__ikNavigate('guncel-tablo')">▦ <span>Güncel Tablo</span></button>
       <div class="nav-group" id="kys-nav-group">
@@ -75,14 +83,14 @@
   <script src="mobile-nav.js?v=1"></script>
   <script src="leave-enhancements.js?v=18"></script>
   <script src="attendance.js?v=5"></script>
-  <script src="approval.js?v=6"></script>
-  <script src="users.js?v=11"></script>
-  <script src="permissions.js?v=26"></script>
+  <script src="approval.js?v=7"></script>
+  <script src="users.js?v=12"></script>
+  <script src="permissions.js?v=27"></script>
   <script src="departments.js?v=2"></script>
   <script src="expense-advance.js?v=5"></script>
   <script src="shifts.js?v=10"></script>
   <script src="reports-enhancements.js?v=5"></script>
-  <script src="notifications.js?v=20"></script>
+  <script src="notifications.js?v=21"></script>
   <script src="documents.js?v=2"></script>
   <script src="birthdays.js?v=1"></script>
   <script src="recruitment.js?v=3"></script>

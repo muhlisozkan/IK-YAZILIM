@@ -237,11 +237,13 @@
     catch(error){toast(error.message)}
   }
   function renderSmtpSettings(){
-    if(state.view!=='users'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
+    if(state.view!=='smtp-settings'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
     if(!smtpSettings){loadSmtpSettings();return;}
-    document.querySelector('#smtp-settings-card')?.remove();
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='smtp-settings'));
+    $('#page-title').textContent='E-posta (SMTP) Ayarları';
+    $('#app').innerHTML='';
     const card=document.createElement('div');
-    card.id='smtp-settings-card';card.className='card';card.style.marginTop='18px';
+    card.id='smtp-settings-card';card.className='card';
     card.innerHTML=`<div class="card-head"><div><h2>Office 365 E-posta Ayarları</h2><span class="muted">Kullanıcılara e-posta bilgilendirmesi göndermek için merkezi SMTP hesabını tanımlayın</span></div><span class="badge ${smtpSettings.configured?'green':'orange'}">${smtpSettings.configured?'Yapılandırıldı':'Yapılandırılmadı'}</span></div>
       <div class="formula"><strong>Bağlantı:</strong> smtp.office365.com · Port 587 · STARTTLS. SMTP parolası şifreli saklanır ve tekrar ekranda gösterilmez.</div>
       <div class="form-grid" style="margin-top:16px">
@@ -260,6 +262,7 @@
     $('#app').appendChild(card);
     $('#smtp-save').onclick=saveSmtpSettings;
     $('#smtp-test').onclick=testSmtpSettings;
+    window.__ikSyncUsersGroup?.();
   }
   async function saveSmtpSettings(){
     const button=$('#smtp-save');button.disabled=true;
@@ -299,12 +302,14 @@
     catch(error){toast(error.message)}
   }
   function renderSmsSettings(){
-    if(state.view!=='users'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
+    if(state.view!=='sms-settings'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
     if(!smsSettings){loadSmsSettings();return;}
     const s=smsSettings;
-    document.querySelector('#sms-settings-card')?.remove();
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='sms-settings'));
+    $('#page-title').textContent='SMS Entegrasyonu';
+    $('#app').innerHTML='';
     const card=document.createElement('div');
-    card.id='sms-settings-card';card.className='card';card.style.marginTop='18px';
+    card.id='sms-settings-card';card.className='card';
     const keyHint=s.credential_keys?.length?`Kayıtlı kimlik alanları: <strong>${s.credential_keys.map(esc).join(', ')}</strong> · değiştirmek için yeniden yazın`:'Örn: <code>usercode=1234</code> ve alt satıra <code>password=••••</code>';
     card.innerHTML=`<div class="card-head"><div><h2>SMS Entegrasyonu</h2><span class="muted">Sağlayıcı bağımsız HTTP SMS API'si; onay bildirimlerini SMS ile de gönderin</span></div><span class="badge ${s.configured?(s.enabled?'green':'orange'):'orange'}">${s.configured?(s.enabled?'Etkin':'Kapalı'):'Yapılandırılmadı'}</span></div>
       <div class="formula">Şablonlarda kullanılabilir yer tutucular: <code>{phone}</code> (5xxxxxxxxx) <code>{phone90}</code> <code>{message}</code> <code>{sender}</code> <code>{ts}</code> (tarih-saat) <code>{basicauth}</code> (kimlik alanlarından base64) ve kimlik alanlarınız (örn. <code>{usercode}</code>). Değerler içerik tipine göre otomatik JSON/URL kodlanır.</div>
@@ -346,6 +351,7 @@
       $('#sms-creds').value='username=KULLANICI_ADI\npassword=API_SIFRESI';
       toast('Teknomart alanları dolduruldu — kimlik alanları ve gönderici başlığını yazıp kaydedin');
     };
+    window.__ikSyncUsersGroup?.();
   }
   async function saveSmsSettings(){
     const button=$('#sms-save');button.disabled=true;
@@ -385,7 +391,9 @@
   // --- Bağlama --------------------------------------------------
   const baseShell=shell;
   shell=function(){
-    baseShell();
+    if(state.view==='smtp-settings')renderSmtpSettings();
+    else if(state.view==='sms-settings')renderSmsSettings();
+    else baseShell();
     ensureBell();
     tick(true);
   };

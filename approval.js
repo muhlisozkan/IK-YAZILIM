@@ -34,8 +34,10 @@
   }
 
   function renderMatrix(){
-    if(state.view!=='users'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
-    document.querySelector('#approval-matrix')?.remove();
+    if(state.view!=='approval-matrix'||window.__ikCurrentUser?.()?.role!=='Sistem yöneticisi')return;
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view==='approval-matrix'));
+    $('#page-title').textContent='Onay Yetki Matrisi';
+    document.querySelector('#app').innerHTML='';
     const box=document.createElement('div');
     box.id='approval-matrix';
     box.className='card approval-card';
@@ -43,6 +45,7 @@
       <div class="formula"><strong>${processInfo[activeType].label} onay sırası:</strong> Bir adım tamamlanmadan sonraki onaycı talebi göremez. Yapılan değişiklikler yalnızca yeni oluşturulan taleplere uygulanır.</div>
       ${matrixRows(activeType)||'<div class="empty">Matris oluşturmak için önce çalışanlara departman tanımlayın.</div>'}`;
     document.querySelector('#app').appendChild(box);
+    window.__ikSyncUsersGroup?.();
     box.querySelector('#approval-process').onchange=event=>{activeType=event.target.value;renderMatrix()};
     box.addEventListener('click',event=>{
       const row=event.target.closest('.approval-row');
@@ -80,4 +83,10 @@
   }
 
   window.__ikRenderApprovalMatrix=renderMatrix;
+
+  const baseShell=shell;
+  shell=function(){
+    if(state.view==='approval-matrix')renderMatrix();
+    else baseShell();
+  };
 })();
