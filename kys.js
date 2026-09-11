@@ -287,11 +287,28 @@
   // --- Entegre Yönetim Sistemi: klasör klasör doküman arşivi gezgini -----
   const EYS_VIEW = 'kys-eys';
   const FOLDER_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-4px;margin-right:7px;flex-shrink:0"><path d="M3 6.5a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-10.5Z" fill="#f6c343" stroke="#d99e1f" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+  // İki ayrı ağ paylaşımı — sayfa içi sekme olarak seçiliyor (backend her istekte source= alıyor).
+  const EYS_TABS = [
+    { key: 'eys', label: 'Entegre Yönetim Sistemi' },
+    { key: 'kayitlar', label: 'Entegre Yönetim Sistemi Kayıtlar' }
+  ];
+  let eysSource = 'eys';
+  try { eysSource = sessionStorage.getItem('ik_eys_source') || 'eys'; } catch (_) { /* özel gezinti modu */ }
+  if (!EYS_TABS.some(t => t.key === eysSource)) eysSource = 'eys';
   let eysPath = '';
-  try { eysPath = sessionStorage.getItem('ik_eys_path') || ''; } catch (_) { /* özel gezinti modu */ }
+  function eysLoadPathForSource() {
+    try { eysPath = sessionStorage.getItem('ik_eys_path_' + eysSource) || ''; } catch (_) { eysPath = ''; }
+  }
+  eysLoadPathForSource();
   function eysSetPath(p) {
     eysPath = p || '';
-    try { sessionStorage.setItem('ik_eys_path', eysPath); } catch (_) { /* özel gezinti modu */ }
+    try { sessionStorage.setItem('ik_eys_path_' + eysSource, eysPath); } catch (_) { /* özel gezinti modu */ }
+  }
+  function eysSetSource(src) {
+    if (src === eysSource) return;
+    eysSource = src;
+    try { sessionStorage.setItem('ik_eys_source', eysSource); } catch (_) { /* özel gezinti modu */ }
+    eysLoadPathForSource();
   }
   const eysExt = name => (name.split('.').pop() || '').toLowerCase();
   const eysPreviewKind = name => {
@@ -329,8 +346,8 @@
     const item = EYS.selected;
     if (!item) return '<div class="empty">Önizlemek için bir dosyaya tıklayın</div>';
     const kind = eysPreviewKind(item.name);
-    const inlineUrl = '/api/eys/file?inline=1&path=' + encodeURIComponent(item.path);
-    const dlUrl = '/api/eys/file?path=' + encodeURIComponent(item.path);
+    const inlineUrl = `/api/eys/file?inline=1&source=${eysSource}&path=` + encodeURIComponent(item.path);
+    const dlUrl = `/api/eys/file?source=${eysSource}&path=` + encodeURIComponent(item.path);
     const head = `<div class="eys-preview-head"><strong title="${esc(item.path)}">${esc(item.name)}</strong><a class="btn ghost" href="${dlUrl}" target="_blank" rel="noopener">⬇ İndir</a></div>`;
     if (kind === 'pdf') return head + `<iframe class="eys-preview-frame" src="${inlineUrl}"></iframe>`;
     if (kind === 'image') return head + `<div class="eys-preview-imgwrap"><img src="${inlineUrl}" alt="${esc(item.name)}"></div>`;
@@ -354,7 +371,7 @@
     EYS.xlsx = { path: filePath, sheetMeta: keep ? EYS.xlsx.sheetMeta : [], cache: keep ? EYS.xlsx.cache : {}, idx, loading: true, error: null };
     eysRepaintPreviewOnly();
     try {
-      const data = await api(`/api/eys/xlsx?path=${encodeURIComponent(filePath)}&idx=${idx}`);
+      const data = await api(`/api/eys/xlsx?source=${eysSource}&path=${encodeURIComponent(filePath)}&idx=${idx}`);
       if (EYS.selected?.path !== filePath) return;
       EYS.xlsx.sheetMeta = data.sheetMeta || [];
       EYS.xlsx.cache[idx] = data.sheet;
@@ -371,7 +388,7 @@
     EYS.docx = { path: filePath, html: '', loading: true, error: null };
     eysRepaintPreviewOnly();
     try {
-      const data = await api('/api/eys/docx?path=' + encodeURIComponent(filePath));
+      const data = await api(`/api/eys/docx?source=${eysSource}&path=` + encodeURIComponent(filePath));
       if (EYS.selected?.path !== filePath) return;
       EYS.docx.html = data.html || '';
       EYS.docx.loading = false;
@@ -414,6 +431,7 @@
     $('#app').innerHTML = `
       <div id="eys-wrap">
         <div class="section-title"><div><h2>Entegre Yönetim Sistemi</h2><span class="muted">Kalite/İK doküman arşivi — klasör klasör gezinin</span></div></div>
+        <div class="rep-tabs" id="eys-tabs">${EYS_TABS.map(t => `<button class="rtab${t.key === eysSource ? ' on' : ''}" data-eys-source="${t.key}">${esc(t.label)}</button>`).join('')}</div>
         <div class="eys-toolbar">
           <div class="eys-crumbs" id="eys-crumbs"></div>
           <input class="input eys-search" id="eys-search" type="search" placeholder="Dosya ara…">
@@ -424,6 +442,13 @@
         </div>
       </div>`;
     document.getElementById('eys-search').oninput = e => eysOnSearchInput(e.target.value);
+    document.querySelectorAll('#eys-tabs [data-eys-source]').forEach(b => b.onclick = () => {
+      if (b.dataset.eysSource === eysSource) return;
+      eysSetSource(b.dataset.eysSource);
+      EYS.selected = null; EYS.xlsx = null; EYS.docx = null; EYS.searching = false; EYS.searchTerm = '';
+      document.querySelectorAll('#eys-tabs [data-eys-source]').forEach(x => x.classList.toggle('on', x.dataset.eysSource === eysSource));
+      loadEysFolder();
+    });
   }
 
   function eysPaintResults() {
@@ -457,7 +482,7 @@
   async function loadEysFolder() {
     if (state.view !== EYS_VIEW) return;
     let data;
-    try { data = await api('/api/eys/list?path=' + encodeURIComponent(eysPath)); }
+    try { data = await api(`/api/eys/list?source=${eysSource}&path=` + encodeURIComponent(eysPath)); }
     catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
     if (state.view !== EYS_VIEW) return;
     EYS.searching = false; EYS.searchTerm = '';
@@ -469,7 +494,7 @@
   async function loadEysSearch(term) {
     if (state.view !== EYS_VIEW) return;
     let data;
-    try { data = await api('/api/eys/search?q=' + encodeURIComponent(term)); }
+    try { data = await api(`/api/eys/search?source=${eysSource}&q=` + encodeURIComponent(term)); }
     catch (err) { toast(err.message); return; }
     if (state.view !== EYS_VIEW || EYS.searchTerm.trim() !== term) return;
     EYS.searching = true;

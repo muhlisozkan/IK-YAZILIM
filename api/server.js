@@ -4426,19 +4426,28 @@ app.get('/api/kys/dokuman/:id/file', asyncRoute(async (req, res) => {
 // --- Entegre Yönetim Sistemi (EYS) — doküman arşivi klasör gezgini -----
 // Gerçek dosya sistemi (bind mount, salt-okunur); veritabanına yazılmaz.
 // Aynı KYS erişim modeli (İK/Kalite tam, üst yönetim salt-okunur) kullanılır.
-const EYS_ROOT = path.resolve(process.env.EYS_ROOT || '/data/eys');
+// İki ayrı ağ paylaşımı: "eys" (Entegre Yönetim Sistemi) ve "kayitlar"
+// (Entegre Yönetim Sistemi Kayıtlar) — frontend'de sekme olarak seçiliyor.
+const EYS_SOURCES = {
+  eys: path.resolve(process.env.EYS_ROOT || '/data/eys'),
+  kayitlar: path.resolve(process.env.EYS_KAYITLAR_ROOT || '/data/eys-kayitlar')
+};
 const EYS_HIDE = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
 const EYS_MIME = { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
-function eysSafePath(relPath) {
+function eysSafePath(source, relPath) {
+  // Eski (source parametresinden önceki) önbelleğe alınmış kys.js sürümleri source
+  // göndermez — kırmak yerine ana arşive düşer, kullanıcı sayfayı yenileyince düzelir.
+  const root = EYS_SOURCES[source] || EYS_SOURCES.eys;
+  if (!root) return null;
   const rel = String(relPath || '').replace(/\\/g, '/').split('/').filter(p => p && p !== '.' && p !== '..').join('/');
-  const abs = path.resolve(EYS_ROOT, rel);
-  if (abs !== EYS_ROOT && !abs.startsWith(EYS_ROOT + path.sep)) return null;
-  return { abs, rel };
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null;
+  return { abs, rel, source };
 }
 
 app.get('/api/eys/list', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
-  const target = eysSafePath(req.query.path);
+  const target = eysSafePath(req.query.source, req.query.path);
   if (!target) return res.status(400).json({ error: 'Geçersiz yol' });
   let entries;
   try { entries = await fsp.readdir(target.abs, { withFileTypes: true }); }
@@ -4476,7 +4485,7 @@ function eysQueueConvert(fn) {
   return run;
 }
 async function eysConvertToPdf(target, st) {
-  const cacheKey = `office-pdf:${target.rel}:${st.mtimeMs}:${st.size}`;
+  const cacheKey = `office-pdf:${target.source}:${target.rel}:${st.mtimeMs}:${st.size}`;
   const cached = eysPdfCache.get(cacheKey);
   if (cached) return cached;
   return eysQueueConvert(async () => {
@@ -4502,7 +4511,7 @@ async function eysConvertToPdf(target, st) {
 
 app.get('/api/eys/file', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
-  const target = eysSafePath(req.query.path);
+  const target = eysSafePath(req.query.source, req.query.path);
   if (!target || !target.rel) return res.status(400).json({ error: 'Geçersiz yol' });
   const st = await fsp.stat(target.abs).catch(() => null);
   if (!st || !st.isFile()) return res.status(404).json({ error: 'Dosya bulunamadı' });
@@ -4524,7 +4533,7 @@ app.get('/api/eys/file', asyncRoute(async (req, res) => {
 // Tüm arşivde dosya adına göre arama. Her aramada ağ paylaşımını (CIFS) baştan
 // taramak yavaştı (~1.4sn/istek, 1900+ dosya) — bunun yerine dosya listesi
 // bellekte kısa süreli tutulur (TTL), arama bu listede anında filtrelenir.
-let eysSearchIndex = null; // { builtAt, files: [{name, path}] }
+const eysSearchIndexes = {}; // source -> { builtAt, files: [{name, path}] }
 const EYS_SEARCH_TTL = 3 * 60 * 1000; // 3 dakika — paylaşımdaki değişiklikler bu gecikmeyle yansır
 async function eysWalkAll(dir, relBase, out) {
   let entries;
@@ -4537,19 +4546,21 @@ async function eysWalkAll(dir, relBase, out) {
     else if (e.isFile()) out.push({ name: e.name, path: rel });
   }
 }
-async function eysGetSearchIndex() {
-  if (eysSearchIndex && Date.now() - eysSearchIndex.builtAt < EYS_SEARCH_TTL) return eysSearchIndex.files;
+async function eysGetSearchIndex(source) {
+  const idx = eysSearchIndexes[source];
+  if (idx && Date.now() - idx.builtAt < EYS_SEARCH_TTL) return idx.files;
   const files = [];
-  await eysWalkAll(EYS_ROOT, '', files);
-  eysSearchIndex = { builtAt: Date.now(), files };
+  await eysWalkAll(EYS_SOURCES[source], '', files);
+  eysSearchIndexes[source] = { builtAt: Date.now(), files };
   return files;
 }
 
 app.get('/api/eys/search', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const source = EYS_SOURCES[req.query.source] ? req.query.source : 'eys';
   const term = clean(req.query.q).toLocaleLowerCase('tr-TR');
   if (term.length < 2) return res.json({ items: [] });
-  const files = await eysGetSearchIndex();
+  const files = await eysGetSearchIndex(source);
   const results = files.filter(f => f.name.toLocaleLowerCase('tr-TR').includes(term))
     .sort((a, b) => a.name.localeCompare(b.name, 'tr')).slice(0, 300);
   res.json({ items: results });
@@ -4569,12 +4580,12 @@ function eysCacheSet(key, val) {
   eysCache.set(key, val);
   if (eysCache.size > EYS_CACHE_MAX) eysCache.delete(eysCache.keys().next().value);
 }
-async function eysReadForPreview(relPath, prefix) {
-  const target = eysSafePath(relPath);
+async function eysReadForPreview(source, relPath, prefix) {
+  const target = eysSafePath(source, relPath);
   if (!target || !target.rel) { const e = new Error('Geçersiz yol'); e.status = 400; throw e; }
   const st = await fsp.stat(target.abs).catch(() => null);
   if (!st || !st.isFile()) { const e = new Error('Dosya bulunamadı'); e.status = 404; throw e; }
-  const cacheKey = `${prefix}:${target.rel}:${st.mtimeMs}:${st.size}`;
+  const cacheKey = `${prefix}:${source}:${target.rel}:${st.mtimeMs}:${st.size}`;
   const cached = eysCacheGet(cacheKey);
   if (cached) return { hit: true, value: cached };
   let buffer;
@@ -4591,7 +4602,7 @@ async function eysReadForPreview(relPath, prefix) {
 app.get('/api/eys/xlsx', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const idx = Number(req.query.idx) || 0;
-  const r = await eysReadForPreview(req.query.path, 'xlsx');
+  const r = await eysReadForPreview(req.query.source, req.query.path, 'xlsx');
   let parsed;
   if (r.hit) parsed = r.value;
   else {
@@ -4609,7 +4620,7 @@ app.get('/api/eys/xlsx', asyncRoute(async (req, res) => {
 // okunamaz; hata durumunda frontend "önizlenemiyor" gösterir.
 app.get('/api/eys/docx', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
-  const r = await eysReadForPreview(req.query.path, 'docx');
+  const r = await eysReadForPreview(req.query.source, req.query.path, 'docx');
   let html;
   if (r.hit) html = r.value;
   else {

@@ -22,10 +22,12 @@ services:
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
       EYS_ROOT: /data/eys
+      EYS_KAYITLAR_ROOT: /data/eys-kayitlar
     env_file:
       - ${BORDRO_ENV_FILE:-/dev/null}
     volumes:
       - eys-smb:/data/eys:ro
+      - eys-kayitlar-smb:/data/eys-kayitlar:ro
     depends_on: [db]
   ik-web:
     build: .
@@ -57,3 +59,9 @@ volumes:
       type: cifs
       o: "username=${EYS_SMB_USER},password=${EYS_SMB_PASSWORD},domain=${EYS_SMB_DOMAIN},ro,vers=3.0,uid=1000,gid=1000,file_mode=0444,dir_mode=0555,iocharset=utf8"
       device: "//10.48.1.52/GENEL ORTAK/Entegre Yonetim Sistemi"
+  # İkinci sekme: "Entegre Yönetim Sistemi Kayıtlar" (aynı paylaşımda ayrı klasör).
+  eys-kayitlar-smb:
+    driver_opts:
+      type: cifs
+      o: "username=${EYS_SMB_USER},password=${EYS_SMB_PASSWORD},domain=${EYS_SMB_DOMAIN},ro,vers=3.0,uid=1000,gid=1000,file_mode=0444,dir_mode=0555,iocharset=utf8"
+      device: "//10.48.1.52/GENEL ORTAK/Entegre Yönetim Sistemi Kayıtlar"
