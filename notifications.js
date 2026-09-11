@@ -37,13 +37,17 @@
     kysOverdueCalibration.forEach(r=>
       list.push({id:'kys-kalibrasyon:'+r.id,cat:'Kalibrasyon',kind:'red',view:'kys-kalibrasyon',
         text:`${esc(r.title||'Ekipman')} kalibrasyon süresi geçti`}));
+    kysActionPendingAudits.forEach(r=>
+      list.push({id:'kys-denetim:'+r.id,cat:'Denetim',kind:'orange',view:'kys-denetim',
+        text:`${esc(r.title||'Denetim')} aksiyon bekliyor`}));
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
 
-  // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon --
+  // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon + aksiyon bekleyen denetim --
   let kysPending=[];
   let kysOpenComplaints=[];
   let kysOverdueCalibration=[];
+  let kysActionPendingAudits=[];
   async function refreshKysPending(){
     try{
       if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
@@ -51,10 +55,11 @@
       kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
     try{
-      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];return}
-      const [complaints,calib]=await Promise.all([api('/api/kys/sikayet'),api('/api/kys/kalibrasyon')]);
+      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];kysActionPendingAudits=[];return}
+      const [complaints,calib,audits]=await Promise.all([api('/api/kys/sikayet'),api('/api/kys/kalibrasyon'),api('/api/kys/denetim')]);
       kysOpenComplaints=(complaints||[]).filter(r=>r.status==='Açık');
       kysOverdueCalibration=(calib||[]).filter(r=>r.status==='Süresi Geçti');
+      kysActionPendingAudits=(audits||[]).filter(r=>r.status==='Aksiyon Bekliyor');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
   }
 

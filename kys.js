@@ -125,6 +125,7 @@
         { key: 'auditor', label: 'Denetçi' },
         { key: 'score', label: 'Puan', type: 'number' },
         { key: 'findings', label: 'Bulgular', type: 'textarea' },
+        { key: 'correctiveAction', label: 'Düzeltici faaliyet', type: 'textarea' },
         { key: 'status', label: 'Durum', type: 'select', options: ['Planlandı', 'Tamamlandı', 'Aksiyon Bekliyor', 'Kapatıldı'], default: 'Planlandı' }
       ],
       columns: [['title', 'Alan'], ['department', 'Departman'], ['auditDate', 'Tarih'], ['score', 'Puan'], ['status', 'Durum']]
@@ -146,6 +147,12 @@
   };
   const VIEW_TO_KEY = {};
   Object.keys(MOD).forEach(k => VIEW_TO_KEY[MOD[k].view] = k);
+
+  // "Kapatıldı" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
+  const CLOSE_GATES = {
+    sikayet: { fields: ['rootCause', 'action'], message: 'Kapatmadan önce kök neden ve aksiyon alanlarını doldurun' },
+    denetim: { fields: ['findings', 'correctiveAction'], message: 'Kapatmadan önce bulgular ve düzeltici faaliyet alanlarını doldurun' }
+  };
 
   const S = { cache: {} };
 
@@ -187,8 +194,9 @@
       const data = {};
       cfg.fields.forEach(f => { data[f.key] = document.getElementById('kys-f-' + f.key).value.trim(); });
       if (cfg.fields.some(f => f.required && !data[f.key])) return toast('Zorunlu alanları doldurun');
-      if (key === 'sikayet' && data.status === 'Kapatıldı' && (!data.rootCause || !data.action)) {
-        return toast('Kapatmadan önce kök neden ve aksiyon alanlarını doldurun');
+      const closeGate = CLOSE_GATES[key];
+      if (closeGate && data.status === 'Kapatıldı' && closeGate.fields.some(k => !data[k])) {
+        return toast(closeGate.message);
       }
       const fileInput = cfg.workflow ? document.getElementById('kys-f-file') : null;
       const file = fileInput && fileInput.files[0];

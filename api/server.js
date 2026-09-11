@@ -4214,6 +4214,18 @@ app.delete('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res
 // Genel amaçlı JSON kayıt deposu (hms_records paterni). İskelet aşaması:
 // tüm alt modüller aynı CRUD uçlarını, modül adıyla ayrılmış olarak kullanır.
 const KYS_MODULES = new Set(['dokuman', 'hedefler', 'ygg', 'tedarikci', 'kalibrasyon', 'sikayet', 'denetim', 'haccp']);
+// "Kapatıldı" durumuna geçmeden önce doldurulması zorunlu alanlar (erken/eksik kapatmayı önler).
+const KYS_CLOSE_GATES = {
+  sikayet: ['rootCause', 'action'],
+  denetim: ['findings', 'correctiveAction']
+};
+const kysCloseGateError = (module, data) => {
+  const gate = KYS_CLOSE_GATES[module];
+  if (gate && data.status === 'Kapatıldı' && gate.some(k => !clean(data[k]))) {
+    return { error: `Kapatmadan önce ${gate.map(k => k === 'rootCause' ? 'kök neden' : k === 'action' ? 'aksiyon' : k === 'findings' ? 'bulgular' : 'düzeltici faaliyet').join(' ve ')} alanları doldurulmalıdır` };
+  }
+  return null;
+};
 function kysAccess(user) {
   if (isHRUser(user)) return 'full';
   if (normalizeDepartmentValue(user.department) === 'KALİTE') return 'full';
@@ -4277,10 +4289,7 @@ app.post('/api/kys/:module', asyncRoute(async (req, res) => {
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
   // Doküman sürümleri her zaman Taslak doğar; Yürürlükte/Onay Bekliyor durumuna yalnızca onay akışı uçlarıyla geçilir.
   if (module === 'dokuman') data.status = 'Taslak';
-  // Misafir şikayeti: kök neden + aksiyon girilmeden "Kapatıldı" yapılamaz (erken/eksik kapatmayı önler).
-  if (module === 'sikayet' && data.status === 'Kapatıldı' && (!clean(data.rootCause) || !clean(data.action))) {
-    return res.status(400).json({ error: 'Kapatmadan önce kök neden ve aksiyon alanları doldurulmalıdır' });
-  }
+  { const gateErr = kysCloseGateError(module, data); if (gateErr) return res.status(400).json(gateErr); }
   const row = (await pool.query(
     'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
     [module, clean(req.user.department), JSON.stringify(data), req.user?.name || null])).rows[0];
@@ -4299,9 +4308,7 @@ app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
   if (module === 'dokuman' && existing.data.status === 'Onay Bekliyor') return res.status(409).json({ error: 'Onay bekleyen doküman düzenlenemez' });
   const data = { ...existing.data, ...body };
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
-  if (module === 'sikayet' && data.status === 'Kapatıldı' && (!clean(data.rootCause) || !clean(data.action))) {
-    return res.status(400).json({ error: 'Kapatmadan önce kök neden ve aksiyon alanları doldurulmalıdır' });
-  }
+  { const gateErr = kysCloseGateError(module, data); if (gateErr) return res.status(400).json(gateErr); }
   const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
     [existing.id, JSON.stringify(data)])).rows[0];
   res.json(kysApplyComputed(module, kysRow(row)));
