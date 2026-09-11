@@ -31,16 +31,25 @@
     kysPending.forEach(r=>
       list.push({id:'kys-dokuman:'+r.id,cat:'Doküman onayı',kind:'orange',view:'kys-dokuman',
         text:`${esc(r.title||'Doküman')} onayınızı bekliyor`}));
+    kysOpenComplaints.forEach(r=>
+      list.push({id:'kys-sikayet:'+r.id,cat:'Şikayet',kind:'orange',view:'kys-sikayet',
+        text:`${esc(r.title||'Şikayet')} henüz işleme alınmadı`}));
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
   }
 
-  // --- KYS: onay bekleyen doküman bildirimleri ---------------------------
+  // --- KYS: onay bekleyen doküman + açık şikayet bildirimleri -------------
   let kysPending=[];
+  let kysOpenComplaints=[];
   async function refreshKysPending(){
     try{
       if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
       const rows=await api('/api/kys/dokuman');
       kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
+    }catch{ /* bildirim kaynağı — sessiz geç */ }
+    try{
+      if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];return}
+      const rows=await api('/api/kys/sikayet');
+      kysOpenComplaints=(rows||[]).filter(r=>r.status==='Açık');
     }catch{ /* bildirim kaynağı — sessiz geç */ }
   }
 

@@ -187,6 +187,9 @@
       const data = {};
       cfg.fields.forEach(f => { data[f.key] = document.getElementById('kys-f-' + f.key).value.trim(); });
       if (cfg.fields.some(f => f.required && !data[f.key])) return toast('Zorunlu alanları doldurun');
+      if (key === 'sikayet' && data.status === 'Kapatıldı' && (!data.rootCause || !data.action)) {
+        return toast('Kapatmadan önce kök neden ve aksiyon alanlarını doldurun');
+      }
       const fileInput = cfg.workflow ? document.getElementById('kys-f-file') : null;
       const file = fileInput && fileInput.files[0];
       try {
@@ -196,6 +199,7 @@
         if (file) await uploadDokumanFile(saved.id, file);
         closeModal(); toast(row ? 'Kayıt güncellendi' : 'Kayıt eklendi');
         S.cache[key] = null; render(key);
+        window.__ikRefreshKysPending?.();
       } catch (err) { toast(err.message); }
     });
   }

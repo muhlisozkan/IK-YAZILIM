@@ -4261,6 +4261,10 @@ app.post('/api/kys/:module', asyncRoute(async (req, res) => {
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
   // Doküman sürümleri her zaman Taslak doğar; Yürürlükte/Onay Bekliyor durumuna yalnızca onay akışı uçlarıyla geçilir.
   if (module === 'dokuman') data.status = 'Taslak';
+  // Misafir şikayeti: kök neden + aksiyon girilmeden "Kapatıldı" yapılamaz (erken/eksik kapatmayı önler).
+  if (module === 'sikayet' && data.status === 'Kapatıldı' && (!clean(data.rootCause) || !clean(data.action))) {
+    return res.status(400).json({ error: 'Kapatmadan önce kök neden ve aksiyon alanları doldurulmalıdır' });
+  }
   const row = (await pool.query(
     'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
     [module, clean(req.user.department), JSON.stringify(data), req.user?.name || null])).rows[0];
@@ -4279,6 +4283,9 @@ app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
   if (module === 'dokuman' && existing.data.status === 'Onay Bekliyor') return res.status(409).json({ error: 'Onay bekleyen doküman düzenlenemez' });
   const data = { ...existing.data, ...body };
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
+  if (module === 'sikayet' && data.status === 'Kapatıldı' && (!clean(data.rootCause) || !clean(data.action))) {
+    return res.status(400).json({ error: 'Kapatmadan önce kök neden ve aksiyon alanları doldurulmalıdır' });
+  }
   const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
     [existing.id, JSON.stringify(data)])).rows[0];
   res.json(kysRow(row));
