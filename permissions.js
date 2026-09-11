@@ -35,6 +35,16 @@
   const canSeeLostFound = () => { const a = securityAccess(); return a.admin || a.lostDept; };
   const canSeePerformance = () => { const a = securityAccess(); return a.admin || a.hr; };
   const canSeeGuncel = () => { const a = securityAccess(); return a.admin || a.hr; };
+  // Kalite Yönetim Sistemi: İK + Kalite departmanı tam yetkili; üst yönetim salt-okunur.
+  function kysAccess() {
+    const u = currentUser() || {};
+    if (u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI') return 'full';
+    if (normDept(u.department) === 'KALİTE') return 'full';
+    if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(u.role)) return 'read';
+    return u.role === 'Sistem yöneticisi' ? 'full' : 'none';
+  }
+  window.__ikKysAccess = kysAccess;
+  const canSeeKYS = () => kysAccess() !== 'none';
   const canSeeButce = () => {
     const u = currentUser() || {};
     return ['Sistem yöneticisi', 'İK yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Mali İşler', 'Finans yöneticisi', 'Departman yöneticisi'].includes(u.role)
@@ -66,6 +76,7 @@
     if (view === 'performance') return canSeePerformance();
     if (view === 'guncel-tablo') return canSeeGuncel();
     if (view === 'personel-butcesi') return canSeeButce();
+    if (view.startsWith('kys-')) return canSeeKYS();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;
     return action === 'view' ? true : Boolean(currentRule[action]);

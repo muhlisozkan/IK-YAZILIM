@@ -4210,6 +4210,66 @@ app.delete('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res
   res.json({ ok: true });
 }));
 
+// --- Kalite Yönetim Sistemi (KYS) -------------------------------------
+// Genel amaçlı JSON kayıt deposu (hms_records paterni). İskelet aşaması:
+// tüm alt modüller aynı CRUD uçlarını, modül adıyla ayrılmış olarak kullanır.
+const KYS_MODULES = new Set(['dokuman', 'hedefler', 'ygg', 'tedarikci', 'kalibrasyon', 'sikayet', 'denetim', 'haccp']);
+function kysAccess(user) {
+  if (isHRUser(user)) return 'full';
+  if (normalizeDepartmentValue(user.department) === 'KALİTE') return 'full';
+  if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return 'read';
+  return 'none';
+}
+const kysRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
+const kysCleanBody = body => {
+  const out = { ...(body || {}) };
+  ['id', 'department', 'module', 'created_at', 'updated_at', 'created_by'].forEach(k => delete out[k]);
+  return out;
+};
+
+app.get('/api/kys/:module', asyncRoute(async (req, res) => {
+  const module = clean(req.params.module);
+  if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' });
+  const rows = (await pool.query('select * from kys_records where module=$1 order by id desc', [module])).rows;
+  res.json(rows.map(kysRow));
+}));
+
+app.post('/api/kys/:module', asyncRoute(async (req, res) => {
+  const module = clean(req.params.module);
+  if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Kayıt ekleme yetkiniz yok' });
+  const data = kysCleanBody(req.body);
+  if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
+  const row = (await pool.query(
+    'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
+    [module, clean(req.user.department), JSON.stringify(data), req.user?.name || null])).rows[0];
+  res.status(201).json(kysRow(row));
+}));
+
+app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
+  const module = clean(req.params.module);
+  if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Kayıt düzenleme yetkiniz yok' });
+  const existing = (await pool.query('select * from kys_records where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
+  const data = { ...existing.data, ...kysCleanBody(req.body) };
+  if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
+  const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
+    [existing.id, JSON.stringify(data)])).rows[0];
+  res.json(kysRow(row));
+}));
+
+app.delete('/api/kys/:module/:id', asyncRoute(async (req, res) => {
+  const module = clean(req.params.module);
+  if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Silme yetkiniz yok' });
+  const existing = (await pool.query('select * from kys_records where id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
+  await pool.query('delete from kys_records where id=$1', [existing.id]);
+  res.status(204).end();
+}));
+
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });

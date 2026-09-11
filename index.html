@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1b3a62" />
   <title>Hilton Dalaman Otel Yönetim Sistemi</title>
   <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="styles.css?v=75" />
+  <link rel="stylesheet" href="styles.css?v=76" />
 </head>
 <body>
   <div class="auth-overlay" id="login-overlay">
@@ -42,6 +42,19 @@
       <button class="nav-item" data-view="users" onclick="window.__ikNavigate('users')">♙ <span>Kullanıcı ve Yetkiler</span></button>
       <button class="nav-item" data-view="personel-butcesi" onclick="window.__ikNavigate('personel-butcesi')">₺ <span>Personel Bütçesi</span></button>
       <button class="nav-item" data-view="guncel-tablo" onclick="window.__ikNavigate('guncel-tablo')">▦ <span>Güncel Tablo</span></button>
+      <div class="nav-group" id="kys-nav-group">
+        <button class="nav-item nav-group-toggle" data-view="kys-group" type="button" onclick="window.__ikToggleKysMenu()">◈ <span>Kalite Yönetim Sistemi</span><i class="nav-caret">▾</i></button>
+        <div class="nav-sub">
+          <button class="nav-item nav-sub-item" data-view="kys-dokuman" onclick="window.__ikNavigate('kys-dokuman')"><span>Doküman Yönetimi</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-hedefler" onclick="window.__ikNavigate('kys-hedefler')"><span>Kalite Hedefleri / KPI</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-ygg" onclick="window.__ikNavigate('kys-ygg')"><span>Yönetimin Gözden Geçirmesi</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-tedarikci" onclick="window.__ikNavigate('kys-tedarikci')"><span>Tedarikçi Değerlendirme</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-kalibrasyon" onclick="window.__ikNavigate('kys-kalibrasyon')"><span>Kalibrasyon / Ekipman Takibi</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-sikayet" onclick="window.__ikNavigate('kys-sikayet')"><span>Misafir Şikayet & Memnuniyet</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-denetim" onclick="window.__ikNavigate('kys-denetim')"><span>Marka Standart Denetimi</span></button>
+          <button class="nav-item nav-sub-item" data-view="kys-haccp" onclick="window.__ikNavigate('kys-haccp')"><span>Gıda Güvenliği / HACCP</span></button>
+        </div>
+      </div>
     </nav>
     <div class="sidebar-foot"><small>Sunucu sürümü</small><span>● Sistem çalışıyor</span></div>
   </aside>
@@ -61,7 +74,7 @@
   <script src="attendance.js?v=5"></script>
   <script src="approval.js?v=6"></script>
   <script src="users.js?v=10"></script>
-  <script src="permissions.js?v=21"></script>
+  <script src="permissions.js?v=22"></script>
   <script src="departments.js?v=2"></script>
   <script src="expense-advance.js?v=5"></script>
   <script src="shifts.js?v=10"></script>
@@ -79,6 +92,7 @@
   <script src="survey.js?v=26"></script>
   <script src="personel-butcesi.js?v=10"></script>
   <script src="guncel-tablo.js?v=2"></script>
+  <script src="kys.js?v=1"></script>
   <script src="dashboard.js?v=7"></script>
 </body>
 </html>
