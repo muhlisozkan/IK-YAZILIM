@@ -4399,6 +4399,7 @@ app.get('/api/kys/dokuman/:id/file', asyncRoute(async (req, res) => {
 // Aynı KYS erişim modeli (İK/Kalite tam, üst yönetim salt-okunur) kullanılır.
 const EYS_ROOT = path.resolve(process.env.EYS_ROOT || '/data/eys');
 const EYS_HIDE = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+const EYS_MIME = { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
 function eysSafePath(relPath) {
   const rel = String(relPath || '').replace(/\\/g, '/').split('/').filter(p => p && p !== '.' && p !== '..').join('/');
   const abs = path.resolve(EYS_ROOT, rel);
@@ -4433,7 +4434,40 @@ app.get('/api/eys/file', asyncRoute(async (req, res) => {
   if (!target || !target.rel) return res.status(400).json({ error: 'Geçersiz yol' });
   const st = await fsp.stat(target.abs).catch(() => null);
   if (!st || !st.isFile()) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  if (clean(req.query.inline) === '1') {
+    res.set('Content-Type', EYS_MIME[path.extname(target.abs).toLowerCase()] || 'application/octet-stream');
+    res.set('Content-Disposition', `inline; filename="${encodeURIComponent(path.basename(target.abs))}"`);
+    return res.sendFile(target.abs);
+  }
   res.download(target.abs, path.basename(target.abs));
+}));
+
+// Tüm arşivde dosya adına göre arama (klasörler hariç, ~1900 dosya — canlı gezinme yeterince hızlı).
+async function eysWalkSearch(dir, relBase, term, results, limit) {
+  if (results.length >= limit) return;
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (results.length >= limit) return;
+    if (EYS_HIDE.has(e.name) || e.name.startsWith('.')) continue;
+    const abs = path.join(dir, e.name);
+    const rel = relBase ? `${relBase}/${e.name}` : e.name;
+    if (e.isDirectory()) await eysWalkSearch(abs, rel, term, results, limit);
+    else if (e.isFile() && e.name.toLocaleLowerCase('tr-TR').includes(term)) {
+      const st = await fsp.stat(abs).catch(() => null);
+      results.push({ name: e.name, path: rel, size: st?.size || 0, mtime: st?.mtime || null });
+    }
+  }
+}
+
+app.get('/api/eys/search', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const term = clean(req.query.q).toLocaleLowerCase('tr-TR');
+  if (term.length < 2) return res.json({ items: [] });
+  const results = [];
+  await eysWalkSearch(EYS_ROOT, '', term, results, 300);
+  results.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  res.json({ items: results });
 }));
 
 app.use((error, _req, res, _next) => {

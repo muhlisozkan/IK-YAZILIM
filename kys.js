@@ -286,13 +286,112 @@
 
   // --- Entegre Yönetim Sistemi: klasör klasör doküman arşivi gezgini -----
   const EYS_VIEW = 'kys-eys';
+  const FOLDER_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-4px;margin-right:7px;flex-shrink:0"><path d="M3 6.5a2 2 0 0 1 2-2h4.4l2 2H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-10.5Z" fill="#f6c343" stroke="#d99e1f" stroke-width="1.2" stroke-linejoin="round"/></svg>';
   let eysPath = '';
   try { eysPath = sessionStorage.getItem('ik_eys_path') || ''; } catch (_) { /* özel gezinti modu */ }
   function eysSetPath(p) {
     eysPath = p || '';
     try { sessionStorage.setItem('ik_eys_path', eysPath); } catch (_) { /* özel gezinti modu */ }
   }
-  const fmtDT = v => { if (!v) return ''; const d = new Date(v); return isNaN(d) ? '' : d.toLocaleDateString('tr-TR'); };
+  const eysExt = name => (name.split('.').pop() || '').toLowerCase();
+  const eysPreviewKind = name => (['pdf'].includes(eysExt(name)) ? 'pdf' : ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(eysExt(name)) ? 'image' : null);
+
+  const EYS = { items: [], searchTerm: '', searching: false, selected: null };
+
+  function eysPreviewHtml() {
+    const item = EYS.selected;
+    if (!item) return '<div class="empty">Önizlemek için bir dosyaya tıklayın</div>';
+    const kind = eysPreviewKind(item.name);
+    const inlineUrl = '/api/eys/file?inline=1&path=' + encodeURIComponent(item.path);
+    const dlUrl = '/api/eys/file?path=' + encodeURIComponent(item.path);
+    const head = `<div class="eys-preview-head"><strong title="${esc(item.path)}">${esc(item.name)}</strong><a class="btn ghost" href="${dlUrl}" target="_blank" rel="noopener">⬇ İndir</a></div>`;
+    if (kind === 'pdf') return head + `<iframe class="eys-preview-frame" src="${inlineUrl}"></iframe>`;
+    if (kind === 'image') return head + `<div class="eys-preview-imgwrap"><img src="${inlineUrl}" alt="${esc(item.name)}"></div>`;
+    return head + '<div class="empty">Bu dosya türü tarayıcıda önizlenemiyor — indirip açın</div>';
+  }
+
+  function eysRowsHtml() {
+    if (EYS.searching) {
+      if (!EYS.items.length) return '<tr><td class="empty">Eşleşen dosya bulunamadı</td></tr>';
+      return EYS.items.map(it => `<tr class="eys-row${EYS.selected === it ? ' eys-sel' : ''}" data-eys-file="${esc(it.path)}">
+        <td><div>${esc(it.name)}</div><div class="muted eys-path">${esc(it.path.split('/').slice(0, -1).join(' / ') || 'Ana dizin')}</div></td>
+      </tr>`).join('');
+    }
+    if (!EYS.items.length) return '<tr><td class="empty">Bu klasör boş</td></tr>';
+    return EYS.items.map(it => it.type === 'dir'
+      ? `<tr class="eys-row" data-eys-open="${esc(it.path)}"><td>${FOLDER_SVG}${esc(it.name)}</td></tr>`
+      : `<tr class="eys-row${EYS.selected === it ? ' eys-sel' : ''}" data-eys-file="${esc(it.path)}"><td>${esc(it.name)}</td></tr>`
+    ).join('');
+  }
+
+  // İskelet (arama kutusu dahil) bir kez kurulur; klasör/arama sonuçları yalnızca
+  // liste+önizleme panelini günceller — böylece yazarken arama kutusu odağı kaybolmaz.
+  function eysPaintShell() {
+    $('#app').innerHTML = `
+      <div id="eys-wrap">
+        <div class="section-title"><div><h2>Entegre Yönetim Sistemi</h2><span class="muted">Kalite/İK doküman arşivi — klasör klasör gezinin</span></div></div>
+        <div class="eys-toolbar">
+          <div class="eys-crumbs" id="eys-crumbs"></div>
+          <input class="input eys-search" id="eys-search" type="search" placeholder="Dosya ara…">
+        </div>
+        <div class="eys-split">
+          <div class="eys-list-pane"><div class="card" style="padding:0"><div style="overflow:auto;max-height:75vh"><table><tbody id="eys-tbody"></tbody></table></div></div></div>
+          <div class="eys-preview-pane"><div class="card eys-preview-card" id="eys-preview"></div></div>
+        </div>
+      </div>`;
+    document.getElementById('eys-search').oninput = e => eysOnSearchInput(e.target.value);
+  }
+
+  function eysPaintResults() {
+    if (state.view !== EYS_VIEW || !document.querySelector('#eys-wrap')) return;
+    const parts = eysPath ? eysPath.split('/') : [];
+    const crumbs = [`<button class="btn ghost eys-crumb" data-eys-go="">Ana dizin</button>`]
+      .concat(parts.map((p, i) => `<span class="muted">/</span><button class="btn ghost eys-crumb" data-eys-go="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</button>`))
+      .join('');
+    document.getElementById('eys-crumbs').innerHTML = EYS.searching ? '' : crumbs;
+    document.getElementById('eys-tbody').innerHTML = eysRowsHtml();
+    document.getElementById('eys-preview').innerHTML = eysPreviewHtml();
+    const searchEl = document.getElementById('eys-search');
+    if (searchEl && searchEl.value !== EYS.searchTerm) searchEl.value = EYS.searchTerm;
+    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-file]').forEach(tr => tr.onclick = () => {
+      EYS.selected = EYS.items.find(it => it.path === tr.dataset.eysFile) || null;
+      eysPaintResults();
+    });
+  }
+
+  let eysSearchTimer = null;
+  function eysOnSearchInput(value) {
+    EYS.searchTerm = value;
+    clearTimeout(eysSearchTimer);
+    if (value.trim().length < 2) { EYS.searching = false; EYS.items = eysFolderCache || []; eysPaintResults(); return; }
+    eysSearchTimer = setTimeout(() => loadEysSearch(value.trim()), 350);
+  }
+
+  let eysFolderCache = [];
+  async function loadEysFolder() {
+    if (state.view !== EYS_VIEW) return;
+    let data;
+    try { data = await api('/api/eys/list?path=' + encodeURIComponent(eysPath)); }
+    catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    if (state.view !== EYS_VIEW) return;
+    EYS.searching = false; EYS.searchTerm = '';
+    eysFolderCache = data.items;
+    EYS.items = data.items;
+    eysPaintResults();
+  }
+
+  async function loadEysSearch(term) {
+    if (state.view !== EYS_VIEW) return;
+    let data;
+    try { data = await api('/api/eys/search?q=' + encodeURIComponent(term)); }
+    catch (err) { toast(err.message); return; }
+    if (state.view !== EYS_VIEW || EYS.searchTerm.trim() !== term) return;
+    EYS.searching = true;
+    EYS.items = data.items;
+    eysPaintResults();
+  }
 
   async function renderEys() {
     if (state.view !== EYS_VIEW) return;
@@ -300,30 +399,9 @@
     syncNavGroup();
     $('#page-title').textContent = 'Entegre Yönetim Sistemi';
     if (!canSeeKys()) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
-    if (!document.querySelector('#eys-wrap')) $('#app').innerHTML = '<div class="card empty">Yükleniyor…</div>';
-    let data;
-    try { data = await api('/api/eys/list?path=' + encodeURIComponent(eysPath)); }
-    catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
-    if (state.view !== EYS_VIEW) return;
-    const parts = eysPath ? eysPath.split('/') : [];
-    const crumbs = [`<button class="btn ghost eys-crumb" data-eys-go="">Ana dizin</button>`]
-      .concat(parts.map((p, i) => `<span class="muted">/</span><button class="btn ghost eys-crumb" data-eys-go="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</button>`))
-      .join('');
-    const rows = data.items.map(it => it.type === 'dir'
-      ? `<tr class="eys-row" data-eys-open="${esc(it.path)}"><td>📁 ${esc(it.name)}</td><td>—</td><td>—</td><td></td></tr>`
-      : `<tr><td>${esc(it.name)}</td><td>${fmtBytes(it.size)}</td><td>${fmtDT(it.mtime)}</td><td><a class="btn ghost" href="/api/eys/file?path=${encodeURIComponent(it.path)}" target="_blank" rel="noopener">İndir</a></td></tr>`
-    ).join('');
-    $('#app').innerHTML = `
-      <div id="eys-wrap">
-        <div class="section-title"><div><h2>Entegre Yönetim Sistemi</h2><span class="muted">Kalite/İK doküman arşivi — klasör klasör gezinin</span></div></div>
-        <div class="card">
-          <div class="eys-crumbs">${crumbs}</div>
-          <div style="overflow:auto"><table><thead><tr><th>Ad</th><th>Boyut</th><th>Tarih</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="4" class="empty">Bu klasör boş</td></tr>'}</tbody></table></div>
-        </div>
-      </div>`;
-    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); renderEys(); });
-    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); renderEys(); });
+    if (document.querySelector('#eys-wrap')) { eysPaintResults(); return; }
+    eysPaintShell();
+    await loadEysFolder();
   }
 
   function syncNavGroup() {
