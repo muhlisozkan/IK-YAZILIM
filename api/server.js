@@ -4292,6 +4292,15 @@ function kysAccess(user) {
   if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return 'read';
   return 'none';
 }
+// Doküman Yönetimi: diğer KYS modüllerinden farklı olarak Departman yöneticisi de
+// erişebilir — yalnız görüntüleme + revizyon talebi (oluşturma/düzenleme/onay yok,
+// bu yüzden generic POST/PATCH/DELETE'te hâlâ kysAccess()==='full' aranıyor).
+function dokumanAccess(user) {
+  const base = kysAccess(user);
+  if (base !== 'none') return base;
+  if (user.role === 'Departman yöneticisi' && clean(user.department)) return 'dept';
+  return 'none';
+}
 const kysRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
 const kysCleanBody = body => {
   const out = { ...(body || {}) };
@@ -4336,7 +4345,8 @@ const kysApplyComputed = (module, row) => {
 app.get('/api/kys/:module', asyncRoute(async (req, res) => {
   const module = clean(req.params.module);
   if (!KYS_MODULES.has(module)) return res.status(404).json({ error: 'Geçersiz modül' });
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' });
+  const access = module === 'dokuman' ? dokumanAccess(req.user) : kysAccess(req.user);
+  if (access === 'none') return res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' });
   const rows = (await pool.query('select * from kys_records where module=$1 order by id desc', [module])).rows;
   res.json(rows.map(kysRow).map(r => kysApplyComputed(module, r)));
 }));
@@ -4416,6 +4426,29 @@ app.post('/api/kys/dokuman/:id/retire', asyncRoute(async (req, res) => {
   const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
   if (existing.data.status === 'İptal') return res.status(409).json({ error: 'Bu doküman zaten iptal' });
   const data = kysHistPush({ ...existing.data, status: 'İptal' }, { by: req.user.name, action: 'İptal edildi' });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+// Revizyon talebi: bir departman (ya da Kalite/İK) mevcut/yürürlükteki bir dokümanın
+// güncellenmesi gerektiğini bildirir — dokümanın kendi durumu (Yürürlükte vb.)
+// DEĞİŞMEZ, yalnızca "revizyon talebi var" bayrağı düşer ve Kalite/İK'ya bildirim gider.
+app.post('/api/kys/dokuman/:id/request-revision', asyncRoute(async (req, res) => {
+  if (dokumanAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (existing.data.revisionRequested) return res.status(409).json({ error: 'Bu doküman için zaten bekleyen bir revizyon talebi var' });
+  const note = clean(req.body?.note);
+  if (!note) return res.status(400).json({ error: 'Talep açıklaması zorunludur' });
+  const data = kysHistPush(
+    { ...existing.data, revisionRequested: true, revisionRequestNote: note, revisionRequestedBy: req.user.name, revisionRequestedAt: new Date().toISOString() },
+    { by: req.user.name, action: 'Revizyon talep edildi', note });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+app.post('/api/kys/dokuman/:id/clear-revision-request', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (!existing.data.revisionRequested) return res.status(409).json({ error: 'Bekleyen bir revizyon talebi yok' });
+  const data = kysHistPush({ ...existing.data, revisionRequested: false }, { by: req.user.name, action: 'Revizyon talebi kapatıldı' });
   res.json(await kysSaveData(existing.id, data));
 }));
 

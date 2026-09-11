@@ -31,6 +31,9 @@
     kysPending.forEach(r=>
       list.push({id:'kys-dokuman:'+r.id,cat:'Doküman onayı',kind:'orange',view:'kys-dokuman',
         text:`${esc(r.title||'Doküman')} onayınızı bekliyor`}));
+    kysRevisionRequests.forEach(r=>
+      list.push({id:'kys-dokuman-rev:'+r.id,cat:'Revizyon talebi',kind:'orange',view:'kys-dokuman',
+        text:`${esc(r.title||'Doküman')} için revizyon talebi geldi (${esc(r.revisionRequestedBy||'')})`}));
     kysOpenComplaints.forEach(r=>
       list.push({id:'kys-sikayet:'+r.id,cat:'Şikayet',kind:'orange',view:'kys-sikayet',
         text:`${esc(r.title||'Şikayet')} henüz işleme alınmadı`}));
@@ -48,15 +51,17 @@
 
   // --- KYS: onay bekleyen doküman + açık şikayet + süresi geçen kalibrasyon + aksiyon bekleyen denetim + HACCP sapması --
   let kysPending=[];
+  let kysRevisionRequests=[];
   let kysOpenComplaints=[];
   let kysOverdueCalibration=[];
   let kysActionPendingAudits=[];
   let kysHaccpDeviations=[];
   async function refreshKysPending(){
     try{
-      if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
+      if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];kysRevisionRequests=[];return}
       const rows=await api('/api/kys/dokuman');
       kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
+      kysRevisionRequests=(rows||[]).filter(r=>r.revisionRequested);
     }catch{ /* bildirim kaynağı — sessiz geç */ }
     try{
       if((window.__ikKysAccess?.()||'none')!=='full'){kysOpenComplaints=[];kysOverdueCalibration=[];kysActionPendingAudits=[];kysHaccpDeviations=[];return}

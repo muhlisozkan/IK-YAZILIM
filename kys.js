@@ -230,17 +230,76 @@
     } catch (err) { toast(err.message); }
   }
 
-  function dokumanActionsHtml(r, canWrite, canApprove) {
+  function dokumanActionsHtml(r, canWrite, canApprove, canRequestRevision) {
     if (r.status === 'Onay Bekliyor') {
       if (canApprove) return `<button class="btn ghost" data-kys-approve="${r.id}">Onayla</button><button class="btn ghost danger-text" data-kys-reject="${r.id}">Reddet</button>`;
       return '<span class="muted" style="font-size:11.5px">Onay bekliyor</span>';
     }
     const btns = [];
+    if (r.revisionRequested) {
+      btns.push(`<span class="badge orange" title="${esc(r.revisionRequestNote || '')}">Revizyon Talebi</span>`);
+      if (canWrite) btns.push(`<button class="btn ghost" data-kys-clearrev="${r.id}">Talebi Kapat</button>`);
+    } else if (canRequestRevision && r.status !== 'İptal') {
+      btns.push(`<button class="btn ghost" data-kys-reqrev="${r.id}">Revizyon Talep Et</button>`);
+    }
     if (canWrite) btns.push(`<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button>`);
     if (canWrite && ['Taslak', 'Revizyonda'].includes(r.status)) btns.push(`<button class="btn ghost" data-kys-submit="${r.id}">Onaya Gönder</button>`);
     if (canWrite && r.status !== 'İptal') btns.push(`<button class="btn ghost danger-text" data-kys-retire="${r.id}">İptal Et</button>`);
     if (canWrite) btns.push(`<button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>`);
     return btns.join('');
+  }
+
+  // Revizyon talebi: departman (veya Kalite/İK) yazmaya başladıkça eşleşen dokümanlar
+  // aşağıda listelenir, seçilince bilgiler otomatik gelir.
+  function dokumanOpenRevisionModal(rows, preselected) {
+    let selected = preselected || null;
+    const body = `
+      <div class="field">
+        <label>Doküman ara (ad veya doküman no) *</label>
+        <input class="input" id="rev-search" placeholder="Yazmaya başlayın…" autocomplete="off" style="width:100%" value="${preselected ? esc(preselected.title) : ''}">
+        <div id="rev-suggestions" class="rev-suggestions"></div>
+      </div>
+      <div id="rev-selected-info"></div>
+      <div class="field" style="margin-top:12px"><label>Revizyon talebi açıklaması *</label><textarea class="input" id="rev-note" rows="4" style="width:100%"></textarea></div>`;
+    function paintSelected() {
+      const el = document.getElementById('rev-selected-info');
+      if (!selected) { el.innerHTML = ''; return; }
+      el.innerHTML = `<div class="form-grid" style="margin-top:10px">
+        <div class="field"><label>Doküman no</label><div class="muted">${esc(selected.docNo || '—')}</div></div>
+        <div class="field"><label>Tür</label><div class="muted">${esc(selected.category || '—')}</div></div>
+        <div class="field"><label>Revizyon no</label><div class="muted">${esc(selected.version || '—')}</div></div>
+        <div class="field"><label>Doküman sahibi</label><div class="muted">${esc(selected.owner || '—')}</div></div>
+        <div class="field" style="grid-column:1/-1"><label>Mevcut durum</label><span class="badge ${badgeClass(selected.status)}">${esc(selected.status)}</span></div>
+      </div>`;
+    }
+    function paintSuggestions(term) {
+      const box = document.getElementById('rev-suggestions');
+      if (!term || term.trim().length < 2) { box.innerHTML = ''; return; }
+      const t = term.toLocaleLowerCase('tr-TR');
+      const matches = rows.filter(r => r.status !== 'İptal' && (String(r.title || '').toLocaleLowerCase('tr-TR').includes(t) || String(r.docNo || '').toLocaleLowerCase('tr-TR').includes(t))).slice(0, 8);
+      box.innerHTML = matches.length
+        ? matches.map(r => `<div class="rev-suggest-item" data-rev-pick="${r.id}">${esc(r.title)} <span class="muted">${esc(r.docNo || '')}</span></div>`).join('')
+        : '<div class="rev-suggest-item muted" style="cursor:default">Eşleşen doküman yok</div>';
+      box.querySelectorAll('[data-rev-pick]').forEach(item => item.onclick = () => {
+        selected = rows.find(r => String(r.id) === item.dataset.revPick);
+        document.getElementById('rev-search').value = selected.title;
+        box.innerHTML = '';
+        paintSelected();
+      });
+    }
+    modal('Revizyon Talebi', body, async () => {
+      if (!selected) return toast('Listeden bir doküman seçin');
+      const note = document.getElementById('rev-note').value.trim();
+      if (!note) return toast('Talep açıklaması zorunludur');
+      try {
+        await api(`/api/kys/dokuman/${selected.id}/request-revision`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }) });
+        closeModal(); toast('Revizyon talebi Kalite departmanına gönderildi');
+        S.cache.dokuman = null; render('dokuman');
+        window.__ikRefreshKysPending?.();
+      } catch (err) { toast(err.message); }
+    });
+    document.getElementById('rev-search').oninput = e => paintSuggestions(e.target.value);
+    if (preselected) paintSelected();
   }
 
   async function render(key) {
@@ -249,8 +308,13 @@
     syncNavGroup();
     const cfg = MOD[key];
     $('#page-title').textContent = cfg.title;
-    if (!canSeeKys()) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
-    const canWrite = canWriteKys();
+    // Doküman Yönetimi diğer KYS modüllerinden farklı: Departman yöneticisi de
+    // erişebilir (yalnız görüntüleme + revizyon talebi), bu yüzden ayrı bir erişim kapısı var.
+    const isDokuman = key === 'dokuman';
+    const dAccess = isDokuman ? (window.__ikDokumanAccess?.() || 'none') : null;
+    if (isDokuman ? dAccess === 'none' : !canSeeKys()) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
+    const canWrite = isDokuman ? dAccess === 'full' : canWriteKys();
+    const canRequestRevision = isDokuman && ['full', 'dept'].includes(dAccess);
     if (!document.querySelector('#kys-wrap')) $('#app').innerHTML = '<div class="card empty">Yükleniyor…</div>';
     let rows = S.cache[key];
     if (!rows) {
@@ -264,14 +328,28 @@
       if (k === 'file') return `<td>${r.fileId ? `<a href="/api/kys/dokuman/${r.id}/file" target="_blank" rel="noopener">${esc(r.fileName || 'İndir')}</a>` : '—'}</td>`;
       const f = cfg.fields.find(x => x.key === k);
       return `<td>${fmtVal(f, r[k])}</td>`;
-    }).join('')}<td class="row-actions">${cfg.workflow ? dokumanActionsHtml(r, canWrite, canApprove) : (canWrite ? `<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button><button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>` : '')}</td></tr>`).join('');
+    }).join('')}<td class="row-actions">${cfg.workflow ? dokumanActionsHtml(r, canWrite, canApprove, canRequestRevision) : (canWrite ? `<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button><button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>` : '')}</td></tr>`).join('');
     $('#app').innerHTML = `
       <div id="kys-wrap">
-        <div class="section-title"><div><h2>${esc(cfg.title)}</h2><span class="muted">${esc(cfg.desc)}</span></div>${canWrite ? '<button class="btn" id="kys-add">+ Yeni kayıt</button>' : ''}</div>
+        <div class="section-title"><div><h2>${esc(cfg.title)}</h2><span class="muted">${esc(cfg.desc)}</span></div>
+          <div style="display:flex;gap:8px">
+            ${canWrite ? '<button class="btn" id="kys-add">+ Yeni kayıt</button>' : ''}
+            ${canRequestRevision ? '<button class="btn secondary" id="kys-reqrev">Revizyon Talebi</button>' : ''}
+          </div>
+        </div>
         <div class="card"><div style="overflow:auto"><table><thead><tr>${cfg.columns.map(([, l]) => `<th>${esc(l)}</th>`).join('')}<th></th></tr></thead>
         <tbody>${trs || `<tr><td colspan="${cfg.columns.length + 1}" class="empty">Henüz kayıt yok</td></tr>`}</tbody></table></div></div>
       </div>`;
     document.getElementById('kys-add')?.addEventListener('click', () => openForm(key, null));
+    document.getElementById('kys-reqrev')?.addEventListener('click', () => dokumanOpenRevisionModal(rows, null));
+    document.querySelectorAll('[data-kys-reqrev]').forEach(b => b.onclick = () => dokumanOpenRevisionModal(rows, rows.find(r => String(r.id) === b.dataset.kysReqrev)));
+    document.querySelectorAll('[data-kys-clearrev]').forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/kys/dokuman/${b.dataset.kysClearrev}/clear-revision-request`, { method: 'POST' });
+        toast('Revizyon talebi kapatıldı'); S.cache.dokuman = null; render('dokuman');
+        window.__ikRefreshKysPending?.();
+      } catch (err) { toast(err.message); }
+    });
     document.querySelectorAll('[data-kys-edit]').forEach(b => b.onclick = () => openForm(key, rows.find(r => String(r.id) === b.dataset.kysEdit)));
     document.querySelectorAll('[data-kys-del]').forEach(b => b.onclick = () => removeRow(key, b.dataset.kysDel));
     document.querySelectorAll('[data-kys-submit]').forEach(b => b.onclick = () => runDokumanAction(b.dataset.kysSubmit, 'submit'));

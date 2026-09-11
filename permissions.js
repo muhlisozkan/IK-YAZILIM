@@ -50,6 +50,17 @@
     const u = currentUser() || {};
     return u.role === 'Sistem yöneticisi' || u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI';
   };
+  // Doküman Yönetimi: diğer KYS modüllerinden farklı olarak Departman yöneticisi de
+  // erişebilir — yalnız görüntüleme + revizyon talebi (oluşturma/düzenleme/onay yok).
+  window.__ikDokumanAccess = () => {
+    const base = kysAccess();
+    if (base !== 'none') return base;
+    const u = currentUser() || {};
+    if (u.role === 'Departman yöneticisi' && u.department) return 'dept';
+    return 'none';
+  };
+  const canSeeDokuman = () => window.__ikDokumanAccess() !== 'none';
+  window.__ikDokumanCanRequestRevision = () => ['full', 'dept'].includes(window.__ikDokumanAccess());
   // DÖF Takip: Kalite (İK/admin/Kalite departmanı) tam yetkili + tüm departmanları görür;
   // departman yöneticisi yalnız kendi departmanına açılmış DÖF'leri görür/aksiyon yazar.
   window.__ikDofAccess = () => {
@@ -98,6 +109,11 @@
     if (view === 'personel-butcesi') return canSeeButce();
     if (view === 'birthdays') return canSeeBirthdays();
     if (view === 'kys-dof') return window.__ikDofAccess().level !== 'none';
+    if (view === 'kys-dokuman') return canSeeDokuman();
+    // Grup başlığı: içindeki HERHANGİ bir alt öğeye (KYS geneli, DÖF veya Doküman
+    // departman erişimi) sahip olan herkese görünür — yoksa departman yöneticisi
+    // DÖF Takip/Doküman'a erişebildiği halde menü grubunu hiç göremezdi.
+    if (view === 'kys-group') return canSeeKYS() || window.__ikDofAccess().level !== 'none' || canSeeDokuman();
     if (view.startsWith('kys-')) return canSeeKYS();
     const currentRule = rule();
     if (!currentRule.views.includes(view)) return false;

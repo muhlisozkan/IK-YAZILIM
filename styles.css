@@ -661,3 +661,10 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .bday-col-head{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:620;margin:0 0 10px;letter-spacing:-.01em}
 .bday-list{display:flex;flex-direction:column;gap:8px}
 @media(max-width:700px){.bday-cols{grid-template-columns:1fr}}
+
+/* Doküman revizyon talebi — arama önerileri */
+.rev-suggestions{margin-top:6px;border:1px solid var(--line);border-radius:9px;overflow:hidden;max-height:220px;overflow-y:auto}
+.rev-suggestions:empty{display:none;border:0}
+.rev-suggest-item{padding:9px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line-soft)}
+.rev-suggest-item:last-child{border-bottom:0}
+.rev-suggest-item:hover{background:var(--line-soft)}
