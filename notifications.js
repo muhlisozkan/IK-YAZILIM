@@ -323,6 +323,11 @@
         <div class="field"><label>Onay bildirimlerini SMS gönder</label><select class="select" id="sms-notify"><option value="true" ${s.notify_approvals?'selected':''}>Evet</option><option value="false" ${!s.notify_approvals?'selected':''}>Hayır</option></select></div>
         <div class="field"><label>Test numarası</label><input class="input" id="sms-test-recipient" type="tel" value="${esc(window.__ikCurrentUser?.()?.phone||'')}" placeholder="5xxxxxxxxx"></div>
       </div>
+      <div class="card-head" style="margin-top:22px;padding-top:16px;border-top:1px solid var(--line)"><div><h2>Doğum Günü SMS'i</h2><span class="muted">Her gün saat 09:00 civarında, o gün doğum günü olan çalışanlara otomatik gönderilir</span></div><span class="badge ${s.birthday_enabled?'green':'orange'}">${s.birthday_enabled?'Etkin':'Kapalı'}</span></div>
+      <div class="form-grid" style="margin-top:14px">
+        <div class="field"><label>Doğum günü SMS'ini etkinleştir</label><select class="select" id="sms-bday-enabled"><option value="true" ${s.birthday_enabled?'selected':''}>Etkin</option><option value="false" ${!s.birthday_enabled?'selected':''}>Kapalı</option></select></div>
+        <div class="field" style="grid-column:1/-1"><label>Mesaj taslağı</label><textarea class="input" id="sms-bday-template" rows="3" style="width:100%">${esc(s.birthday_message_template||'')}</textarea><small class="muted"><code>{isim}</code> yerine çalışanın adı-soyadı gelir (ör. "Sayın {isim}, ...")</small></div>
+      </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px"><button class="btn ghost" id="sms-preset-tm">Teknomart ön ayarı</button><button class="btn secondary" id="sms-test">Test SMS gönder</button><button class="btn" id="sms-save">Ayarları kaydet</button></div>`;
     $('#app').appendChild(card);
     $('#sms-save').onclick=saveSmsSettings;
@@ -354,7 +359,9 @@
         success_contains:$('#sms-success').value.trim(),
         body_template:$('#sms-body').value,
         bulk_body_template:$('#sms-bulkbody')?$('#sms-bulkbody').value:'',
-        extra_headers:$('#sms-headers').value
+        extra_headers:$('#sms-headers').value,
+        birthday_enabled:$('#sms-bday-enabled').value==='true',
+        birthday_message_template:$('#sms-bday-template').value
       };
       const creds=kvParse($('#sms-creds').value);
       if(Object.keys(creds).length)payload.credentials=creds;

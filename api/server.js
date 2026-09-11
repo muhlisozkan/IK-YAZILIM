@@ -881,16 +881,47 @@ async function notifyApprovalSms(row, table) {
   }
 }
 
+// Doğum günü SMS'i: her gün 09:00-09:59 (İstanbul) penceresinde, o gün doğum
+// günü olan aktif+telefonlu çalışanlara bir kez gönderir. sms_log'daki
+// "birthday:<id>:<tarih>" context'i aynı gün tekrar göndermeyi engeller
+// (konteyner yeniden başlasa bile — bellek içi bayrağa ek, kalıcı koruma).
+let lastBirthdaySmsDate = '';
+async function runBirthdaySmsIfDue() {
+  const clock = istanbulClock();
+  if (clock.hour !== 9 || lastBirthdaySmsDate === clock.date) return;
+  try {
+    const settings = await readSmsSettings();
+    if (!settings || !settings.enabled || !settings.birthday_enabled) { lastBirthdaySmsDate = clock.date; return; }
+    const todayMD = clock.date.slice(5, 10);
+    const rows = (await pool.query(
+      `select id, name, phone, payroll_details->>'DOĞUM TARİHİ' as birth
+       from employees where status <> 'Pasif' and coalesce(phone,'') <> '' and coalesce(payroll_details->>'DOĞUM TARİHİ','') <> ''`
+    )).rows.filter(r => String(r.birth).slice(5, 10) === todayMD);
+    for (const emp of rows) {
+      const context = `birthday:${emp.id}:${clock.date}`;
+      const already = await pool.query('select 1 from sms_log where context=$1', [context]);
+      if (already.rowCount) continue;
+      const message = fillTemplate(settings.birthday_message_template || BIRTHDAY_SMS_DEFAULT, { isim: emp.name });
+      await sendSms(emp.phone, message, context);
+    }
+    lastBirthdaySmsDate = clock.date;
+  } catch (cause) {
+    console.error('Doğum günü SMS gönderimi başarısız', cause?.message || cause);
+  }
+}
+
+const BIRTHDAY_SMS_DEFAULT = 'Sayın {isim}, doğum gününüzü kutlar, nice mutlu yıllara ulaşmanızı dileriz!';
 app.get('/api/sms-settings', asyncRoute(async (req, res) => {
   if (!requireSystemAdmin(req, res)) return;
   const settings = await readSmsSettings();
-  if (!settings) return res.json({ configured: false, enabled: false, notify_approvals: false, provider_name: '', api_url: '', http_method: 'POST', content_type: 'application/json', body_template: '', bulk_body_template: '', extra_headers: '', sender: '', success_contains: '', credential_keys: [] });
+  if (!settings) return res.json({ configured: false, enabled: false, notify_approvals: false, provider_name: '', api_url: '', http_method: 'POST', content_type: 'application/json', body_template: '', bulk_body_template: '', extra_headers: '', sender: '', success_contains: '', credential_keys: [], birthday_enabled: false, birthday_message_template: BIRTHDAY_SMS_DEFAULT });
   res.json({
     configured: true, enabled: settings.enabled, notify_approvals: settings.notify_approvals,
     provider_name: settings.provider_name, api_url: settings.api_url, http_method: settings.http_method,
     content_type: settings.content_type, body_template: settings.body_template, bulk_body_template: settings.bulk_body_template,
     extra_headers: settings.extra_headers, sender: settings.sender, success_contains: settings.success_contains,
-    credential_keys: Object.keys(smsCredentials(settings)), updated_at: settings.updated_at
+    credential_keys: Object.keys(smsCredentials(settings)), updated_at: settings.updated_at,
+    birthday_enabled: settings.birthday_enabled, birthday_message_template: settings.birthday_message_template || BIRTHDAY_SMS_DEFAULT
   });
 }));
 
@@ -911,17 +942,20 @@ app.put('/api/sms-settings', asyncRoute(async (req, res) => {
     for (const key of Object.keys(merged)) if (clean(merged[key]) === '') delete merged[key];
     credentialsEncrypted = Object.keys(merged).length ? encryptSmtpSecret(JSON.stringify(merged)) : null;
   }
+  const birthdayEnabled = Boolean(body.birthday_enabled);
+  const birthdayTemplate = String(body.birthday_message_template || '').slice(0, 1000).trim() || BIRTHDAY_SMS_DEFAULT;
   await pool.query(`
-    insert into sms_settings(id,enabled,notify_approvals,provider_name,api_url,http_method,content_type,body_template,bulk_body_template,extra_headers,sender,success_contains,credentials_encrypted,updated_by,updated_at)
-    values(1,$1,$2,$3,$4,$5,$6,$7,$13,$8,$9,$10,$11,$12,now())
+    insert into sms_settings(id,enabled,notify_approvals,provider_name,api_url,http_method,content_type,body_template,bulk_body_template,extra_headers,sender,success_contains,credentials_encrypted,updated_by,updated_at,birthday_enabled,birthday_message_template)
+    values(1,$1,$2,$3,$4,$5,$6,$7,$13,$8,$9,$10,$11,$12,now(),$14,$15)
     on conflict(id) do update set enabled=excluded.enabled,notify_approvals=excluded.notify_approvals,provider_name=excluded.provider_name,
       api_url=excluded.api_url,http_method=excluded.http_method,content_type=excluded.content_type,body_template=excluded.body_template,
       bulk_body_template=excluded.bulk_body_template,
       extra_headers=excluded.extra_headers,sender=excluded.sender,success_contains=excluded.success_contains,
-      credentials_encrypted=excluded.credentials_encrypted,updated_by=excluded.updated_by,updated_at=now()`,
+      credentials_encrypted=excluded.credentials_encrypted,updated_by=excluded.updated_by,updated_at=now(),
+      birthday_enabled=excluded.birthday_enabled,birthday_message_template=excluded.birthday_message_template`,
     [Boolean(body.enabled), Boolean(body.notify_approvals), clean(body.provider_name), apiUrl, method, contentType,
       bodyTemplate, String(body.extra_headers || '').slice(0, 2000), clean(body.sender), clean(body.success_contains),
-      credentialsEncrypted, req.user.name, bulkBodyTemplate]);
+      credentialsEncrypted, req.user.name, bulkBodyTemplate, birthdayEnabled, birthdayTemplate]);
   res.json({ ok: true });
 }));
 
@@ -4825,5 +4859,8 @@ app.listen(3000, () => {
   runShiftTransferIfDue();
   const shiftTransferTimer = setInterval(runShiftTransferIfDue, 60000);
   shiftTransferTimer.unref();
+  runBirthdaySmsIfDue();
+  const birthdaySmsTimer = setInterval(runBirthdaySmsIfDue, 5 * 60000);
+  birthdaySmsTimer.unref();
   seedHmsIfEmpty().catch(cause => console.error('HMS örnek verisi yüklenemedi', cause?.message || cause));
 });
