@@ -19,3 +19,6 @@ imports/
 # Entegre Yönetim Sistemi doküman arşivi (455MB+, hassas veri) —
 # ik-api konteynerine salt-okunur bind mount ile bağlanır, repoya girmez.
 /Entegre Yonetim Sistemi/
+
+# SMB paylaşım kimlik bilgileri — asla repoya girmemeli
+.smb-eys-credentials
