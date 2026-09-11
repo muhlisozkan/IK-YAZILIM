@@ -572,21 +572,39 @@
     </tr>`).join('');
   }
 
+  // FR/QM/004 Düzeltici Önleyici Faaliyet Formu ile hizalı alanlar.
+  const DOF_ACTIVITY_TYPES = ['Düzeltici', 'Önleyici', 'Geliştirici'];
+  function dofOpenFieldsHtml(r) {
+    return `
+      <div class="field"><label>Hedef departman *</label>${dofDeptSelectHtml('dof-f-dept', r?.department || '')}</div>
+      <div class="field"><label>Termin (DF Planlama Tarihi)</label><input class="input" id="dof-f-due" type="date" value="${esc(r?.dueDate || '')}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Konu *</label><input class="input" id="dof-f-title" value="${esc(r?.title || '')}"></div>
+      <div class="field"><label>Faaliyet türü</label><select class="select" id="dof-f-type">${DOF_ACTIVITY_TYPES.map(t => `<option ${t === (r?.activityType || 'Düzeltici') ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Uygunsuzluk kaynağı</label><input class="input" id="dof-f-source" placeholder="ör. İç Denetim, Misafir Şikayeti…" value="${esc(r?.nonconformitySource || '')}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Faaliyet talebinde bulunan</label><input class="input" id="dof-f-reqby" value="${esc(r?.requestedBy || '')}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Tespit edilen uygunsuzluk</label><textarea class="input" id="dof-f-desc" rows="4" style="width:100%">${esc(r?.description || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluğun kök nedeni</label><textarea class="input" id="dof-f-root" rows="3" style="width:100%">${esc(r?.rootCause || '')}</textarea></div>`;
+  }
+  function dofReadOpenFields() {
+    return {
+      department: document.getElementById('dof-f-dept').value,
+      title: document.getElementById('dof-f-title').value.trim(),
+      activityType: document.getElementById('dof-f-type').value,
+      nonconformitySource: document.getElementById('dof-f-source').value.trim(),
+      requestedBy: document.getElementById('dof-f-reqby').value.trim(),
+      description: document.getElementById('dof-f-desc').value.trim(),
+      rootCause: document.getElementById('dof-f-root').value.trim(),
+      dueDate: document.getElementById('dof-f-due').value
+    };
+  }
+
   function dofOpenCreateModal() {
-    const body = `<div class="form-grid">
-      <div class="field"><label>Hedef departman *</label>${dofDeptSelectHtml('dof-f-dept', '')}</div>
-      <div class="field"><label>Termin</label><input class="input" id="dof-f-due" type="date"></div>
-      <div class="field" style="grid-column:1/-1"><label>Konu *</label><input class="input" id="dof-f-title"></div>
-      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><textarea class="input" id="dof-f-desc" rows="4" style="width:100%"></textarea></div>
-    </div>`;
+    const body = `<div class="form-grid">${dofOpenFieldsHtml(null)}</div>`;
     modal('Yeni DÖF Aç', body, async () => {
-      const department = document.getElementById('dof-f-dept').value;
-      const title = document.getElementById('dof-f-title').value.trim();
-      const description = document.getElementById('dof-f-desc').value.trim();
-      const dueDate = document.getElementById('dof-f-due').value;
-      if (!title) return toast('Konu zorunludur');
+      const payload = dofReadOpenFields();
+      if (!payload.title) return toast('Konu zorunludur');
       try {
-        await api('/api/dof', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ department, title, description, dueDate }) });
+        await api('/api/dof', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         closeModal(); toast('DÖF açıldı'); loadDof();
       } catch (err) { toast(err.message); }
     });
@@ -594,20 +612,12 @@
 
   function dofOpenEditModal(r) {
     if (!r) return;
-    const body = `<div class="form-grid">
-      <div class="field"><label>Hedef departman *</label>${dofDeptSelectHtml('dof-f-dept', r.department)}</div>
-      <div class="field"><label>Termin</label><input class="input" id="dof-f-due" type="date" value="${esc(r.dueDate || '')}"></div>
-      <div class="field" style="grid-column:1/-1"><label>Konu *</label><input class="input" id="dof-f-title" value="${esc(r.title)}"></div>
-      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><textarea class="input" id="dof-f-desc" rows="4" style="width:100%">${esc(r.description || '')}</textarea></div>
-    </div>`;
+    const body = `<div class="form-grid">${dofOpenFieldsHtml(r)}</div>`;
     modal('DÖF — düzenle', body, async () => {
-      const department = document.getElementById('dof-f-dept').value;
-      const title = document.getElementById('dof-f-title').value.trim();
-      const description = document.getElementById('dof-f-desc').value.trim();
-      const dueDate = document.getElementById('dof-f-due').value;
-      if (!title) return toast('Konu zorunludur');
+      const payload = dofReadOpenFields();
+      if (!payload.title) return toast('Konu zorunludur');
       try {
-        await api(`/api/dof/${r.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ department, title, description, dueDate }) });
+        await api(`/api/dof/${r.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         closeModal(); toast('Güncellendi'); loadDof();
       } catch (err) { toast(err.message); }
     });
@@ -617,14 +627,21 @@
     if (!r) return;
     const body = `<div class="form-grid">
       <div class="field" style="grid-column:1/-1"><label>Konu</label><div class="muted">${esc(r.title)}</div></div>
-      <div class="field" style="grid-column:1/-1"><label>Uygunsuzluk açıklaması</label><div class="muted">${esc(r.description || '—')}</div></div>
-      <div class="field" style="grid-column:1/-1"><label>Alınan aksiyon *</label><textarea class="input" id="dof-f-action" rows="5" style="width:100%">${esc(r.action || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Tespit edilen uygunsuzluk</label><div class="muted">${esc(r.description || '—')}</div></div>
+      ${r.rootCause ? `<div class="field" style="grid-column:1/-1"><label>Kök neden</label><div class="muted">${esc(r.rootCause)}</div></div>` : ''}
+      <div class="field"><label>Düzeltme faaliyeti sorumlusu</label><input class="input" id="dof-f-actowner" value="${esc(r.actionOwner || '')}"></div>
+      <div class="field"><label>DF Tamamlanma tarihi</label><input class="input" id="dof-f-compdate" type="date" value="${esc(r.completedDate || '')}"></div>
+      <div class="field" style="grid-column:1/-1"><label>Düzeltme faaliyeti (planlanan) *</label><textarea class="input" id="dof-f-action" rows="4" style="width:100%">${esc(r.action || '')}</textarea></div>
+      <div class="field" style="grid-column:1/-1"><label>Gerçekleşen faaliyetler</label><textarea class="input" id="dof-f-completed" rows="4" style="width:100%">${esc(r.completedActivities || '')}</textarea></div>
     </div>`;
     modal('Aksiyon yaz ve kapatma talep et', body, async () => {
       const action = document.getElementById('dof-f-action').value.trim();
+      const actionOwner = document.getElementById('dof-f-actowner').value.trim();
+      const completedActivities = document.getElementById('dof-f-completed').value.trim();
+      const completedDate = document.getElementById('dof-f-compdate').value;
       if (!action) return toast('Aksiyon açıklaması zorunludur');
       try {
-        await api(`/api/dof/${r.id}/submit-closure`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+        await api(`/api/dof/${r.id}/submit-closure`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, actionOwner, completedActivities, completedDate }) });
         closeModal(); toast('Kapatma talebi gönderildi'); loadDof();
       } catch (err) { toast(err.message); }
     });

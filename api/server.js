@@ -4675,7 +4675,16 @@ app.post('/api/dof', asyncRoute(async (req, res) => {
   if (!department) return res.status(400).json({ error: 'Hedef departman zorunludur' });
   const title = clean(req.body?.title);
   if (!title) return res.status(400).json({ error: 'Konu zorunludur' });
-  let data = { title, description: clean(req.body?.description), dueDate: clean(req.body?.dueDate) || null, status: 'Açık' };
+  let data = {
+    title,
+    description: clean(req.body?.description),
+    nonconformitySource: clean(req.body?.nonconformitySource),
+    activityType: clean(req.body?.activityType) || 'Düzeltici',
+    requestedBy: clean(req.body?.requestedBy) || req.user.name,
+    rootCause: clean(req.body?.rootCause),
+    dueDate: clean(req.body?.dueDate) || null,
+    status: 'Açık'
+  };
   data = dofHistPush(data, { by: req.user.name, action: 'DÖF açıldı' });
   const row = (await pool.query(
     'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
@@ -4691,6 +4700,10 @@ app.patch('/api/dof/:id', asyncRoute(async (req, res) => {
   const data = { ...existing.data };
   if (body.title != null) data.title = clean(body.title);
   if (body.description != null) data.description = clean(body.description);
+  if (body.nonconformitySource != null) data.nonconformitySource = clean(body.nonconformitySource);
+  if (body.activityType != null) data.activityType = clean(body.activityType);
+  if (body.requestedBy != null) data.requestedBy = clean(body.requestedBy);
+  if (body.rootCause != null) data.rootCause = clean(body.rootCause);
   if (body.dueDate != null) data.dueDate = clean(body.dueDate) || null;
   if (!data.title) return res.status(400).json({ error: 'Konu zorunludur' });
   const row = (await pool.query('update kys_records set department=$2,data=$3::jsonb,updated_at=now() where id=$1 returning *',
@@ -4706,7 +4719,12 @@ app.post('/api/dof/:id/submit-closure', asyncRoute(async (req, res) => {
   if (!['Açık', 'Revizyonda'].includes(existing.data.status)) return res.status(409).json({ error: 'Bu DÖF kapatma talebine uygun durumda değil' });
   const action = clean(req.body?.action);
   if (!action) return res.status(400).json({ error: 'Aksiyon açıklaması zorunludur' });
-  let data = { ...existing.data, action, status: 'Kapatma Bekliyor' };
+  let data = {
+    ...existing.data, action, status: 'Kapatma Bekliyor',
+    actionOwner: clean(req.body?.actionOwner),
+    completedActivities: clean(req.body?.completedActivities),
+    completedDate: clean(req.body?.completedDate) || null
+  };
   data = dofHistPush(data, { by: req.user.name, action: 'Kapatma talebi gönderildi' });
   res.json(await dofSave(existing.id, data));
 }));
