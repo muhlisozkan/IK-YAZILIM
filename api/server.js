@@ -1279,6 +1279,34 @@ app.get('/api/employees/:id/payroll-details', asyncRoute(async (req, res) => {
   if (!result.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   res.json(result.rows[0]);
 }));
+
+// Bugün/yarın doğum günü olanlar — aynı departman kapsamı (visibleDepartments):
+// şirket geneli roller + İK tüm personeli görür (İK için ?department= filtresi
+// de çalışır), departman yöneticisi yalnız kendi departmanını görür. Yalnızca
+// ad/departman/gün döner — payroll_details'in tamamı (doğum yılı dahil) sızmaz.
+function istanbulDateOffset(days) {
+  const d = new Date(istanbulDate() + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+app.get('/api/birthdays', asyncRoute(async (req, res) => {
+  const scope = visibleDepartments(req.user);
+  if (Array.isArray(scope) && !scope.length) return res.status(403).json({ error: 'Yetkiniz yok' });
+  const todayMD = istanbulDate().slice(5, 10);
+  const tomorrowMD = istanbulDateOffset(1).slice(5, 10);
+  const rows = (await pool.query(
+    `select id, name, department, payroll_details->>'DOĞUM TARİHİ' as birth
+     from employees where status <> 'Pasif' and coalesce(payroll_details->>'DOĞUM TARİHİ', '') <> ''`
+  )).rows;
+  let items = rows
+    .map(r => ({ id: r.id, name: r.name, department: r.department, md: String(r.birth).slice(5, 10) }))
+    .filter(r => r.md === todayMD || r.md === tomorrowMD)
+    .map(({ md, ...r }) => ({ ...r, when: md === todayMD ? 'today' : 'tomorrow' }));
+  if (scope !== null) items = items.filter(r => scope.includes(clean(r.department)));
+  else if (clean(req.query.department)) items = items.filter(r => clean(r.department) === clean(req.query.department));
+  items.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  res.json(items);
+}));
 app.post('/api/employees', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isHRUser, 'Çalışan ekleme yetkiniz yok')) return;
   const e = req.body;

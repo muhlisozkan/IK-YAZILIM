@@ -655,3 +655,9 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
   .eys-list-pane{flex:1 1 auto;width:100%}
   .eys-preview-card{min-height:60vh}
 }
+
+/* Doğum Günleri */
+.bday-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+.bday-col-head{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:620;margin:0 0 10px;letter-spacing:-.01em}
+.bday-list{display:flex;flex-direction:column;gap:8px}
+@media(max-width:700px){.bday-cols{grid-template-columns:1fr}}

@@ -64,6 +64,12 @@
     return ['Sistem yöneticisi', 'İK yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Mali İşler', 'Finans yöneticisi', 'Departman yöneticisi'].includes(u.role)
       || normDept(u.department) === 'İNSAN KAYNAKLARI';
   };
+  // Doğum Günleri: backend visibleDepartments ile aynı kapsam (şirket geneli + İK tümünü, departman yöneticisi yalnız kendi departmanını).
+  const canSeeBirthdays = () => {
+    const u = currentUser() || {};
+    return ['Sistem yöneticisi', 'İK yöneticisi', 'Bordro yetkilisi', 'Mali İşler', 'Finans yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Sadece görüntüleme', 'Departman yöneticisi'].includes(u.role)
+      || normDept(u.department) === 'İNSAN KAYNAKLARI';
+  };
 
   function users() {
     return JSON.parse(localStorage.getItem(userKey) || 'null') || [{ id: 1, name: 'Sistem yöneticisi', email: 'admin@firma.com', role: 'Sistem yöneticisi', status: 'Aktif' }];
@@ -90,6 +96,7 @@
     if (view === 'performance') return canSeePerformance();
     if (view === 'guncel-tablo') return canSeeGuncel();
     if (view === 'personel-butcesi') return canSeeButce();
+    if (view === 'birthdays') return canSeeBirthdays();
     if (view === 'kys-dof') return window.__ikDofAccess().level !== 'none';
     if (view.startsWith('kys-')) return canSeeKYS();
     const currentRule = rule();
