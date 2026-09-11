@@ -617,3 +617,9 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .nav-sub{max-height:0;overflow:hidden;transition:max-height .18s ease}
 .nav-group.open .nav-sub{max-height:420px}
 .nav-sub-item{padding-left:38px!important;font-size:12.5px!important}
+
+/* Entegre Yönetim Sistemi — klasör gezgini */
+.eys-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-bottom:14px}
+.eys-crumb{padding:5px 8px;font-size:12.5px}
+.eys-row{cursor:pointer}
+.eys-row:hover>td{background:var(--line-soft)}

@@ -15,3 +15,7 @@ api/node_modules/
 
 # Kaynak malzeme (çalışma zamanında kullanılmaz, hassas veri içerir)
 imports/
+
+# Entegre Yönetim Sistemi doküman arşivi (455MB+, hassas veri) —
+# ik-api konteynerine salt-okunur bind mount ile bağlanır, repoya girmez.
+/Entegre Yonetim Sistemi/

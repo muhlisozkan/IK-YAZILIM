@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { promises as fsp } from 'node:fs';
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://ik:ik@db:5432/ik' });
 const app = express();
@@ -4391,6 +4392,48 @@ app.get('/api/kys/dokuman/:id/file', asyncRoute(async (req, res) => {
   res.set('Content-Type', file.mime);
   res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
   res.send(file.data);
+}));
+
+// --- Entegre Yönetim Sistemi (EYS) — doküman arşivi klasör gezgini -----
+// Gerçek dosya sistemi (bind mount, salt-okunur); veritabanına yazılmaz.
+// Aynı KYS erişim modeli (İK/Kalite tam, üst yönetim salt-okunur) kullanılır.
+const EYS_ROOT = path.resolve(process.env.EYS_ROOT || '/data/eys');
+const EYS_HIDE = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+function eysSafePath(relPath) {
+  const rel = String(relPath || '').replace(/\\/g, '/').split('/').filter(p => p && p !== '.' && p !== '..').join('/');
+  const abs = path.resolve(EYS_ROOT, rel);
+  if (abs !== EYS_ROOT && !abs.startsWith(EYS_ROOT + path.sep)) return null;
+  return { abs, rel };
+}
+
+app.get('/api/eys/list', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const target = eysSafePath(req.query.path);
+  if (!target) return res.status(400).json({ error: 'Geçersiz yol' });
+  let entries;
+  try { entries = await fsp.readdir(target.abs, { withFileTypes: true }); }
+  catch { return res.status(404).json({ error: 'Klasör bulunamadı' }); }
+  const items = (await Promise.all(entries
+    .filter(e => !EYS_HIDE.has(e.name) && !e.name.startsWith('.'))
+    .map(async e => {
+      const abs = path.join(target.abs, e.name);
+      const rel = target.rel ? `${target.rel}/${e.name}` : e.name;
+      if (e.isDirectory()) return { name: e.name, path: rel, type: 'dir' };
+      if (!e.isFile()) return null;
+      const st = await fsp.stat(abs).catch(() => null);
+      return { name: e.name, path: rel, type: 'file', size: st?.size || 0, mtime: st?.mtime || null };
+    }))).filter(Boolean);
+  items.sort((a, b) => a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name, 'tr'));
+  res.json({ path: target.rel, items });
+}));
+
+app.get('/api/eys/file', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const target = eysSafePath(req.query.path);
+  if (!target || !target.rel) return res.status(400).json({ error: 'Geçersiz yol' });
+  const st = await fsp.stat(target.abs).catch(() => null);
+  if (!st || !st.isFile()) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  res.download(target.abs, path.basename(target.abs));
 }));
 
 app.use((error, _req, res, _next) => {

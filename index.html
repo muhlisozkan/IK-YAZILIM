@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1b3a62" />
   <title>Hilton Dalaman Otel Yönetim Sistemi</title>
   <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="styles.css?v=76" />
+  <link rel="stylesheet" href="styles.css?v=77" />
 </head>
 <body>
   <div class="auth-overlay" id="login-overlay">
@@ -45,6 +45,7 @@
       <div class="nav-group" id="kys-nav-group">
         <button class="nav-item nav-group-toggle" data-view="kys-group" type="button" onclick="window.__ikToggleKysMenu()">◈ <span>Kalite Yönetim Sistemi</span><i class="nav-caret">▾</i></button>
         <div class="nav-sub">
+          <button class="nav-item nav-sub-item" data-view="kys-eys" onclick="window.__ikNavigate('kys-eys')"><span>Entegre Yönetim Sistemi</span></button>
           <button class="nav-item nav-sub-item" data-view="kys-dokuman" onclick="window.__ikNavigate('kys-dokuman')"><span>Doküman Yönetimi</span></button>
           <button class="nav-item nav-sub-item" data-view="kys-hedefler" onclick="window.__ikNavigate('kys-hedefler')"><span>Kalite Hedefleri / KPI</span></button>
           <button class="nav-item nav-sub-item" data-view="kys-ygg" onclick="window.__ikNavigate('kys-ygg')"><span>Yönetimin Gözden Geçirmesi</span></button>
@@ -92,7 +93,7 @@
   <script src="survey.js?v=26"></script>
   <script src="personel-butcesi.js?v=10"></script>
   <script src="guncel-tablo.js?v=2"></script>
-  <script src="kys.js?v=7"></script>
+  <script src="kys.js?v=8"></script>
   <script src="dashboard.js?v=7"></script>
 </body>
 </html>

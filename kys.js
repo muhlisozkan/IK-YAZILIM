@@ -284,6 +284,48 @@
     });
   }
 
+  // --- Entegre Yönetim Sistemi: klasör klasör doküman arşivi gezgini -----
+  const EYS_VIEW = 'kys-eys';
+  let eysPath = '';
+  try { eysPath = sessionStorage.getItem('ik_eys_path') || ''; } catch (_) { /* özel gezinti modu */ }
+  function eysSetPath(p) {
+    eysPath = p || '';
+    try { sessionStorage.setItem('ik_eys_path', eysPath); } catch (_) { /* özel gezinti modu */ }
+  }
+  const fmtDT = v => { if (!v) return ''; const d = new Date(v); return isNaN(d) ? '' : d.toLocaleDateString('tr-TR'); };
+
+  async function renderEys() {
+    if (state.view !== EYS_VIEW) return;
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
+    syncNavGroup();
+    $('#page-title').textContent = 'Entegre Yönetim Sistemi';
+    if (!canSeeKys()) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
+    if (!document.querySelector('#eys-wrap')) $('#app').innerHTML = '<div class="card empty">Yükleniyor…</div>';
+    let data;
+    try { data = await api('/api/eys/list?path=' + encodeURIComponent(eysPath)); }
+    catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
+    if (state.view !== EYS_VIEW) return;
+    const parts = eysPath ? eysPath.split('/') : [];
+    const crumbs = [`<button class="btn ghost eys-crumb" data-eys-go="">Ana dizin</button>`]
+      .concat(parts.map((p, i) => `<span class="muted">/</span><button class="btn ghost eys-crumb" data-eys-go="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</button>`))
+      .join('');
+    const rows = data.items.map(it => it.type === 'dir'
+      ? `<tr class="eys-row" data-eys-open="${esc(it.path)}"><td>📁 ${esc(it.name)}</td><td>—</td><td>—</td><td></td></tr>`
+      : `<tr><td>${esc(it.name)}</td><td>${fmtBytes(it.size)}</td><td>${fmtDT(it.mtime)}</td><td><a class="btn ghost" href="/api/eys/file?path=${encodeURIComponent(it.path)}" target="_blank" rel="noopener">İndir</a></td></tr>`
+    ).join('');
+    $('#app').innerHTML = `
+      <div id="eys-wrap">
+        <div class="section-title"><div><h2>Entegre Yönetim Sistemi</h2><span class="muted">Kalite/İK doküman arşivi — klasör klasör gezinin</span></div></div>
+        <div class="card">
+          <div class="eys-crumbs">${crumbs}</div>
+          <div style="overflow:auto"><table><thead><tr><th>Ad</th><th>Boyut</th><th>Tarih</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="empty">Bu klasör boş</td></tr>'}</tbody></table></div>
+        </div>
+      </div>`;
+    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); renderEys(); });
+    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); renderEys(); });
+  }
+
   function syncNavGroup() {
     const group = document.getElementById('kys-nav-group');
     if (!group) return;
@@ -300,7 +342,8 @@
   const baseShell = shell;
   shell = function () {
     const key = VIEW_TO_KEY[state.view];
-    if (key) render(key);
+    if (state.view === EYS_VIEW) renderEys();
+    else if (key) render(key);
     else { baseShell(); syncNavGroup(); }
   };
 })();
