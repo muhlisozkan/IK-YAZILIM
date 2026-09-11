@@ -213,6 +213,7 @@
       await dokumanAction(id, action, note != null ? { note } : undefined);
       const msg = { submit: 'Onaya gönderildi', approve: 'Onaylandı ve yürürlüğe girdi', reject: 'Reddedildi', retire: 'İptal edildi' }[action];
       toast(msg); S.cache.dokuman = null; render('dokuman');
+      window.__ikRefreshKysPending?.();
     } catch (err) { toast(err.message); }
   }
 

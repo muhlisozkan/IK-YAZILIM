@@ -28,7 +28,20 @@
         list.push({id:'leave:'+l.id,cat:'İzin onayı',kind:'orange',view:'leave',section:'requests',
           text:`${esc(l.employee||l.employee_name||'Çalışan')} · ${esc(l.type||l.leave_type||'izin')} talebi onayınızı bekliyor`});
     });
+    kysPending.forEach(r=>
+      list.push({id:'kys-dokuman:'+r.id,cat:'Doküman onayı',kind:'orange',view:'kys-dokuman',
+        text:`${esc(r.title||'Doküman')} onayınızı bekliyor`}));
     return list.sort((a,b)=>numId(b.id)-numId(a.id));
+  }
+
+  // --- KYS: onay bekleyen doküman bildirimleri ---------------------------
+  let kysPending=[];
+  async function refreshKysPending(){
+    try{
+      if(!window.__ikKysCanApproveDokuman?.()){kysPending=[];return}
+      const rows=await api('/api/kys/dokuman');
+      kysPending=(rows||[]).filter(r=>r.status==='Onay Bekliyor');
+    }catch{ /* bildirim kaynağı — sessiz geç */ }
   }
 
   // --- Ses -------------------------------------------------------------
@@ -71,6 +84,7 @@
     return cur;
   }
   window.__ikNotifTick=()=>tick(true);
+  window.__ikRefreshKysPending=()=>refreshKysPending().then(()=>tick(false));
 
   // --- Rozet / zil --------------------------------------------------
   function bellEl(){return document.querySelector('#notif-bell')}
@@ -343,5 +357,7 @@
   };
   ensureBell();
   tick(false);
+  refreshKysPending().then(()=>tick(false));
   setInterval(()=>tick(true),30000);
+  setInterval(()=>refreshKysPending().then(()=>tick(true)),30000);
 })();
