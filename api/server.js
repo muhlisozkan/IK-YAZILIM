@@ -901,7 +901,8 @@ async function runBirthdaySmsIfDue() {
       const context = `birthday:${emp.id}:${clock.date}`;
       const already = await pool.query('select 1 from sms_log where context=$1', [context]);
       if (already.rowCount) continue;
-      const message = fillTemplate(settings.birthday_message_template || BIRTHDAY_SMS_DEFAULT, { isim: emp.name });
+      // Ad-soyad sistemden otomatik eklenir; yönetici yalnızca kutlama metnini yazar.
+      const message = `Sayın ${emp.name}, ${clean(settings.birthday_message_template) || BIRTHDAY_SMS_DEFAULT}`;
       await sendSms(emp.phone, message, context);
     }
     lastBirthdaySmsDate = clock.date;
@@ -910,7 +911,7 @@ async function runBirthdaySmsIfDue() {
   }
 }
 
-const BIRTHDAY_SMS_DEFAULT = 'Sayın {isim}, doğum gününüzü kutlar, nice mutlu yıllara ulaşmanızı dileriz!';
+const BIRTHDAY_SMS_DEFAULT = 'doğum gününüzü kutlar, nice mutlu yıllara ulaşmanızı dileriz!';
 app.get('/api/sms-settings', asyncRoute(async (req, res) => {
   if (!requireSystemAdmin(req, res)) return;
   const settings = await readSmsSettings();
