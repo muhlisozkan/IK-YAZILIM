@@ -396,6 +396,21 @@ setInterval(() => {
     else if (entry.lockedUntil && entry.lockedUntil <= now) loginAttempts.delete(key);
   }
 }, 300000).unref();
+// Aynı kullanıcı adı birden fazla IP'den kilitlenmiş olabilir (anahtar "kullanıcı|ip");
+// yönetici ekranında tek bir "kilitli" durumu göstermek için en uzun kalanı alınır.
+function usernameLockState(username) {
+  const prefix = String(username).toLowerCase() + '|';
+  const now = Date.now();
+  let lockedUntil = 0;
+  for (const [key, entry] of loginAttempts) {
+    if (key.startsWith(prefix) && entry.lockedUntil > now) lockedUntil = Math.max(lockedUntil, entry.lockedUntil);
+  }
+  return lockedUntil ? { locked: true, lockedUntil } : { locked: false };
+}
+function clearUsernameLock(username) {
+  const prefix = String(username).toLowerCase() + '|';
+  for (const key of loginAttempts.keys()) if (key.startsWith(prefix)) loginAttempts.delete(key);
+}
 
 async function authenticatedUser(req) {
   const token = cookieValue(req, 'ik_session');
@@ -598,7 +613,7 @@ app.patch('/api/auth/password', asyncRoute(async (req, res) => {
 app.get('/api/users', asyncRoute(async (req, res) => {
   if (!requireSystemAdmin(req, res)) return;
   const result = await pool.query('select ' + publicUserColumns + ' from app_users order by display_name,username');
-  res.json(result.rows);
+  res.json(result.rows.map(u => ({ ...u, ...usernameLockState(u.username) })));
 }));
 
 app.post('/api/users', asyncRoute(async (req, res) => {
@@ -638,6 +653,15 @@ app.put('/api/users/:id', asyncRoute(async (req, res) => {
     where id=$1 returning ${publicUserColumns}`, [id,username,email,name,role,status,employeeId,department,password,phone]);
   if (!result.rowCount) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
   res.json(result.rows[0]);
+}));
+
+app.post('/api/users/:id/unlock', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const id = Number(req.params.id);
+  const result = await pool.query('select username from app_users where id=$1', [id]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
+  clearUsernameLock(result.rows[0].username);
+  res.json({ ok: true });
 }));
 
 app.delete('/api/users/:id', asyncRoute(async (req, res) => {
