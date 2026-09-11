@@ -45,6 +45,11 @@
   }
   window.__ikKysAccess = kysAccess;
   const canSeeKYS = () => kysAccess() !== 'none';
+  // Doküman onaylama: yalnız İK yönetimi/admin (Kalite departmanı hazırlar, onaylamaz).
+  window.__ikKysCanApproveDokuman = () => {
+    const u = currentUser() || {};
+    return u.role === 'Sistem yöneticisi' || u.role === 'İK yöneticisi' || normDept(u.department) === 'İNSAN KAYNAKLARI';
+  };
   const canSeeButce = () => {
     const u = currentUser() || {};
     return ['Sistem yöneticisi', 'İK yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Mali İşler', 'Finans yöneticisi', 'Departman yöneticisi'].includes(u.role)

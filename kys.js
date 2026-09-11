@@ -11,6 +11,22 @@
   }
   function canWriteKys() { return (window.__ikKysAccess?.() || 'none') === 'full'; }
   function canSeeKys() { return (window.__ikKysAccess?.() || 'none') !== 'none'; }
+  function canApproveDokuman() { return Boolean(window.__ikKysCanApproveDokuman?.()); }
+  const fmtBytes = n => { if (!n) return ''; const kb = n / 1024; return kb < 1024 ? `${Math.round(kb)} KB` : `${(kb / 1024).toFixed(1)} MB`; };
+  async function uploadDokumanFile(id, file) {
+    const buf = await file.arrayBuffer();
+    const r = await fetch(`/api/kys/dokuman/${id}/file`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name), 'X-Filetype': file.type || 'application/octet-stream' },
+      body: buf
+    });
+    const d = r.status === 204 ? null : await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d?.error || 'Dosya yüklenemedi');
+    return d;
+  }
+  async function dokumanAction(id, action, body) {
+    return api(`/api/kys/dokuman/${id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  }
 
   const MOD = {
     dokuman: {
@@ -23,10 +39,11 @@
         { key: 'version', label: 'Revizyon no' },
         { key: 'effectiveDate', label: 'Yürürlük tarihi', type: 'date' },
         { key: 'owner', label: 'Doküman sahibi' },
-        { key: 'status', label: 'Durum', type: 'select', options: ['Taslak', 'Yürürlükte', 'Revizyonda', 'İptal'], default: 'Taslak' },
         { key: 'note', label: 'Açıklama', type: 'textarea' }
+        // status alanı yok: yalnızca onay akışı (Onaya Gönder / Onayla / Reddet / İptal) ile değişir.
       ],
-      columns: [['title', 'Doküman'], ['docNo', 'No'], ['category', 'Tür'], ['version', 'Rev.'], ['effectiveDate', 'Yürürlük'], ['status', 'Durum']]
+      columns: [['title', 'Doküman'], ['docNo', 'No'], ['category', 'Tür'], ['version', 'Rev.'], ['effectiveDate', 'Yürürlük'], ['status', 'Durum'], ['file', 'Dosya']],
+      workflow: true
     },
     hedefler: {
       view: 'kys-hedefler', title: 'Kalite Hedefleri / KPI',
@@ -160,14 +177,23 @@
 
   function openForm(key, row) {
     const cfg = MOD[key];
-    const body = `<div class="form-grid">${cfg.fields.map(f => `<div class="field"${f.type === 'textarea' ? ' style="grid-column:1/-1"' : ''}><label>${esc(f.label)}${f.required ? ' *' : ''}</label>${fieldInput(f, row ? row[f.key] : '')}</div>`).join('')}</div>`;
+    const fileBlock = !cfg.workflow ? '' : `<div class="field" style="grid-column:1/-1">
+      <label>Dosya eki (PDF/Word, en fazla 15 MB)</label>
+      <input class="input" id="kys-f-file" type="file" accept=".pdf,.doc,.docx" style="width:100%">
+      ${row && row.fileId ? `<div class="muted" style="margin-top:5px;font-size:11.5px">Mevcut dosya: <a href="/api/kys/dokuman/${row.id}/file" target="_blank" rel="noopener">${esc(row.fileName || 'dosya')}</a> (${fmtBytes(row.fileSize)}) — yeni dosya seçersen bunun yerine geçer</div>` : ''}
+    </div>`;
+    const body = `<div class="form-grid">${cfg.fields.map(f => `<div class="field"${f.type === 'textarea' ? ' style="grid-column:1/-1"' : ''}><label>${esc(f.label)}${f.required ? ' *' : ''}</label>${fieldInput(f, row ? row[f.key] : '')}</div>`).join('')}</div>${fileBlock}`;
     modal(row ? `${cfg.title} — kaydı düzenle` : `${cfg.title} — yeni kayıt`, body, async () => {
       const data = {};
       cfg.fields.forEach(f => { data[f.key] = document.getElementById('kys-f-' + f.key).value.trim(); });
       if (cfg.fields.some(f => f.required && !data[f.key])) return toast('Zorunlu alanları doldurun');
+      const fileInput = cfg.workflow ? document.getElementById('kys-f-file') : null;
+      const file = fileInput && fileInput.files[0];
       try {
-        if (row) await api(`/api/kys/${key}/${row.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-        else await api(`/api/kys/${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        let saved;
+        if (row) saved = await api(`/api/kys/${key}/${row.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        else saved = await api(`/api/kys/${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+        if (file) await uploadDokumanFile(saved.id, file);
         closeModal(); toast(row ? 'Kayıt güncellendi' : 'Kayıt eklendi');
         S.cache[key] = null; render(key);
       } catch (err) { toast(err.message); }
@@ -180,6 +206,27 @@
       await api(`/api/kys/${key}/${id}`, { method: 'DELETE' });
       toast('Kayıt silindi'); S.cache[key] = null; render(key);
     } catch (err) { toast(err.message); }
+  }
+
+  async function runDokumanAction(id, action, note) {
+    try {
+      await dokumanAction(id, action, note != null ? { note } : undefined);
+      const msg = { submit: 'Onaya gönderildi', approve: 'Onaylandı ve yürürlüğe girdi', reject: 'Reddedildi', retire: 'İptal edildi' }[action];
+      toast(msg); S.cache.dokuman = null; render('dokuman');
+    } catch (err) { toast(err.message); }
+  }
+
+  function dokumanActionsHtml(r, canWrite, canApprove) {
+    if (r.status === 'Onay Bekliyor') {
+      if (canApprove) return `<button class="btn ghost" data-kys-approve="${r.id}">Onayla</button><button class="btn ghost danger-text" data-kys-reject="${r.id}">Reddet</button>`;
+      return '<span class="muted" style="font-size:11.5px">Onay bekliyor</span>';
+    }
+    const btns = [];
+    if (canWrite) btns.push(`<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button>`);
+    if (canWrite && ['Taslak', 'Revizyonda'].includes(r.status)) btns.push(`<button class="btn ghost" data-kys-submit="${r.id}">Onaya Gönder</button>`);
+    if (canWrite && r.status !== 'İptal') btns.push(`<button class="btn ghost danger-text" data-kys-retire="${r.id}">İptal Et</button>`);
+    if (canWrite) btns.push(`<button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>`);
+    return btns.join('');
   }
 
   async function render(key) {
@@ -197,11 +244,13 @@
       catch (err) { $('#app').innerHTML = `<div class="card"><div class="empty">${esc(err.message)}</div></div>`; return; }
     }
     if (state.view !== MOD[key].view) return;
+    const canApprove = cfg.workflow && canApproveDokuman();
     const trs = rows.map(r => `<tr data-id="${r.id}">${cfg.columns.map(([k]) => {
       if (k === 'status') return `<td><span class="badge ${badgeClass(r.status)}">${esc(r.status || '—')}</span></td>`;
+      if (k === 'file') return `<td>${r.fileId ? `<a href="/api/kys/dokuman/${r.id}/file" target="_blank" rel="noopener">${esc(r.fileName || 'İndir')}</a>` : '—'}</td>`;
       const f = cfg.fields.find(x => x.key === k);
       return `<td>${fmtVal(f, r[k])}</td>`;
-    }).join('')}<td class="row-actions">${canWrite ? `<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button><button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>` : ''}</td></tr>`).join('');
+    }).join('')}<td class="row-actions">${cfg.workflow ? dokumanActionsHtml(r, canWrite, canApprove) : (canWrite ? `<button class="btn ghost" data-kys-edit="${r.id}">Düzenle</button><button class="btn ghost danger-text" data-kys-del="${r.id}">Sil</button>` : '')}</td></tr>`).join('');
     $('#app').innerHTML = `
       <div id="kys-wrap">
         <div class="section-title"><div><h2>${esc(cfg.title)}</h2><span class="muted">${esc(cfg.desc)}</span></div>${canWrite ? '<button class="btn" id="kys-add">+ Yeni kayıt</button>' : ''}</div>
@@ -211,6 +260,14 @@
     document.getElementById('kys-add')?.addEventListener('click', () => openForm(key, null));
     document.querySelectorAll('[data-kys-edit]').forEach(b => b.onclick = () => openForm(key, rows.find(r => String(r.id) === b.dataset.kysEdit)));
     document.querySelectorAll('[data-kys-del]').forEach(b => b.onclick = () => removeRow(key, b.dataset.kysDel));
+    document.querySelectorAll('[data-kys-submit]').forEach(b => b.onclick = () => runDokumanAction(b.dataset.kysSubmit, 'submit'));
+    document.querySelectorAll('[data-kys-approve]').forEach(b => b.onclick = () => runDokumanAction(b.dataset.kysApprove, 'approve'));
+    document.querySelectorAll('[data-kys-retire]').forEach(b => b.onclick = () => { if (confirm('Bu dokümanı iptal etmek istediğinize emin misiniz?')) runDokumanAction(b.dataset.kysRetire, 'retire'); });
+    document.querySelectorAll('[data-kys-reject]').forEach(b => b.onclick = () => {
+      const note = prompt('Red gerekçesi (isteğe bağlı):');
+      if (note === null) return;
+      runDokumanAction(b.dataset.kysReject, 'reject', note);
+    });
   }
 
   function syncNavGroup() {

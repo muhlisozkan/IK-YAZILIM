@@ -4226,6 +4226,24 @@ const kysCleanBody = body => {
   ['id', 'department', 'module', 'created_at', 'updated_at', 'created_by'].forEach(k => delete out[k]);
   return out;
 };
+// Doküman Yönetimi: sürüm onay akışı — Taslak/Revizyonda → (Onaya Gönder) → Onay Bekliyor → (Onayla/Reddet) → Yürürlükte/Revizyonda.
+// Onaylama yetkisi kysAccess('full')'dan daha dar: yalnız İK yönetimi/admin, Kalite departmanı hazırlar ama onaylamaz.
+const canApproveDokuman = user => isHRUser(user);
+const kysHistPush = (data, entry) => {
+  const hist = Array.isArray(data.history) ? data.history.slice() : [];
+  hist.push({ at: new Date().toISOString(), ...entry });
+  return { ...data, history: hist };
+};
+async function kysSaveData(id, data) {
+  const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
+    [id, JSON.stringify(data)])).rows[0];
+  return kysRow(row);
+}
+async function kysGetDokumanOr404(id, res) {
+  const existing = (await pool.query('select * from kys_records where id=$1', [Number(id) || 0])).rows[0];
+  if (!existing || existing.module !== 'dokuman') { res.status(404).json({ error: 'Doküman bulunamadı' }); return null; }
+  return existing;
+}
 
 app.get('/api/kys/:module', asyncRoute(async (req, res) => {
   const module = clean(req.params.module);
@@ -4241,6 +4259,8 @@ app.post('/api/kys/:module', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Kayıt ekleme yetkiniz yok' });
   const data = kysCleanBody(req.body);
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
+  // Doküman sürümleri her zaman Taslak doğar; Yürürlükte/Onay Bekliyor durumuna yalnızca onay akışı uçlarıyla geçilir.
+  if (module === 'dokuman') data.status = 'Taslak';
   const row = (await pool.query(
     'insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
     [module, clean(req.user.department), JSON.stringify(data), req.user?.name || null])).rows[0];
@@ -4253,7 +4273,11 @@ app.patch('/api/kys/:module/:id', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Kayıt düzenleme yetkiniz yok' });
   const existing = (await pool.query('select * from kys_records where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
-  const data = { ...existing.data, ...kysCleanBody(req.body) };
+  const body = kysCleanBody(req.body);
+  // Doküman durumu yalnızca onay akışı uçlarından (submit/approve/reject/retire) değişir; genel düzenlemede yok sayılır.
+  if (module === 'dokuman') delete body.status;
+  if (module === 'dokuman' && existing.data.status === 'Onay Bekliyor') return res.status(409).json({ error: 'Onay bekleyen doküman düzenlenemez' });
+  const data = { ...existing.data, ...body };
   if (!clean(data.title)) return res.status(400).json({ error: 'Başlık zorunludur' });
   const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *',
     [existing.id, JSON.stringify(data)])).rows[0];
@@ -4268,6 +4292,73 @@ app.delete('/api/kys/:module/:id', asyncRoute(async (req, res) => {
   if (!existing || existing.module !== module) return res.status(404).json({ error: 'Kayıt bulunamadı' });
   await pool.query('delete from kys_records where id=$1', [existing.id]);
   res.status(204).end();
+}));
+
+app.post('/api/kys/dokuman/:id/submit', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (!['Taslak', 'Revizyonda'].includes(existing.data.status)) return res.status(409).json({ error: 'Yalnızca taslak/revizyondaki dokümanlar onaya gönderilebilir' });
+  const data = kysHistPush({ ...existing.data, status: 'Onay Bekliyor' }, { by: req.user.name, action: 'Onaya gönderildi' });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+app.post('/api/kys/dokuman/:id/approve', asyncRoute(async (req, res) => {
+  if (!canApproveDokuman(req.user)) return res.status(403).json({ error: 'Onaylama yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (existing.data.status !== 'Onay Bekliyor') return res.status(409).json({ error: 'Bu doküman onay beklemiyor' });
+  const data = kysHistPush(
+    { ...existing.data, status: 'Yürürlükte', approvedBy: req.user.name, approvedAt: new Date().toISOString() },
+    { by: req.user.name, action: 'Onaylandı ve yürürlüğe girdi' });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+app.post('/api/kys/dokuman/:id/reject', asyncRoute(async (req, res) => {
+  if (!canApproveDokuman(req.user)) return res.status(403).json({ error: 'Reddetme yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (existing.data.status !== 'Onay Bekliyor') return res.status(409).json({ error: 'Bu doküman onay beklemiyor' });
+  const note = clean(req.body?.note);
+  const data = kysHistPush({ ...existing.data, status: 'Revizyonda', rejectNote: note }, { by: req.user.name, action: 'Reddedildi', note });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+app.post('/api/kys/dokuman/:id/retire', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (existing.data.status === 'İptal') return res.status(409).json({ error: 'Bu doküman zaten iptal' });
+  const data = kysHistPush({ ...existing.data, status: 'İptal' }, { by: req.user.name, action: 'İptal edildi' });
+  res.json(await kysSaveData(existing.id, data));
+}));
+
+const KYS_FILE_LIMIT = 15 * 1024 * 1024; // 15 MB
+
+app.post('/api/kys/dokuman/:id/file', express.raw({ type: '*/*', limit: '16mb' }), asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) !== 'full') return res.status(403).json({ error: 'Dosya yükleme yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (existing.data.status === 'Onay Bekliyor') return res.status(409).json({ error: 'Onay bekleyen dokümana dosya yüklenemez' });
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Dosya boş' });
+  if (buf.length > KYS_FILE_LIMIT) return res.status(400).json({ error: 'Dosya çok büyük (en fazla 15 MB)' });
+  let filename = clean(req.get('X-Filename')) || 'dosya';
+  try { filename = decodeURIComponent(filename); } catch (_) { /* zaten düz metinse aynen kullan */ }
+  const mime = clean(req.get('X-Filetype')) || 'application/octet-stream';
+  const file = (await pool.query(
+    'insert into kys_dokuman_files(record_id,filename,mime,size,data,uploaded_by) values($1,$2,$3,$4,$5,$6) returning id,filename,mime,size,uploaded_by,uploaded_at',
+    [existing.id, filename, mime, buf.length, buf, req.user?.name || null])).rows[0];
+  const data = kysHistPush(
+    { ...existing.data, fileId: file.id, fileName: file.filename, fileSize: file.size, fileUploadedAt: file.uploaded_at },
+    { by: req.user.name, action: 'Dosya yüklendi', note: filename });
+  res.status(201).json(await kysSaveData(existing.id, data));
+}));
+
+app.get('/api/kys/dokuman/:id/file', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const existing = await kysGetDokumanOr404(req.params.id, res); if (!existing) return;
+  if (!existing.data.fileId) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  const file = (await pool.query('select * from kys_dokuman_files where id=$1 and record_id=$2', [existing.data.fileId, existing.id])).rows[0];
+  if (!file) return res.status(404).json({ error: 'Dosya bulunamadı' });
+  res.set('Content-Type', file.mime);
+  res.set('Content-Disposition', `attachment; filename="${encodeURIComponent(file.filename)}"`);
+  res.send(file.data);
 }));
 
 app.use((error, _req, res, _next) => {
