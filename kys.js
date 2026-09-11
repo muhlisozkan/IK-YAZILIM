@@ -294,9 +294,26 @@
     try { sessionStorage.setItem('ik_eys_path', eysPath); } catch (_) { /* özel gezinti modu */ }
   }
   const eysExt = name => (name.split('.').pop() || '').toLowerCase();
-  const eysPreviewKind = name => (['pdf'].includes(eysExt(name)) ? 'pdf' : ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(eysExt(name)) ? 'image' : null);
+  const eysPreviewKind = name => {
+    const ext = eysExt(name);
+    if (ext === 'pdf') return 'pdf';
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'image';
+    if (['xlsx', 'xltx'].includes(ext)) return 'xlsx'; // eski ikili .xls exceljs ile okunamaz
+    return null;
+  };
 
-  const EYS = { items: [], searchTerm: '', searching: false, selected: null };
+  const EYS = { items: [], searchTerm: '', searching: false, selected: null, xlsx: null };
+
+  function eysXlsxBodyHtml() {
+    const x = EYS.xlsx;
+    if (!x || x.loading) return '<div class="empty">Excel yükleniyor…</div>';
+    if (x.error) return `<div class="empty">${esc(x.error)}</div>`;
+    const tabs = x.sheetMeta.length > 1
+      ? `<div class="eys-xlsx-tabs">${x.sheetMeta.map((s, i) => `<button class="btn ghost eys-xlsx-tab${i === x.idx ? ' active' : ''}" data-eys-sheet="${i}">${esc(s.name)}</button>`).join('')}</div>`
+      : '';
+    const sheetData = x.cache[x.idx];
+    return `<div class="eys-xlsx-wrap">${tabs}${sheetData ? window.__ikSheetTableHtml(sheetData) : '<div class="empty">Sayfa yükleniyor…</div>'}</div>`;
+  }
 
   function eysPreviewHtml() {
     const item = EYS.selected;
@@ -307,7 +324,50 @@
     const head = `<div class="eys-preview-head"><strong title="${esc(item.path)}">${esc(item.name)}</strong><a class="btn ghost" href="${dlUrl}" target="_blank" rel="noopener">⬇ İndir</a></div>`;
     if (kind === 'pdf') return head + `<iframe class="eys-preview-frame" src="${inlineUrl}"></iframe>`;
     if (kind === 'image') return head + `<div class="eys-preview-imgwrap"><img src="${inlineUrl}" alt="${esc(item.name)}"></div>`;
+    if (kind === 'xlsx') return head + eysXlsxBodyHtml();
     return head + '<div class="empty">Bu dosya türü tarayıcıda önizlenemiyor — indirip açın</div>';
+  }
+
+  function eysSelectFile(item) {
+    EYS.selected = item;
+    EYS.xlsx = null;
+    eysPaintResults();
+    if (item && eysPreviewKind(item.name) === 'xlsx') eysLoadXlsx(item.path, 0);
+  }
+
+  async function eysLoadXlsx(filePath, idx) {
+    const keep = EYS.xlsx && EYS.xlsx.path === filePath;
+    EYS.xlsx = { path: filePath, sheetMeta: keep ? EYS.xlsx.sheetMeta : [], cache: keep ? EYS.xlsx.cache : {}, idx, loading: true, error: null };
+    eysRepaintPreviewOnly();
+    try {
+      if (!EYS.xlsx.sheetMeta.length) {
+        const meta = await api('/api/eys/xlsx-meta?path=' + encodeURIComponent(filePath));
+        if (EYS.selected?.path !== filePath) return;
+        EYS.xlsx.sheetMeta = meta.sheetMeta || [];
+      }
+      if (!EYS.xlsx.cache[idx]) {
+        const sheet = await api(`/api/eys/xlsx-sheet?path=${encodeURIComponent(filePath)}&idx=${idx}`);
+        if (EYS.selected?.path !== filePath) return;
+        EYS.xlsx.cache[idx] = sheet;
+      }
+      EYS.xlsx.loading = false;
+    } catch (err) {
+      if (EYS.selected?.path !== filePath) return;
+      EYS.xlsx.loading = false;
+      EYS.xlsx.error = err.message;
+    }
+    eysRepaintPreviewOnly();
+  }
+
+  function bindEysPreviewTabs() {
+    document.querySelectorAll('#eys-preview [data-eys-sheet]').forEach(b => b.onclick = () => eysLoadXlsx(EYS.selected.path, Number(b.dataset.eysSheet)));
+  }
+
+  function eysRepaintPreviewOnly() {
+    const el = document.getElementById('eys-preview');
+    if (!el) return;
+    el.innerHTML = eysPreviewHtml();
+    bindEysPreviewTabs();
   }
 
   function eysRowsHtml() {
@@ -351,13 +411,13 @@
     document.getElementById('eys-crumbs').innerHTML = EYS.searching ? '' : crumbs;
     document.getElementById('eys-tbody').innerHTML = eysRowsHtml();
     document.getElementById('eys-preview').innerHTML = eysPreviewHtml();
+    bindEysPreviewTabs();
     const searchEl = document.getElementById('eys-search');
     if (searchEl && searchEl.value !== EYS.searchTerm) searchEl.value = EYS.searchTerm;
-    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; loadEysFolder(); });
-    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; EYS.xlsx = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; EYS.xlsx = null; loadEysFolder(); });
     document.querySelectorAll('[data-eys-file]').forEach(tr => tr.onclick = () => {
-      EYS.selected = EYS.items.find(it => it.path === tr.dataset.eysFile) || null;
-      eysPaintResults();
+      eysSelectFile(EYS.items.find(it => it.path === tr.dataset.eysFile) || null);
     });
   }
 

@@ -166,6 +166,9 @@
     return h;
   }
 
+  // Entegre Yönetim Sistemi'nin Excel önizlemesi de aynı render motorunu kullanır.
+  window.__ikSheetTableHtml = sheetTableHtml;
+
   const baseShell = shell;
   shell = function () {
     if (state.view === 'guncel-tablo') {

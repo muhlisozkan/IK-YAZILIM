@@ -4470,6 +4470,34 @@ app.get('/api/eys/search', asyncRoute(async (req, res) => {
   res.json({ items: results });
 }));
 
+// Excel (.xlsx) önizleme — Güncel Tablo'nun ayrıştırıcısı (parseGuncelWorkbook)
+// modül-agnostik olduğundan burada da doğrudan kullanılıyor. Eski ikili .xls
+// biçimini exceljs okuyamaz; hata durumunda frontend "önizlenemiyor" gösterir.
+async function eysParseXlsx(relPath) {
+  const target = eysSafePath(relPath);
+  if (!target || !target.rel) { const e = new Error('Geçersiz yol'); e.status = 400; throw e; }
+  let buffer;
+  try { buffer = await fsp.readFile(target.abs); }
+  catch { const e = new Error('Dosya bulunamadı'); e.status = 404; throw e; }
+  try { return await parseGuncelWorkbook(buffer); }
+  catch { const e = new Error('Bu dosya Excel önizleyici tarafından okunamadı'); e.status = 415; throw e; }
+}
+
+app.get('/api/eys/xlsx-meta', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const { sheetMeta } = await eysParseXlsx(req.query.path);
+  res.json({ sheetMeta });
+}));
+
+app.get('/api/eys/xlsx-sheet', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const idx = Number(req.query.idx) || 0;
+  const { sheets } = await eysParseXlsx(req.query.path);
+  const sheet = sheets[idx];
+  if (!sheet) return res.status(404).json({ error: 'Sayfa bulunamadı' });
+  res.json(sheet.data);
+}));
+
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });
