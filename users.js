@@ -42,7 +42,7 @@
   function syncUsersNavGroup(){
     const group=document.getElementById('users-nav-group');
     if(!group)return;
-    const active=['users','approval-matrix','smtp-settings','sms-settings'].includes(state.view);
+    const active=['users-group','users','approval-matrix','smtp-settings','sms-settings'].includes(state.view);
     const toggle=group.querySelector('.nav-group-toggle');
     if(toggle)toggle.classList.toggle('active',active);
     if(active)group.classList.add('open');

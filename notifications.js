@@ -394,6 +394,7 @@
     if(state.view==='smtp-settings')renderSmtpSettings();
     else if(state.view==='sms-settings')renderSmsSettings();
     else baseShell();
+    window.__ikSyncUsersGroup?.();
     ensureBell();
     tick(true);
   };
