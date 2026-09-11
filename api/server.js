@@ -8,6 +8,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promises as fsp } from 'node:fs';
+import mammoth from 'mammoth';
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL || 'postgres://ik:ik@db:5432/ik' });
 const app = express();
@@ -4442,60 +4443,103 @@ app.get('/api/eys/file', asyncRoute(async (req, res) => {
   res.download(target.abs, path.basename(target.abs));
 }));
 
-// Tüm arşivde dosya adına göre arama (klasörler hariç, ~1900 dosya — canlı gezinme yeterince hızlı).
-async function eysWalkSearch(dir, relBase, term, results, limit) {
-  if (results.length >= limit) return;
+// Tüm arşivde dosya adına göre arama. Her aramada ağ paylaşımını (CIFS) baştan
+// taramak yavaştı (~1.4sn/istek, 1900+ dosya) — bunun yerine dosya listesi
+// bellekte kısa süreli tutulur (TTL), arama bu listede anında filtrelenir.
+let eysSearchIndex = null; // { builtAt, files: [{name, path}] }
+const EYS_SEARCH_TTL = 3 * 60 * 1000; // 3 dakika — paylaşımdaki değişiklikler bu gecikmeyle yansır
+async function eysWalkAll(dir, relBase, out) {
   let entries;
   try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
-    if (results.length >= limit) return;
     if (EYS_HIDE.has(e.name) || e.name.startsWith('.')) continue;
     const abs = path.join(dir, e.name);
     const rel = relBase ? `${relBase}/${e.name}` : e.name;
-    if (e.isDirectory()) await eysWalkSearch(abs, rel, term, results, limit);
-    else if (e.isFile() && e.name.toLocaleLowerCase('tr-TR').includes(term)) {
-      const st = await fsp.stat(abs).catch(() => null);
-      results.push({ name: e.name, path: rel, size: st?.size || 0, mtime: st?.mtime || null });
-    }
+    if (e.isDirectory()) await eysWalkAll(abs, rel, out);
+    else if (e.isFile()) out.push({ name: e.name, path: rel });
   }
+}
+async function eysGetSearchIndex() {
+  if (eysSearchIndex && Date.now() - eysSearchIndex.builtAt < EYS_SEARCH_TTL) return eysSearchIndex.files;
+  const files = [];
+  await eysWalkAll(EYS_ROOT, '', files);
+  eysSearchIndex = { builtAt: Date.now(), files };
+  return files;
 }
 
 app.get('/api/eys/search', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const term = clean(req.query.q).toLocaleLowerCase('tr-TR');
   if (term.length < 2) return res.json({ items: [] });
-  const results = [];
-  await eysWalkSearch(EYS_ROOT, '', term, results, 300);
-  results.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  const files = await eysGetSearchIndex();
+  const results = files.filter(f => f.name.toLocaleLowerCase('tr-TR').includes(term))
+    .sort((a, b) => a.name.localeCompare(b.name, 'tr')).slice(0, 300);
   res.json({ items: results });
 }));
+
+// Ofis dosyası önizleme — ayrıştırma (özellikle Excel) pahalı + ağ paylaşımı
+// (CIFS) üzerinden okuma her istekte gecikme ekliyor. Dosya değişmediği sürece
+// (mtime+boyut aynıysa) sonucu bellekte tutup tekrar okuma/ayrıştırma yapmıyoruz.
+const eysCache = new Map();
+const EYS_CACHE_MAX = 40;
+function eysCacheGet(key) {
+  const v = eysCache.get(key);
+  if (v) { eysCache.delete(key); eysCache.set(key, v); } // LRU: erişilen en sona taşınır
+  return v;
+}
+function eysCacheSet(key, val) {
+  eysCache.set(key, val);
+  if (eysCache.size > EYS_CACHE_MAX) eysCache.delete(eysCache.keys().next().value);
+}
+async function eysReadForPreview(relPath, prefix) {
+  const target = eysSafePath(relPath);
+  if (!target || !target.rel) { const e = new Error('Geçersiz yol'); e.status = 400; throw e; }
+  const st = await fsp.stat(target.abs).catch(() => null);
+  if (!st || !st.isFile()) { const e = new Error('Dosya bulunamadı'); e.status = 404; throw e; }
+  const cacheKey = `${prefix}:${target.rel}:${st.mtimeMs}:${st.size}`;
+  const cached = eysCacheGet(cacheKey);
+  if (cached) return { hit: true, value: cached };
+  let buffer;
+  try { buffer = await fsp.readFile(target.abs); }
+  catch { const e = new Error('Dosya bulunamadı'); e.status = 404; throw e; }
+  return { hit: false, cacheKey, buffer };
+}
 
 // Excel (.xlsx) önizleme — Güncel Tablo'nun ayrıştırıcısı (parseGuncelWorkbook)
 // modül-agnostik olduğundan burada da doğrudan kullanılıyor. Eski ikili .xls
 // biçimini exceljs okuyamaz; hata durumunda frontend "önizlenemiyor" gösterir.
-async function eysParseXlsx(relPath) {
-  const target = eysSafePath(relPath);
-  if (!target || !target.rel) { const e = new Error('Geçersiz yol'); e.status = 400; throw e; }
-  let buffer;
-  try { buffer = await fsp.readFile(target.abs); }
-  catch { const e = new Error('Dosya bulunamadı'); e.status = 404; throw e; }
-  try { return await parseGuncelWorkbook(buffer); }
-  catch { const e = new Error('Bu dosya Excel önizleyici tarafından okunamadı'); e.status = 415; throw e; }
-}
-
-app.get('/api/eys/xlsx-meta', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
-  const { sheetMeta } = await eysParseXlsx(req.query.path);
-  res.json({ sheetMeta });
-}));
-
-app.get('/api/eys/xlsx-sheet', asyncRoute(async (req, res) => {
+// Tek uçta hem sayfa listesi hem istenen sayfanın verisi dönüyor (eskiden iki
+// ayrı istek dosyayı iki kez baştan ayrıştırıyordu — önizleme bu yüzden yavaştı).
+app.get('/api/eys/xlsx', asyncRoute(async (req, res) => {
   if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const idx = Number(req.query.idx) || 0;
-  const { sheets } = await eysParseXlsx(req.query.path);
-  const sheet = sheets[idx];
+  const r = await eysReadForPreview(req.query.path, 'xlsx');
+  let parsed;
+  if (r.hit) parsed = r.value;
+  else {
+    try { parsed = await parseGuncelWorkbook(r.buffer); }
+    catch { const e = new Error('Bu dosya Excel önizleyici tarafından okunamadı'); e.status = 415; throw e; }
+    eysCacheSet(r.cacheKey, parsed);
+  }
+  const sheet = parsed.sheets[idx];
   if (!sheet) return res.status(404).json({ error: 'Sayfa bulunamadı' });
-  res.json(sheet.data);
+  res.json({ sheetMeta: parsed.sheetMeta, sheet: sheet.data });
+}));
+
+// Word (.docx) önizleme — mammoth ile yarı-anlamsal HTML'e çevrilir, tamamen
+// yerelde çalışır (dış servise gönderim yok). Eski ikili .doc mammoth ile
+// okunamaz; hata durumunda frontend "önizlenemiyor" gösterir.
+app.get('/api/eys/docx', asyncRoute(async (req, res) => {
+  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
+  const r = await eysReadForPreview(req.query.path, 'docx');
+  let html;
+  if (r.hit) html = r.value;
+  else {
+    try { html = (await mammoth.convertToHtml({ buffer: r.buffer })).value; }
+    catch { const e = new Error('Bu dosya Word önizleyici tarafından okunamadı'); e.status = 415; throw e; }
+    eysCacheSet(r.cacheKey, html);
+  }
+  res.json({ html });
 }));
 
 app.use((error, _req, res, _next) => {

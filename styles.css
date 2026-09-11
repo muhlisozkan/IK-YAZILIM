@@ -643,6 +643,13 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .eys-xlsx-tab{padding:5px 10px;font-size:12px}
 .eys-xlsx-tab.active{background:var(--blue-tint);color:var(--blue-ink);font-weight:600}
 .eys-xlsx-wrap .gt-scroll{max-height:none;flex:1;min-height:0}
+.eys-docx-wrap{flex:1;overflow:auto;padding:28px 34px;max-width:780px;margin:0 auto;line-height:1.6;font-size:13.5px;color:var(--ink)}
+.eys-docx-wrap p{margin:0 0 12px}
+.eys-docx-wrap h1,.eys-docx-wrap h2,.eys-docx-wrap h3{margin:20px 0 10px;font-weight:650;letter-spacing:-.01em}
+.eys-docx-wrap table{width:100%;border-collapse:collapse;margin:0 0 14px}
+.eys-docx-wrap td,.eys-docx-wrap th{border:1px solid var(--line);padding:6px 8px;font-size:12.5px}
+.eys-docx-wrap img{max-width:100%;border-radius:6px}
+.eys-docx-wrap ul,.eys-docx-wrap ol{margin:0 0 12px;padding-left:22px}
 @media(max-width:900px){
   .eys-split{flex-direction:column}
   .eys-list-pane{flex:1 1 auto;width:100%}

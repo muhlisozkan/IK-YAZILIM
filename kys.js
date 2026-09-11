@@ -299,10 +299,11 @@
     if (ext === 'pdf') return 'pdf';
     if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)) return 'image';
     if (['xlsx', 'xltx'].includes(ext)) return 'xlsx'; // eski ikili .xls exceljs ile okunamaz
+    if (ext === 'docx') return 'docx'; // eski ikili .doc mammoth ile okunamaz
     return null;
   };
 
-  const EYS = { items: [], searchTerm: '', searching: false, selected: null, xlsx: null };
+  const EYS = { items: [], searchTerm: '', searching: false, selected: null, xlsx: null, docx: null };
 
   function eysXlsxBodyHtml() {
     const x = EYS.xlsx;
@@ -315,6 +316,13 @@
     return `<div class="eys-xlsx-wrap">${tabs}${sheetData ? window.__ikSheetTableHtml(sheetData) : '<div class="empty">Sayfa yükleniyor…</div>'}</div>`;
   }
 
+  function eysDocxBodyHtml() {
+    const d = EYS.docx;
+    if (!d || d.loading) return '<div class="empty">Word yükleniyor…</div>';
+    if (d.error) return `<div class="empty">${esc(d.error)}</div>`;
+    return `<div class="eys-docx-wrap">${d.html}</div>`;
+  }
+
   function eysPreviewHtml() {
     const item = EYS.selected;
     if (!item) return '<div class="empty">Önizlemek için bir dosyaya tıklayın</div>';
@@ -325,14 +333,18 @@
     if (kind === 'pdf') return head + `<iframe class="eys-preview-frame" src="${inlineUrl}"></iframe>`;
     if (kind === 'image') return head + `<div class="eys-preview-imgwrap"><img src="${inlineUrl}" alt="${esc(item.name)}"></div>`;
     if (kind === 'xlsx') return head + eysXlsxBodyHtml();
+    if (kind === 'docx') return head + eysDocxBodyHtml();
     return head + '<div class="empty">Bu dosya türü tarayıcıda önizlenemiyor — indirip açın</div>';
   }
 
   function eysSelectFile(item) {
     EYS.selected = item;
     EYS.xlsx = null;
+    EYS.docx = null;
     eysPaintResults();
-    if (item && eysPreviewKind(item.name) === 'xlsx') eysLoadXlsx(item.path, 0);
+    const kind = item && eysPreviewKind(item.name);
+    if (kind === 'xlsx') eysLoadXlsx(item.path, 0);
+    else if (kind === 'docx') eysLoadDocx(item.path);
   }
 
   async function eysLoadXlsx(filePath, idx) {
@@ -340,21 +352,31 @@
     EYS.xlsx = { path: filePath, sheetMeta: keep ? EYS.xlsx.sheetMeta : [], cache: keep ? EYS.xlsx.cache : {}, idx, loading: true, error: null };
     eysRepaintPreviewOnly();
     try {
-      if (!EYS.xlsx.sheetMeta.length) {
-        const meta = await api('/api/eys/xlsx-meta?path=' + encodeURIComponent(filePath));
-        if (EYS.selected?.path !== filePath) return;
-        EYS.xlsx.sheetMeta = meta.sheetMeta || [];
-      }
-      if (!EYS.xlsx.cache[idx]) {
-        const sheet = await api(`/api/eys/xlsx-sheet?path=${encodeURIComponent(filePath)}&idx=${idx}`);
-        if (EYS.selected?.path !== filePath) return;
-        EYS.xlsx.cache[idx] = sheet;
-      }
+      const data = await api(`/api/eys/xlsx?path=${encodeURIComponent(filePath)}&idx=${idx}`);
+      if (EYS.selected?.path !== filePath) return;
+      EYS.xlsx.sheetMeta = data.sheetMeta || [];
+      EYS.xlsx.cache[idx] = data.sheet;
       EYS.xlsx.loading = false;
     } catch (err) {
       if (EYS.selected?.path !== filePath) return;
       EYS.xlsx.loading = false;
       EYS.xlsx.error = err.message;
+    }
+    eysRepaintPreviewOnly();
+  }
+
+  async function eysLoadDocx(filePath) {
+    EYS.docx = { path: filePath, html: '', loading: true, error: null };
+    eysRepaintPreviewOnly();
+    try {
+      const data = await api('/api/eys/docx?path=' + encodeURIComponent(filePath));
+      if (EYS.selected?.path !== filePath) return;
+      EYS.docx.html = data.html || '';
+      EYS.docx.loading = false;
+    } catch (err) {
+      if (EYS.selected?.path !== filePath) return;
+      EYS.docx.loading = false;
+      EYS.docx.error = err.message;
     }
     eysRepaintPreviewOnly();
   }
@@ -395,8 +417,8 @@
           <input class="input eys-search" id="eys-search" type="search" placeholder="Dosya ara…">
         </div>
         <div class="eys-split">
-          <div class="eys-list-pane"><div class="card" style="padding:0"><div style="overflow:auto;max-height:75vh"><table><tbody id="eys-tbody"></tbody></table></div></div></div>
-          <div class="eys-preview-pane"><div class="card eys-preview-card" id="eys-preview"></div></div>
+          <div class="eys-list-pane"><div class="card" style="padding:0"><div style="overflow:auto;max-height:75vh"><table><tbody id="eys-tbody"><tr><td class="empty">Yükleniyor…</td></tr></tbody></table></div></div></div>
+          <div class="eys-preview-pane"><div class="card eys-preview-card" id="eys-preview">${eysPreviewHtml()}</div></div>
         </div>
       </div>`;
     document.getElementById('eys-search').oninput = e => eysOnSearchInput(e.target.value);
@@ -414,8 +436,8 @@
     bindEysPreviewTabs();
     const searchEl = document.getElementById('eys-search');
     if (searchEl && searchEl.value !== EYS.searchTerm) searchEl.value = EYS.searchTerm;
-    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; EYS.xlsx = null; loadEysFolder(); });
-    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; EYS.xlsx = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; EYS.xlsx = null; EYS.docx = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; EYS.xlsx = null; EYS.docx = null; loadEysFolder(); });
     document.querySelectorAll('[data-eys-file]').forEach(tr => tr.onclick = () => {
       eysSelectFile(EYS.items.find(it => it.path === tr.dataset.eysFile) || null);
     });
