@@ -614,9 +614,11 @@ button.wk-chip:hover:not(.on){background:#f3f6fa}
 .nav-group{margin:1px 0}
 .nav-group-toggle .nav-caret{margin-left:auto;font-size:10px;opacity:.75;transition:transform .15s;flex-shrink:0}
 .nav-group.open .nav-group-toggle .nav-caret{transform:rotate(180deg)}
-.nav-sub{max-height:0;overflow:hidden;transition:max-height .18s ease}
+.nav-sub{max-height:0;overflow:hidden;transition:max-height .18s ease;background:#fff;border-radius:8px;margin:2px 0 4px;padding:2px}
 .nav-group.open .nav-sub{max-height:420px}
-.nav-sub-item{padding-left:38px!important;font-size:12.5px!important}
+.nav-sub-item{padding-left:36px!important;font-size:12.5px!important;color:var(--ink-soft)!important;border-radius:7px!important}
+.nav-sub-item:hover{background:var(--line-soft)!important;color:var(--ink)!important}
+.nav-sub-item.active{background:var(--blue-tint)!important;color:var(--blue-ink)!important;box-shadow:none!important;font-weight:600!important}
 
 /* Entegre Yönetim Sistemi — klasör gezgini */
 .eys-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
