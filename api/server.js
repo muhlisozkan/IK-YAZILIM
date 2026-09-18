@@ -1,3 +1,6 @@
+import { installMobileAuth } from './mobile-auth.mjs';
+import { installMobileApi } from './mobile-api.mjs';
+import webpush from 'web-push';
 import express from 'express';
 import sql from 'mssql';
 import pg from 'pg';
@@ -82,6 +85,17 @@ const istanbulDate = () => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 const dateDistance = (later, earlier) => Math.floor((Date.parse(`${later}T00:00:00Z`) - Date.parse(`${earlier}T00:00:00Z`)) / 86400000);
+// Çalışanın istihdam dışı olduğu günler: işe giriş tarihinden önce, ve çıkış yaptığı
+// tarihten (o tarih dahil) itibaren sonrası — puantaj/vardiya için sunucu tarafında da
+// engellenir (frontend'deki aynı kural: attendance-paged.js/shifts.js outOfPeriod ile
+// birebir; kullanıcı isteği 2026-09).
+const outOfEmploymentPeriod = (employee, dateStr) => {
+  const start = clean(employee.start_date);
+  const term = clean(employee.termination_date);
+  if (start && dateStr < start) return true;
+  if (term && dateStr >= term) return true;
+  return false;
+};
 
 // İzin gün hesabı: haftalık izin 1 gün; tam resmi tatil sayılmaz, yarım resmi tatil 0,5.
 // (İstemcideki listelerle aynı — dini bayram tarihleri kesinleşince güncelleyin.)
@@ -268,10 +282,17 @@ async function readPayrollRows() {
         CAST(p.[İŞE GİRİŞ TARİHİ] AS date) AS start_date,
         NULLIF(LTRIM(RTRIM(p.[ÇALIŞMA_STATUSU])), '') AS payroll_status
       FROM dbo.ARY_001_PER_ISTATISTIK p
-      INNER JOIN latest_period lp ON lp.payroll_year = p.[Bordro Yılı] AND lp.payroll_month = p.[Bordro Ay]
+      CROSS JOIN latest_period lp
       LEFT JOIN cost_centers cc ON cc.payroll_year=p.[Bordro Yılı] AND cc.payroll_month=p.[Bordro Ay]
         AND cc.payroll_sicil=NULLIF(LTRIM(RTRIM(p.SICIL)), '')
       WHERE NULLIF(LTRIM(RTRIM(p.SICIL)), '') IS NOT NULL
+        AND (
+          (p.[Bordro Yılı] = lp.payroll_year AND p.[Bordro Ay] = lp.payroll_month)
+          -- Yeni işe giren personelin bordro dönemi (Bordro Yılı/Ay) o ayın bordrosu
+          -- kapanana kadar boş kalıyor — bu satırları da (henüz hiçbir döneme atanmamış
+          -- ama aktif) dahil et, yoksa yeni çalışan ay sonuna kadar programa hiç düşmüyor.
+          OR (p.[Bordro Yılı] IS NULL AND p.[Bordro Ay] IS NULL)
+        )
       ORDER BY p.SICIL;
     `);
     const currentSicils = [...new Set(result.recordset.map(row => clean(row.payroll_sicil)).filter(Boolean))];
@@ -416,7 +437,7 @@ async function authenticatedUser(req) {
   const token = cookieValue(req, 'ik_session');
   if (!token) return null;
   const result = await pool.query(`
-    select u.id,u.username,u.email,u.display_name as name,u.role,u.employee_id,u.department
+    select u.id,u.username,u.email,u.display_name as name,u.role,u.employee_id,u.department,u.is_manager
     from auth_sessions s join app_users u on u.id=s.user_id
     where s.token_hash=$1 and s.expires_at>now() and u.status='Aktif'`, [tokenHash(token)]);
   return result.rows[0] || null;
@@ -433,7 +454,7 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     return res.status(429).json({ error: `Çok fazla hatalı giriş denemesi. ${Math.ceil(lock.retryAfterSeconds / 60)} dakika sonra tekrar deneyin.` });
   }
   const result = await pool.query(`
-    select id,username,email,display_name as name,role,employee_id,department
+    select id,username,email,display_name as name,role,employee_id,department,is_manager
     from app_users
     where lower(username)=lower($1) and status='Aktif' and password_hash=crypt($2,password_hash)`, [username, password]);
   if (!result.rowCount) {
@@ -475,10 +496,12 @@ app.use('/api/public', (req, res, next) => {
   next();
 });
 
+installMobileAuth(app, { pool, asyncRoute, sendSms, secret: process.env.SMTP_SETTINGS_KEY });
+
 app.use('/api', asyncRoute(async (req, res, next) => {
   // /health ve tek kullanımlık davet bağlantıları oturum gerektirmez
   if (req.path === '/health' || req.path.startsWith('/public/')) return next();
-  const user = await authenticatedUser(req);
+  const user = req.mobileUser || await authenticatedUser(req);
   if (!user) return res.status(401).json({ error: 'Oturum açmanız gerekiyor' });
   req.user = user;
   next();
@@ -507,6 +530,77 @@ app.use("/api", (req, res, next) => {
 
 
 const accountRoles = new Set(['Sistem yöneticisi','İK yöneticisi','Departman yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi','Güvenlik','Personel','Sadece görüntüleme']);
+// Kullanıcı ekranındaki "Yeni Rol" oluşturucusuyla eklenen, custom_roles
+// tablosunda saklanan modül bazlı roller de sabit rol listesi kadar geçerlidir.
+async function isValidRole(role) {
+  if (accountRoles.has(role)) return true;
+  const result = await pool.query('select 1 from custom_roles where name=$1', [role]);
+  return result.rowCount > 0;
+}
+// Özel rol tanımları (modül izinleri + "tüm departmanları gör" bayrağı):
+// visibleDepartments/kysAccess gibi fonksiyonlar senkron çalıştığı için
+// (birçok sorguda kullanılıyor) her istekte DB'ye gitmek yerine bellek içi
+// önbellekte tutulur; rol oluşturma/güncellemede ve açılışta yeniden yüklenir.
+let customRoleDefs = new Map();
+async function refreshCustomRoleDefs() {
+  const result = await pool.query('select name, permissions, company_wide from custom_roles');
+  customRoleDefs = new Map(result.rows.map(r => [r.name, { permissions: r.permissions || {}, companyWide: r.company_wide }]));
+}
+function customRoleModuleLevel(user, moduleKey) {
+  return customRoleDefs.get(user?.role)?.permissions?.[moduleKey] || null;
+}
+function customRoleIsCompanyWide(user) {
+  return Boolean(customRoleDefs.get(user?.role)?.companyWide);
+}
+const ROLE_MODULE_KEYS = new Set(['dashboard','attendance','shifts','leave','birthdays','documents','training','performance','survey',
+  'employees','departments','recruitment','reports','security','lostfound','users','approval-matrix','smtp-settings','sms-settings',
+  'personel-butcesi','guncel-tablo','kys-eys','kys-dokuman','kys-dof','kys-hedefler','kys-ygg','kys-tedarikci','kys-kalibrasyon','kys-sikayet','kys-denetim','kys-haccp','alacarte','spa-reservations']);
+const ROLE_PERMISSION_LEVELS = new Set(['view','write','full']);
+app.get('/api/custom-roles', asyncRoute(async (req, res) => {
+  const result = await pool.query('select id,name,permissions,company_wide,created_at from custom_roles order by name');
+  res.json(result.rows);
+}));
+app.post('/api/custom-roles', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const name = clean(req.body?.name);
+  const companyWide = Boolean(req.body?.company_wide);
+  const rawPermissions = req.body?.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
+  const permissions = {};
+  for (const [key, level] of Object.entries(rawPermissions)) {
+    if (ROLE_MODULE_KEYS.has(key) && ROLE_PERMISSION_LEVELS.has(level)) permissions[key] = level;
+  }
+  if (!name || name.length > 80) return res.status(400).json({ error: 'Geçerli bir rol adı girin' });
+  // "overlay": mevcut sabit bir role (ör. Departman yöneticisi) ek modül izni tanımlamak
+  // için kasıtlı olarak aynı isimde bir custom_roles satırı oluşturulur — bu durumda isim
+  // çakışması engeli atlanır (aksi halde normal "Yeni Rol" akışında sabit isimlerle çakışma engellenir).
+  if (accountRoles.has(name) && !req.body?.overlay) return res.status(409).json({ error: 'Bu isim mevcut bir rolle çakışıyor' });
+  if (!Object.keys(permissions).length) return res.status(400).json({ error: 'En az bir modül seçin' });
+  const duplicate = await pool.query('select 1 from custom_roles where name=$1', [name]);
+  if (duplicate.rowCount) return res.status(409).json({ error: 'Bu isimde bir rol zaten var' });
+  const result = await pool.query('insert into custom_roles(name,permissions,company_wide,created_by) values($1,$2,$3,$4) returning id,name,permissions,company_wide,created_at',
+    [name, JSON.stringify(permissions), companyWide, req.user.name]);
+  await refreshCustomRoleDefs();
+  res.status(201).json(result.rows[0]);
+}));
+// Rol adı kasıtlı olarak değiştirilemez: app_users.role bu ismi düz metin
+// olarak sakladığı için yeniden adlandırma mevcut kullanıcıların iznini kırar.
+app.put('/api/custom-roles/:id', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Geçersiz rol' });
+  const companyWide = Boolean(req.body?.company_wide);
+  const rawPermissions = req.body?.permissions && typeof req.body.permissions === 'object' ? req.body.permissions : {};
+  const permissions = {};
+  for (const [key, level] of Object.entries(rawPermissions)) {
+    if (ROLE_MODULE_KEYS.has(key) && ROLE_PERMISSION_LEVELS.has(level)) permissions[key] = level;
+  }
+  if (!Object.keys(permissions).length) return res.status(400).json({ error: 'En az bir modül seçin' });
+  const result = await pool.query('update custom_roles set permissions=$2,company_wide=$3 where id=$1 returning id,name,permissions,company_wide,created_at',
+    [id, JSON.stringify(permissions), companyWide]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Rol bulunamadı' });
+  await refreshCustomRoleDefs();
+  res.json(result.rows[0]);
+}));
 const approvalMatrixTypes = new Set(['leave','expense','advance']);
 const approvalMatrixRoles = new Set(['Departman yöneticisi','İK yöneticisi','Mali İşler','Finans yöneticisi','Bordro yetkilisi','Genel müdür','Genel müdür yardımcısı','Bölge yöneticisi']);
 function normalizeApprovalMatrix(value) {
@@ -540,18 +634,29 @@ const isHRUser = user => ['Sistem yöneticisi', 'İK yöneticisi'].includes(user
   || clean(user?.department) === 'İnsan Kaynakları';
 const isPayrollUser = user => isHRUser(user) || user?.role === 'Bordro yetkilisi';
 const isDepartmentManager = user => user?.role === 'Departman yöneticisi';
-// Vardiya düzenleyebilen roller (departman yöneticisi kendi departmanı için).
-const canEditWorkforce = user => isPayrollUser(user) || isDepartmentManager(user);
-// Puantaj yalnızca İK ve Bordro; departman yöneticileri göremez.
-const canViewAttendance = user => isPayrollUser(user);
+// Şirket geneli olmayan özel roller de (ör. "Kapı Güvenlik") kendi departmanına özel
+// rol yetkisi + departman ataması varsa departman yöneticisi gibi kapsamlı görür
+// (kullanıcı isteği 2026-09: özel rol + departman ataması olan kullanıcı Genel Bakış/
+// Vardiya/İzin ekranlarında boş görmesin).
+const isDeptScopedCustomRole = user => customRoleDefs.has(user?.role) && !customRoleIsCompanyWide(user);
+// Vardiya düzenleyebilen roller (departman yöneticisi kendi departmanı için, ya da
+// özel role "shifts" için write/full yetkisi verilmişse).
+const canEditWorkforce = user => isPayrollUser(user) || isDepartmentManager(user)
+  || ['write', 'full'].includes(customRoleModuleLevel(user, 'shifts'));
+// Puantaj varsayılan olarak yalnızca İK ve Bordro; bir role "attendance" modülü özel rol
+// izniyle (ör. Departman yöneticisi'ne eklenen ek yetki) eklenmişse o rol de görebilir —
+// yazma tarafında canActOnDepartment zaten departman yöneticisini yalnız kendi departmanına
+// kısıtlıyor, tarih penceresi de unrestricted olmayan roller için otomatik daralıyor.
+const canViewAttendance = user => isPayrollUser(user) || Boolean(customRoleModuleLevel(user, 'attendance'));
 const requireRole = (req, res, allowed, message = 'Bu işlem için yetkiniz yok') => {
   if (allowed(req.user)) return true;
   res.status(403).json({ error: message });
   return false;
 };
-// Departman yöneticisi yalnızca kendi departmanındaki çalışana işlem yapabilir.
+// Departman yöneticisi (ya da departmana atanmış özel rol) yalnızca kendi departmanındaki
+// çalışana işlem yapabilir.
 const canActOnDepartment = (user, department) => isHRUser(user) || isPayrollUser(user)
-  || (isDepartmentManager(user) && clean(user?.department) && clean(user.department) === clean(department));
+  || ((isDepartmentManager(user) || isDeptScopedCustomRole(user)) && clean(user?.department) && clean(user.department) === clean(department));
 
 // Şirket genelini görebilen roller (departman kısıtı yok).
 const companyWideRoles = new Set([
@@ -563,12 +668,12 @@ const companyWideRoles = new Set([
 //   [ 'X' ]    -> yalnızca bu departman(lar)
 //   []         -> departman bazlı liste yok (yalnızca kendi kayıtları)
 function visibleDepartments(user) {
-  if (companyWideRoles.has(user?.role) || clean(user?.department) === 'İnsan Kaynakları') return null;
-  if (isDepartmentManager(user) && clean(user?.department)) return [clean(user.department)];
+  if (companyWideRoles.has(user?.role) || customRoleIsCompanyWide(user) || clean(user?.department) === 'İnsan Kaynakları') return null;
+  if ((isDepartmentManager(user) || isDeptScopedCustomRole(user)) && clean(user?.department)) return [clean(user.department)];
   return [];
 }
-// Maaş/ücret bilgisini Departman yöneticisi ve Personel görmez.
-const canSeeSalary = user => !isDepartmentManager(user) && user?.role !== 'Personel';
+// Maaş/ücret bilgisini Departman yöneticisi, departmana atanmış özel rol ve Personel görmez.
+const canSeeSalary = user => !isDepartmentManager(user) && !isDeptScopedCustomRole(user) && user?.role !== 'Personel';
 
 // Bir sorguya, kullanıcının departman kapsamına göre çalışan kısıtı ekler.
 // `column` bir employees.id referansı olmalı; `params` dizisine yeni parametreler
@@ -592,7 +697,7 @@ function withUserScope(user) {
     can_see_salary: canSeeSalary(user)
   };
 }
-const publicUserColumns = 'id,username,email,phone,display_name as name,role,status,employee_id,department,created_at,updated_at';
+const publicUserColumns = 'id,username,email,phone,display_name as name,role,status,employee_id,department,is_manager,created_at,updated_at';
 const phoneNumber = value => {
   const cleaned = clean(value);
   return cleaned === '' || /^[0-9+()\s-]{7,20}$/.test(cleaned) ? cleaned : null;
@@ -622,16 +727,17 @@ app.post('/api/users', asyncRoute(async (req, res) => {
   const password = String(req.body?.password || ''), role = clean(req.body?.role), status = clean(req.body?.status) || 'Aktif';
   const department = clean(req.body?.department), employeeId = req.body?.employee_id ? Number(req.body.employee_id) : null;
   const phone = phoneNumber(req.body?.phone);
-  if (username.length < 3 || /\s/.test(username) || !name || password.length < 8 || !accountRoles.has(role) || !['Aktif','Pasif'].includes(status)) {
+  const isManager = req.body?.is_manager !== false;
+  if (username.length < 3 || /\s/.test(username) || !name || password.length < 8 || !(await isValidRole(role)) || !['Aktif','Pasif'].includes(status)) {
     return res.status(400).json({ error: 'Kullanıcı bilgilerini ve en az 8 karakterlik şifreyi kontrol edin' });
   }
   if (phone === null) return res.status(400).json({ error: 'Telefon numarası geçersiz' });
   if (employeeId !== null && (!Number.isInteger(employeeId) || employeeId <= 0)) return res.status(400).json({ error: 'Geçersiz personel bağlantısı' });
   const duplicate = await pool.query('select 1 from app_users where lower(username)=lower($1)', [username]);
   if (duplicate.rowCount) return res.status(409).json({ error: 'Bu kullanıcı adı zaten kullanılıyor' });
-  const result = await pool.query(`insert into app_users(username,email,phone,password_hash,display_name,role,status,employee_id,department)
-    values($1,$2,$3,crypt($4,gen_salt('bf',12)),$5,$6,$7,$8,$9) returning ${publicUserColumns}`,
-    [username,email,phone,password,name,role,status,employeeId,department]);
+  const result = await pool.query(`insert into app_users(username,email,phone,password_hash,display_name,role,status,employee_id,department,is_manager)
+    values($1,$2,$3,crypt($4,gen_salt('bf',12)),$5,$6,$7,$8,$9,$10) returning ${publicUserColumns}`,
+    [username,email,phone,password,name,role,status,employeeId,department,isManager]);
   res.status(201).json(result.rows[0]);
 }));
 
@@ -641,16 +747,17 @@ app.put('/api/users/:id', asyncRoute(async (req, res) => {
   const password = String(req.body?.password || ''), role = clean(req.body?.role), status = clean(req.body?.status);
   const department = clean(req.body?.department), employeeId = req.body?.employee_id ? Number(req.body.employee_id) : null;
   const phone = phoneNumber(req.body?.phone);
-  if (!Number.isInteger(id) || username.length < 3 || /\s/.test(username) || !name || (password && password.length < 8) || !accountRoles.has(role) || !['Aktif','Pasif'].includes(status)) {
+  const isManager = req.body?.is_manager !== false;
+  if (!Number.isInteger(id) || username.length < 3 || /\s/.test(username) || !name || (password && password.length < 8) || !(await isValidRole(role)) || !['Aktif','Pasif'].includes(status)) {
     return res.status(400).json({ error: 'Kullanıcı bilgilerini kontrol edin' });
   }
   if (phone === null) return res.status(400).json({ error: 'Telefon numarası geçersiz' });
   if (id === Number(req.user.id) && status !== 'Aktif') return res.status(400).json({ error: 'Kendi hesabınızı pasif yapamazsınız' });
   const duplicate = await pool.query('select 1 from app_users where lower(username)=lower($1) and id<>$2', [username,id]);
   if (duplicate.rowCount) return res.status(409).json({ error: 'Bu kullanıcı adı zaten kullanılıyor' });
-  const result = await pool.query(`update app_users set username=$2,email=$3,display_name=$4,role=$5,status=$6,employee_id=$7,department=$8,phone=$10,
+  const result = await pool.query(`update app_users set username=$2,email=$3,display_name=$4,role=$5,status=$6,employee_id=$7,department=$8,phone=$10,is_manager=$11,
     password_hash=case when $9='' then password_hash else crypt($9,gen_salt('bf',12)) end,updated_at=now()
-    where id=$1 returning ${publicUserColumns}`, [id,username,email,name,role,status,employeeId,department,password,phone]);
+    where id=$1 returning ${publicUserColumns}`, [id,username,email,name,role,status,employeeId,department,password,phone,isManager]);
   if (!result.rowCount) return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
   res.json(result.rows[0]);
 }));
@@ -767,7 +874,7 @@ function normalizeGsm(phone) {
   else if (d.startsWith('0') && d.length === 11) d = d.slice(1);
   return d;
 }
-async function sendSms(phone, message, context) {
+async function sendSms(phone, message, context, { sensitive = false } = {}) {
   const settings = await readSmsSettings();
   if (!settings || !settings.enabled) return { ok: false, skipped: true };
   const target = normalizeGsm(phone);
@@ -803,7 +910,7 @@ async function sendSms(phone, message, context) {
     responseText = String(cause?.message || cause).slice(0, 1000);
   }
   pool.query('insert into sms_log(phone,message,context,ok,status_code,response) values($1,$2,$3,$4,$5,$6)',
-    [target, String(message || '').slice(0, 500), clean(context), ok, statusCode, responseText]).catch(() => {});
+    [target, sensitive ? '[Doğrulama kodu gizlendi]' : String(message || '').slice(0, 500), clean(context), ok, statusCode, sensitive ? '[Sağlayıcı yanıtı gizlendi]' : responseText]).catch(() => {});
   return { ok, status: statusCode, response: responseText };
 }
 
@@ -863,6 +970,41 @@ function userMatchesApproverRole(user, role, department) {
   return user.role === role;
 }
 const approvalKindLabel = { leave_requests: 'izin', expenses: 'masraf', advances: 'avans' };
+// --- İK Yanımda: mobil push bildirimleri (opt-in, Web Push) ---------------
+const VAPID_PUBLIC_KEY = clean(process.env.MOBILE_PUSH_VAPID_PUBLIC_KEY);
+const VAPID_PRIVATE_KEY = clean(process.env.MOBILE_PUSH_VAPID_PRIVATE_KEY);
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails('mailto:hr@hiltondalaman.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
+async function sendPush(subscription, payload) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return { ok: false, skipped: true };
+  try {
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+    return { ok: true };
+  } catch (cause) {
+    if (cause?.statusCode === 404 || cause?.statusCode === 410) {
+      await pool.query('delete from push_subscriptions where endpoint=$1', [subscription.endpoint]).catch(() => {});
+    }
+    return { ok: false, error: cause?.message || String(cause) };
+  }
+}
+async function notifyMobilePush(employeeId, title, body) {
+  try {
+    const subs = (await pool.query('select endpoint,p256dh,auth from push_subscriptions where employee_id=$1', [employeeId])).rows;
+    for (const sub of subs) await sendPush({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, { title, body });
+  } catch (cause) {
+    console.error('Mobil push gönderilemedi', cause?.message || cause);
+  }
+}
+async function notifyMobilePushAll(title, body) {
+  try {
+    const subs = (await pool.query(`select ps.endpoint,ps.p256dh,ps.auth from push_subscriptions ps
+      join employees e on e.id=ps.employee_id where e.status='Aktif'`)).rows;
+    for (const sub of subs) await sendPush({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, { title, body });
+  } catch (cause) {
+    console.error('Toplu mobil push gönderilemedi', cause?.message || cause);
+  }
+}
 async function notifyApprovalSms(row, table) {
   try {
     const settings = await readSmsSettings();
@@ -886,6 +1028,26 @@ async function notifyApprovalSms(row, table) {
 // "birthday:<id>:<tarih>" context'i aynı gün tekrar göndermeyi engeller
 // (konteyner yeniden başlasa bile — bellek içi bayrağa ek, kalıcı koruma).
 let lastBirthdaySmsDate = '';
+const BIRTHDAY_SMS_MISSING_PHONE_EMAIL = 'hr@hiltondalaman.com';
+async function notifyBirthdayMissingPhones(employees, date) {
+  try {
+    const smtp = await readSmtpSettings();
+    if (!smtp || !smtp.enabled) { console.error('Doğum günü telefonsuz çalışan bildirimi gönderilemedi: SMTP yapılandırılmamış'); return; }
+    const transport = await smtpTransport(smtp);
+    const h = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const list = employees.map(e => `- ${e.name}`).join('\n');
+    const listHtml = employees.map(e => `<li>${h(e.name)}</li>`).join('');
+    await transport.sendMail({
+      from: { name: smtp.from_name, address: smtp.from_email },
+      to: BIRTHDAY_SMS_MISSING_PHONE_EMAIL,
+      subject: `Doğum günü SMS'i gönderilemedi (${date})`,
+      text: `Bugün (${date}) doğum günü olan ancak sistemde telefon numarası kayıtlı olmadığı için SMS gönderilemeyen çalışanlar:\n${list}`,
+      html: `<p>Bugün (${date}) doğum günü olan ancak sistemde telefon numarası kayıtlı olmadığı için SMS gönderilemeyen çalışanlar:</p><ul>${listHtml}</ul>`
+    });
+  } catch (cause) {
+    console.error('Doğum günü telefonsuz çalışan e-postası gönderilemedi', cause?.message || cause);
+  }
+}
 async function runBirthdaySmsIfDue() {
   const clock = istanbulClock();
   if (clock.hour !== 9 || lastBirthdaySmsDate === clock.date) return;
@@ -895,9 +1057,11 @@ async function runBirthdaySmsIfDue() {
     const todayMD = clock.date.slice(5, 10);
     const rows = (await pool.query(
       `select id, name, phone, payroll_details->>'DOĞUM TARİHİ' as birth
-       from employees where status <> 'Pasif' and coalesce(phone,'') <> '' and coalesce(payroll_details->>'DOĞUM TARİHİ','') <> ''`
+       from employees where status <> 'Pasif' and coalesce(payroll_details->>'DOĞUM TARİHİ','') <> ''`
     )).rows.filter(r => String(r.birth).slice(5, 10) === todayMD);
-    for (const emp of rows) {
+    const withPhone = rows.filter(r => clean(r.phone) !== '');
+    const withoutPhone = rows.filter(r => clean(r.phone) === '');
+    for (const emp of withPhone) {
       const context = `birthday:${emp.id}:${clock.date}`;
       const already = await pool.query('select 1 from sms_log where context=$1', [context]);
       if (already.rowCount) continue;
@@ -905,6 +1069,7 @@ async function runBirthdaySmsIfDue() {
       const message = `Sayın ${emp.name}, ${clean(settings.birthday_message_template) || BIRTHDAY_SMS_DEFAULT}`;
       await sendSms(emp.phone, message, context);
     }
+    if (withoutPhone.length) await notifyBirthdayMissingPhones(withoutPhone, clock.date);
     lastBirthdaySmsDate = clock.date;
   } catch (cause) {
     console.error('Doğum günü SMS gönderimi başarısız', cause?.message || cause);
@@ -972,6 +1137,33 @@ app.post('/api/sms-settings/test', asyncRoute(async (req, res) => {
   res.json({ ok: true, status: result.status });
 }));
 
+async function employeeNameByPhone(recipient) {
+  const digits = normalizeGsm(recipient);
+  if (!/^5\d{9}$/.test(digits)) return null;
+  const rows = (await pool.query("select name, phone from employees where coalesce(phone,'')<>''")).rows;
+  return rows.find(row => normalizeGsm(row.phone) === digits)?.name || null;
+}
+
+app.get('/api/employees/phone-lookup', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const name = await employeeNameByPhone(req.query.phone);
+  res.json({ found: Boolean(name), name });
+}));
+
+app.post('/api/sms-settings/test-birthday', asyncRoute(async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return;
+  const recipient = phoneNumber(req.body?.recipient);
+  if (!recipient) return res.status(400).json({ error: 'Geçerli bir test telefon numarası girin' });
+  const settings = await readSmsSettings();
+  if (!settings) return res.status(409).json({ error: 'Önce SMS ayarlarını kaydedin' });
+  if (!settings.enabled) return res.status(409).json({ error: 'SMS gönderimi kapalı; önce etkinleştirip kaydedin' });
+  const name = await employeeNameByPhone(recipient) || 'Test Kullanıcı';
+  const message = `Sayın ${name}, ${clean(settings.birthday_message_template) || BIRTHDAY_SMS_DEFAULT}`;
+  const result = await sendSms(recipient, message, 'birthday-test');
+  if (!result.ok) return res.status(502).json({ error: `SMS gönderilemedi (HTTP ${result.status ?? '-'}). Yanıt: ${clean(result.response).slice(0, 200)}` });
+  res.json({ ok: true, status: result.status });
+}));
+
 app.get('/api/sms-log', asyncRoute(async (req, res) => {
   if (!requireSystemAdmin(req, res)) return;
   const rows = (await pool.query('select id,phone,message,context,ok,status_code,response,created_at from sms_log order by created_at desc limit 50')).rows;
@@ -1017,6 +1209,22 @@ app.put('/api/shared-data/:key', asyncRoute(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
+// Dashboard özet kartı için: bugün Puantaj'a R/R./Y işlenen çalışanlar.
+// Puantaj görüntüleme yetkisi gerekmez — kullanıcının zaten görebildiği
+// çalışan kapsamıyla (scopeEmployeeSql) sınırlıdır, yalnızca bugünün kodunu döner.
+app.get('/api/attendance/today-status', asyncRoute(async (req, res) => {
+  const params = [];
+  const scopeSql = scopeEmployeeSql(req.user, 'employee_id', params);
+  const result = await pool.query(`
+    select employee_id, value
+    from attendance_entries
+    where work_date = current_date and work_type = 'normal'
+      and upper(trim(value)) in ('R','R.','Y')${scopeSql}`, params);
+  const status = {};
+  for (const row of result.rows) status[row.employee_id] = row.value.trim().toUpperCase();
+  res.json(status);
+}));
+
 app.get('/api/attendance', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, canViewAttendance, 'Puantaj görüntüleme yetkiniz yok')) return;
   const month = /^\d{4}-\d{2}$/.test(clean(req.query.month)) ? clean(req.query.month) : null;
@@ -1050,10 +1258,15 @@ app.put('/api/attendance', asyncRoute(async (req, res) => {
     return res.status(400).json({ error: 'Geçersiz puantaj değeri' });
   }
   if (!requireRole(req, res, canViewAttendance, 'Puantaj düzenleme yetkiniz yok')) return;
-  const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
+  const employee = await pool.query(
+    "select id,department,to_char(start_date,'YYYY-MM-DD') as start_date,to_char(termination_date,'YYYY-MM-DD') as termination_date from employees where id=$1",
+    [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
   if (!canActOnDepartment(req.user, employee.rows[0].department)) {
     return res.status(403).json({ error: 'Yalnızca kendi departmanınızdaki çalışanın puantajını düzenleyebilirsiniz' });
+  }
+  if (outOfEmploymentPeriod(employee.rows[0], workDate)) {
+    return res.status(403).json({ error: 'Çalışanın istihdam döneminin dışındaki bir gün için puantaj girilemez' });
   }
   const unrestricted = isHRUser(req.user) || isPayrollUser(req.user);
   const today = istanbulDate();
@@ -1125,8 +1338,13 @@ app.put('/api/shifts', asyncRoute(async (req, res) => {
   const today = istanbulDate();
   const offset = dateDistance(workDate, today);
   if (offset < -1 || offset > 14) return res.status(403).json({ error: 'Bu tarih vardiya planlama aralığı dışında' });
-  const employee = await pool.query('select id,department from employees where id=$1', [employeeId]);
+  const employee = await pool.query(
+    "select id,department,to_char(start_date,'YYYY-MM-DD') as start_date,to_char(termination_date,'YYYY-MM-DD') as termination_date from employees where id=$1",
+    [employeeId]);
   if (!employee.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
+  if (outOfEmploymentPeriod(employee.rows[0], workDate)) {
+    return res.status(403).json({ error: 'Çalışanın istihdam döneminin dışındaki bir gün için vardiya girilemez' });
+  }
   if (isDepartmentManager(req.user) && await attendanceHrLocked(employeeId, workDate)) {
     return res.status(403).json({ error: 'Bu gün İK tarafından R (rapor) olarak işaretlendi; vardiyası değiştirilemez' });
   }
@@ -1325,7 +1543,14 @@ function istanbulDateOffset(days) {
   return d.toISOString().slice(0, 10);
 }
 app.get('/api/birthdays', asyncRoute(async (req, res) => {
-  const scope = visibleDepartments(req.user);
+  let scope = visibleDepartments(req.user);
+  // Güvenlik rolü: departman yöneticisi gibi yalnız kendi departmanının doğum
+  // günlerini görebilir (kullanıcı isteği 2026-09) — visibleDepartments() bu rolü
+  // "şirket geneli" saymadığından ve departman yöneticisi de olmadığından burada
+  // ayrıca ele alınıyor; diğer uçların (izin, puantaj vb.) kapsamı değişmiyor.
+  if (Array.isArray(scope) && !scope.length && req.user?.role === 'Güvenlik' && clean(req.user.department)) {
+    scope = [clean(req.user.department)];
+  }
   if (Array.isArray(scope) && !scope.length) return res.status(403).json({ error: 'Yetkiniz yok' });
   const todayMD = istanbulDate().slice(5, 10);
   const tomorrowMD = istanbulDateOffset(1).slice(5, 10);
@@ -1348,12 +1573,46 @@ app.post('/api/employees', asyncRoute(async (req, res) => {
   const result = await pool.query("insert into employees(name,email,phone,department,title,start_date,salary,status,source,payroll_sync_protected) values($1,$2,$3,$4,$5,$6,$7,$8,'Manuel',true) returning *", [e.name, e.email || '', phoneNumber(e.phone) || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif']);
   res.status(201).json(result.rows[0]);
 }));
+// "Çalışan Takip" tiki: Güvenlik > Çalışan Takipleri'nde bu çalışana ait tekil
+// bir hms_records satırı oluşturur/günceller (employeeId ile eşlenir). Tik
+// kaldırıldığında satır SİLİNMEZ — yalnızca data.trackingActive=false ile
+// listeden gizlenir, geçmiş giriş/çıkış kayıtları korunur; tekrar tiklenince
+// aynı satır (ve geçmişi) yeniden görünür olur.
+async function syncEmployeeStaffTracking(emp, tracked) {
+  const existing = (await pool.query(
+    `select * from hms_records where module='staff_status' and data->>'employeeId'=$1 order by id desc limit 1`,
+    [String(emp.id)]
+  )).rows[0];
+  const dept = normalizeDepartmentValue(emp.department);
+  if (tracked) {
+    if (existing) {
+      const data = { ...existing.data, name: emp.name, title: emp.title || '', trackingActive: true };
+      await pool.query('update hms_records set department=$2,data=$3::jsonb,updated_at=now() where id=$1',
+        [existing.id, dept, JSON.stringify(data)]);
+    } else {
+      const data = {
+        name: emp.name, entry: '—', status: 'Henüz Giriş Yapmadı', exit: '—',
+        title: emp.title || '', notes: '', employeeId: String(emp.id), trackingActive: true, history: []
+      };
+      await pool.query(
+        "insert into hms_records(module,department,data,created_by) values('staff_status',$1,$2::jsonb,'Sistem')",
+        [dept, JSON.stringify(data)]);
+    }
+  } else if (existing) {
+    const data = { ...existing.data, trackingActive: false };
+    await pool.query('update hms_records set data=$2::jsonb,updated_at=now() where id=$1', [existing.id, JSON.stringify(data)]);
+  }
+}
 app.put('/api/employees/:id', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isHRUser, 'Çalışan düzenleme yetkiniz yok')) return;
   const e = req.body;
-  const result = await pool.query('update employees set name=$1,email=$2,department=$3,title=$4,start_date=$5,salary=$6,status=$7,phone=$9 where id=$8 returning *', [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif', req.params.id, phoneNumber(e.phone) || '']);
+  const result = await pool.query('update employees set name=$1,email=$2,department=$3,title=$4,start_date=$5,salary=$6,status=$7,phone=$9,is_staff_tracked=$10,is_driver=$11 where id=$8 returning *',
+    [e.name, e.email || '', e.department, e.title || '', e.start, e.salary || 0, e.status || 'Aktif', req.params.id, phoneNumber(e.phone) || '', Boolean(e.is_staff_tracked), Boolean(e.is_driver)]);
   if (!result.rowCount) return res.status(404).json({ error: 'Çalışan bulunamadı' });
-  res.json(result.rows[0]);
+  const emp = result.rows[0];
+  try { await syncEmployeeStaffTracking(emp, Boolean(emp.is_staff_tracked)); }
+  catch (err) { console.error('syncEmployeeStaffTracking failed', err); }
+  res.json(emp);
 }));
 app.delete('/api/employees/:id', asyncRoute(async (req, res) => {
   if (!requireRole(req, res, isHRUser, 'Çalışan silme yetkiniz yok')) return;
@@ -1384,8 +1643,9 @@ app.get('/api/payroll-sync/status', asyncRoute(async (_req, res) => {
   res.json({ configured: payrollConfigured(), synced_at: last.rows[0].synced_at, synced_employees: last.rows[0].synced_employees });
 }));
 
-app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, isPayrollUser, 'Bordro eşitleme yetkiniz yok')) return;
+// Manuel "↻ Bordro'dan eşitle" düğmesiyle ve saatlik otomatik zamanlayıcıyla
+// (runPayrollSyncIfDue) paylaşılan ortak eşitleme mantığı.
+async function runPayrollSync() {
   const source = await readPayrollRows();
   const records = source.rows;
   const exitDates = new Map(source.exits.map(row => [clean(row.payroll_sicil), row.exit_date]));
@@ -1542,8 +1802,29 @@ app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
   }
   const period = valid[0];
   const exemptions = await pool.query('select count(*)::int as count from employees where leave_seniority_exempt=true');
-  res.json({ ok: true, payroll_year: period.payroll_year, payroll_month: period.payroll_month, employees: valid.length, departments: new Set(valid.map(row => `${clean(row.department) || clean(row.unit) || 'Atanmamış'}|${clean(row.workplace)}|${clean(row.unit)}`)).size, leave_seniority_exempt: exemptions.rows[0].count });
+  return { ok: true, payroll_year: period.payroll_year, payroll_month: period.payroll_month, employees: valid.length, departments: new Set(valid.map(row => `${clean(row.department) || clean(row.unit) || 'Atanmamış'}|${clean(row.workplace)}|${clean(row.unit)}`)).size, leave_seniority_exempt: exemptions.rows[0].count };
+}
+
+app.post('/api/payroll-sync', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, isPayrollUser, 'Bordro eşitleme yetkiniz yok')) return;
+  const result = await runPayrollSync();
+  res.json(result);
 }));
+
+// Saatlik otomatik kişi/departman eşitlemesi (kaynak sorgusu ~1-2 dakika
+// sürebildiği için daha sık çalıştırılmıyor — dakikada bir yoklama yapıp
+// yalnızca son çalışmadan bu yana 1 saat geçtiyse gerçek eşitlemeyi tetikler).
+let lastPayrollSyncAt = 0;
+async function runPayrollSyncIfDue() {
+  if (!payrollConfigured()) return;
+  if (Date.now() - lastPayrollSyncAt < 60 * 60000) return;
+  lastPayrollSyncAt = Date.now();
+  try {
+    await runPayrollSync();
+  } catch (cause) {
+    console.error('Otomatik bordro eşitlemesi başarısız', cause?.message || cause);
+  }
+}
 
 const approvalDefaults = {
   leave: ['Departman yöneticisi', 'İK yöneticisi'],
@@ -1582,8 +1863,8 @@ const approvalOwnedBy = (row, user) => String(row.requester_user_id || '') === S
 const approvalPreviouslyHandledBy = (row, user) => approvalHistory(row).some(entry => String(entry.user_id) === String(user.id));
 const approvalCanAct = (row, user, pendingStatus) => row.status === pendingStatus
   && approvalRoleMatches(user, row.current_approver, row.department);
-// Departman yöneticisi kendi departmanının tüm talep tablosunu görebilir.
-const approvalInUserDepartment = (row, user) => isDepartmentManager(user)
+// Departman yöneticisi (ya da departmana atanmış özel rol) kendi departmanının tüm talep tablosunu görebilir.
+const approvalInUserDepartment = (row, user) => (isDepartmentManager(user) || isDeptScopedCustomRole(user))
   && clean(user.department) && clean(row.department) === clean(user.department);
 const approvalCanSee = (row, user, pendingStatus) => user.role === 'Sistem yöneticisi'
   || approvalInUserDepartment(row, user)
@@ -1874,6 +2155,8 @@ app.get('/api/annual-leave-balances/:employeeId/usage', asyncRoute(async (req,re
   res.json({employee:{id:employee.rows[0].id,name:employee.rows[0].name,department:employee.rows[0].department},total_used:total,records:rows});
 }));
 
+installMobileApi(app, { pool, asyncRoute, annualBalanceRows, leaveDayBreakdown, istanbulDate, vapidPublicKey: VAPID_PUBLIC_KEY });
+
 app.get('/api/leaves', asyncRoute(async (req, res) => {
   const rows = (await pool.query('select * from leave_requests order by start_date desc,id desc')).rows;
   res.json(rows.filter(row => approvalCanSee(row, req.user, 'Bekliyor')).map(row => decorateApproval(row, req.user, 'Bekliyor')));
@@ -1948,6 +2231,8 @@ app.patch('/api/leaves/:id/decision', asyncRoute(async (req, res) => {
   const row = await decideApproval('leave_requests', req.params.id, req.user, decision, reason, 'Bekliyor', { escalate: Boolean(req.body?.escalate) });
   res.json(decorateApproval(row, req.user, 'Bekliyor'));
   if (decision === 'approve') notifyApprovalSms(row, 'leave_requests');
+  if (row.status === 'Onaylandı') notifyMobilePush(row.employee_id, 'İzin talebiniz onaylandı', `${String(row.start_date).slice(0, 10)} – ${String(row.end_date).slice(0, 10)} tarihli izin talebiniz onaylandı.`);
+  else if (row.status === 'Reddedildi') notifyMobilePush(row.employee_id, 'İzin talebiniz reddedildi', clean(row.rejection_reason) || 'İzin talebiniz reddedildi.');
 }));
 
 app.delete('/api/leaves/:id', asyncRoute(async (req, res) => {
@@ -2155,25 +2440,52 @@ app.delete('/api/candidates/:id', asyncRoute(async (req, res) => {
 // --- Güvenlik ve Kayıp/Bulunan Eşyalar (HMS modülü) ------------------
 const normalizeDepartmentValue = value => clean(value).toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ');
 const HMS_MODULES = new Set(['visitors', 'vehicles', 'fleet', 'staff_status', 'lost_items', 'lost_approvals']);
-const HMS_GUV_MODULES = new Set(['visitors', 'vehicles', 'fleet', 'staff_status']);
+const HMS_GUV_MODULES = new Set(['visitors', 'vehicles', 'fleet', 'staff_status', 'guest_tracking']);
 const HMS_LOST_MODULES = new Set(['lost_items', 'lost_approvals']);
 const HMS_LOST_DEPARTMENTS = ['MİSAFİR İLİŞKİLERİ', 'KAT HİZMETLERİ'];
 const hmsIsHr = user => user.role === 'İK yöneticisi' || normalizeDepartmentValue(user.department) === 'İNSAN KAYNAKLARI';
 const hmsInLostDept = user => HMS_LOST_DEPARTMENTS.includes(normalizeDepartmentValue(user.department));
 // Yetki seviyesi: 'full' (sil dahil) | 'operate' (ekle/düzenle, sil yok) | 'read' (görüntüle+rapor) | 'none'
+// Özel rol seviyesini (view/write/full) HMS'in kendi seviyelerine çevirir.
+const hmsLevelFromCustom = level => level === 'full' ? 'full' : level === 'write' ? 'operate' : level === 'view' ? 'read' : 'none';
 function hmsPerm(user, module) {
   if (user.role === 'Sistem yöneticisi') return 'full';
   // Kayıp Eşya: yalnızca ilgili departmanlar; İK dahil DEĞİL (kullanıcı isteği 2026-09).
-  if (HMS_LOST_MODULES.has(module)) return hmsInLostDept(user) ? 'operate' : 'none';
+  if (HMS_LOST_MODULES.has(module)) {
+    if (hmsInLostDept(user)) return 'operate';
+    return hmsLevelFromCustom(customRoleModuleLevel(user, 'lostfound'));
+  }
   if (hmsIsHr(user)) return 'read';
-  if (HMS_GUV_MODULES.has(module)) return user.role === 'Güvenlik' ? 'operate' : 'none';
+  if (HMS_GUV_MODULES.has(module)) {
+    if (user.role === 'Güvenlik') return 'operate';
+    return hmsLevelFromCustom(customRoleModuleLevel(user, 'security'));
+  }
   return 'none';
 }
 const hmsCanWrite = (user, module) => ['full', 'operate'].includes(hmsPerm(user, module));
 // Kapsam yalnızca "Onay Bekleyenler"e uygulanır: her departman kendi hedefindeki transferleri görür/karara bağlar.
 // Kayıp/bulunan eşyaların tamamını (nerede saklandığından bağımsız) Misafir İlişkileri ve Kat Hizmetleri birlikte görür/yönetir.
 const hmsScoped = (user, module) => module === 'lost_approvals' && hmsPerm(user, module) === 'operate';
-const hmsNow = () => new Date().toLocaleString('tr-TR');
+// Konteyner sistem saati UTC; HMS kayıtlarındaki saatler Türkiye yerel saatiyle
+// gösterilsin diye burada açıkça belirtiliyor (kullanıcı isteği 2026-09) — yalnızca
+// görüntüleme amaçlı, veritabanındaki diğer tarih/saat mantığını (current_date vb.)
+// etkilemez.
+const hmsNow = () => new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+// Çalışan Takip giriş/çıkış geçmişi: yalnızca son 1 aylık kayıt tutulur, eskiler
+// her giriş/çıkışta otomatik temizlenir (kullanıcı isteği 2026-09).
+const parseTrDateTime = s => {
+  const m = String(s || '').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6] || 0));
+  return isNaN(d) ? null : d;
+};
+const trimStaffHistory = hist => {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  return (Array.isArray(hist) ? hist : []).filter(h => {
+    const d = parseTrDateTime(h?.time);
+    return !d || d.getTime() >= cutoff;
+  });
+};
 const hmsRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
 const hmsGet = async id => (await pool.query('select * from hms_records where id=$1', [Number(id) || 0])).rows[0] || null;
 const hmsInsert = async (module, department, data, user) => hmsRow((await pool.query(
@@ -2196,7 +2508,14 @@ app.get('/api/hms/people', asyncRoute(async (req, res) => {
   const hasHmsAccess = req.user.role === 'Sistem yöneticisi'
     || [...HMS_MODULES].some(m => hmsPerm(req.user, m) !== 'none');
   if (!hasHmsAccess) return res.status(403).json({ error: 'Yetkiniz yok' });
-  const rows = (await pool.query("select name, department from employees where status <> 'Pasif' and coalesce(btrim(name),'') <> '' order by name")).rows;
+  // Çalışan Takip erişimi olanlara (Güvenlik dahil), satıra tıklanınca kayıt detayı
+  // gösterebilmek için birkaç ek alan da döner (kullanıcı isteği 2026-09) — maaş/TC
+  // kimlik gibi hassas bordro alanları burada yer almaz.
+  const canSeeStaffDetails = hmsPerm(req.user, 'staff_status') !== 'none';
+  const cols = canSeeStaffDetails
+    ? `id, name, department, is_driver, title, phone, email, payroll_sicil, to_char(start_date,'YYYY-MM-DD') as start_date, status`
+    : 'name, department, is_driver';
+  const rows = (await pool.query(`select ${cols} from employees where status <> 'Pasif' and coalesce(btrim(name),'') <> '' order by name`)).rows;
   res.json(rows);
 }));
 
@@ -2212,7 +2531,9 @@ app.get('/api/hms/:module', asyncRoute(async (req, res) => {
       ? " and trim(data->>'targetDepartment') = $2"
       : ' and trim(department) = $2';
   }
-  const rows = (await pool.query(`select * from hms_records where module=$1${scope} order by id desc`, params)).rows;
+  // "Çalışan Takip" tiki kaldırılan personel geçmişi korunarak listeden gizlenir
+  const trackedFilter = module === 'staff_status' ? " and coalesce(data->>'trackingActive','true') <> 'false'" : '';
+  const rows = (await pool.query(`select * from hms_records where module=$1${scope}${trackedFilter} order by id desc`, params)).rows;
   res.json(rows.map(hmsRow));
 }));
 
@@ -2242,12 +2563,44 @@ app.post('/api/hms/:module', asyncRoute(async (req, res) => {
       targetDepartment: data.storage, storage: data.storage, status: 'Kayıt oluşturuldu'
     }];
   }
+  if (module === 'vehicles') {
+    // Çıkış tarihi/saati sunucu saatiyle sabitlenir; istemciden gelen değer yok sayılır (kullanıcı isteği 2026-09).
+    data.departure = hmsNow();
+    const missing = ['driver', 'requester', 'destination'].filter(k => !clean(data[k]));
+    if (!clean(data.km)) missing.push('km');
+    if (missing.length) return res.status(400).json({ error: 'Sürücü, Talep Eden, Gideceği Yer ve Km alanları zorunludur; eksik alanları doldurun' });
+  }
   if (['visitors', 'staff_status'].includes(module)) data.status = clean(data.status) || 'İçeride';
+  if (module === 'visitors') {
+    // Giriş tarihi/saati sunucu saatiyle sabitlenir; istemciden gelen değer yok sayılır (kullanıcı isteği 2026-09).
+    data.date = hmsNow();
+    data.exit = data.status === 'Çıkış Yaptı' ? hmsNow() : '—';
+  }
   res.status(201).json(await hmsInsert(module, department, data, req.user));
 }));
 
 const hmsRecordInScope = (user, module, existing) =>
   !hmsScoped(user, module) || normalizeDepartmentValue(existing.department) === normalizeDepartmentValue(user.department);
+
+// Çalışan Takip Giriş/Çıkış butonu: her basışta durum + saat + geçmiş (history) kaydı
+// sunucu saatiyle eklenir. Genel düzenleme (PATCH) ucundaki "yalnızca saat" kısıtından
+// bağımsızdır — bu, kısıtlı kullanıcıların da normal giriş/çıkış yapabilmesi için ayrı bir
+// uçtur (kullanıcı isteği 2026-09: her giriş/çıkış loglarda/geçmişte tutulsun).
+app.post('/api/hms/staff_status/:id/toggle', asyncRoute(async (req, res) => {
+  if (!hmsCanWrite(req.user, 'staff_status')) return res.status(403).json({ error: 'Bu işlem için yetkiniz yok' });
+  const existing = await hmsGet(req.params.id);
+  if (!existing || existing.module !== 'staff_status') return res.status(404).json({ error: 'Kayıt bulunamadı' });
+  if (!hmsRecordInScope(req.user, 'staff_status', existing)) {
+    return res.status(403).json({ error: 'Yalnızca kendi departmanınızın kayıtlarını düzenleyebilirsiniz' });
+  }
+  const entering = existing.data.status !== 'İçeride';
+  const now = hmsNow();
+  const hist = trimStaffHistory((Array.isArray(existing.data.history) ? existing.data.history : [])
+    .concat([{ type: entering ? 'Giriş' : 'Çıkış', time: now }]));
+  const data = { ...existing.data, status: entering ? 'İçeride' : 'Çıkış Yaptı', exit: entering ? '—' : now, history: hist };
+  if (entering) data.entry = now;
+  res.json(await hmsUpdate(existing.id, existing.department, data));
+}));
 
 app.patch('/api/hms/:module/:id', asyncRoute(async (req, res) => {
   const module = clean(req.params.module);
@@ -2262,8 +2615,32 @@ app.patch('/api/hms/:module/:id', asyncRoute(async (req, res) => {
     return res.status(409).json({ error: 'Bu eşya transfer onayı bekliyor; hedef departman karar verene kadar üzerinde işlem yapılamaz' });
   }
   const body = req.body || {};
-  const data = { ...existing.data, ...hmsCleanBody(body) };
+  // Çalışan Takip: Sistem yöneticisi dışındaki kullanıcılar (Güvenlik vb.) genel düzenleme
+  // formunda yalnızca giriş/çıkış saatini değiştirebilir; ad, departman, ünvan, durum gibi
+  // özlük alanlarına dokunamaz (kullanıcı isteği 2026-09). Giriş/Çıkış butonu ayrı bir
+  // uçtan (yukarıdaki /toggle) çalışır ve bu kısıttan etkilenmez.
+  const restrictedStaffEdit = module === 'staff_status' && hmsPerm(req.user, module) !== 'full';
+  const editableBody = restrictedStaffEdit ? { entry: body.entry, exit: body.exit } : body;
+  const data = { ...existing.data, ...hmsCleanBody(editableBody) };
   if (!hmsImageOk(data)) return res.status(400).json({ error: 'Resim çok büyük (en fazla ~600 KB)' });
+  if (module === 'vehicles') {
+    // Çıkış tarihi/saati oluşturulduktan sonra değiştirilemez; aynı kayıt yeni bir çıkış için
+    // yeniden kullanıldığında (durum "Çıkış Yaptı"ya geçtiğinde) sunucu saatiyle yenilenir
+    // (kullanıcı isteği 2026-09).
+    const isNewDeparture = clean(data.status) === 'Çıkış Yaptı' && clean(existing.data.status) !== 'Çıkış Yaptı';
+    data.departure = isNewDeparture ? hmsNow() : existing.data.departure;
+    const missing = ['driver', 'requester', 'destination'].filter(k => !clean(data[k]));
+    if (!clean(data.km)) missing.push('km');
+    if (missing.length) return res.status(400).json({ error: 'Sürücü, Talep Eden, Gideceği Yer ve Km alanları zorunludur; eksik alanları doldurun' });
+  }
+  if (module === 'visitors') {
+    // Giriş tarihi oluşturulduktan sonra değiştirilemez; çıkış tarihi durum "Çıkış Yaptı"ya
+    // geçtiğinde sunucu saatiyle otomatik atanır, "İçeride"ye dönülürse temizlenir (kullanıcı isteği 2026-09).
+    data.date = existing.data.date;
+    const wasOut = clean(existing.data.status) === 'Çıkış Yaptı';
+    const isOut = clean(data.status) === 'Çıkış Yaptı';
+    data.exit = isOut ? (wasOut ? existing.data.exit : hmsNow()) : '—';
+  }
   let department = hmsPerm(req.user, module) === 'full' && body.department != null ? clean(body.department) : existing.department;
   // Eşya teslim edildiğinde artık hiçbir departmana ait değildir; "Teslim Edilenler"e geçer.
   if (module === 'lost_items' && data.status === 'Teslim Edildi' && existing.data.status !== 'Teslim Edildi') {
@@ -2423,7 +2800,8 @@ async function seedHmsIfEmpty() {
 // --- Anket şablonları -------------------------------------------------
 const SURVEY_KINDS = new Set(['personel', 'makeitright', 'performans']);
 const SURVEY_QTYPES = new Set(['text', 'single', 'multi', 'scale', 'yesno']);
-const canManageSurveys = user => isHRUser(user);
+const canManageSurveys = user => isHRUser(user) || ['write','full'].includes(customRoleModuleLevel(user, 'survey'));
+const canViewSurveys = user => isHRUser(user) || Boolean(customRoleModuleLevel(user, 'survey'));
 function sanitizeSurveyQuestions(input) {
   if (!Array.isArray(input)) return [];
   return input.slice(0, 100).map(raw => {
@@ -2455,7 +2833,7 @@ function sanitizeSurveyQuestions(input) {
 const surveyRow = r => ({ id: r.id, kind: r.kind, title: r.title, description: r.description, questions: r.questions, active: r.active, created_by: r.created_by, updated_at: r.updated_at });
 
 app.get('/api/surveys', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Anketleri görüntüleme yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewSurveys, 'Anketleri görüntüleme yetkiniz yok')) return;
   const kind = SURVEY_KINDS.has(clean(req.query.kind)) ? clean(req.query.kind) : 'personel';
   const rows = (await pool.query('select * from survey_templates where kind=$1 order by id desc', [kind])).rows;
   res.json(rows.map(surveyRow));
@@ -2501,7 +2879,8 @@ app.delete('/api/surveys/:id', asyncRoute(async (req, res) => {
 // eom_periods = "şablon", eom_candidates = adaylar, eom_votes = link ile toplanan oylar.
 // Oylama yalnızca kişiye özel tek kullanımlık linklerle yapılır (uygulama içi oy yok).
 const EOM_CATEGORIES = new Set(['idari', 'operasyon']);
-const canManageEom = user => isHRUser(user);
+const canManageEom = user => isHRUser(user) || ['write','full'].includes(customRoleModuleLevel(user, 'survey'));
+const canViewEom = user => isHRUser(user) || Boolean(customRoleModuleLevel(user, 'survey'));
 const isEomPhoto = value => /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(String(value)) && String(value).length <= 900000;
 const eomCandidateRow = (c, votes = null) => ({
   id: c.id, category: c.category, employee_id: c.employee_id,
@@ -2510,7 +2889,7 @@ const eomCandidateRow = (c, votes = null) => ({
 const eomTemplate = async id => (await pool.query('select * from eom_periods where id=$1', [Number(id) || 0])).rows[0] || null;
 
 app.get('/api/eom/templates', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewEom, 'Yetkiniz yok')) return;
   const rows = (await pool.query(`
     select p.id, p.title, p.status, p.created_at, count(c.id)::int as candidate_count
     from eom_periods p left join eom_candidates c on c.period_id = p.id
@@ -2519,7 +2898,7 @@ app.get('/api/eom/templates', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/eom/templates/:id', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewEom, 'Yetkiniz yok')) return;
   const t = await eomTemplate(req.params.id);
   if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
   const cands = (await pool.query('select * from eom_candidates where period_id=$1 order by id', [t.id])).rows;
@@ -2695,17 +3074,20 @@ function parseInviteBody(body) {
 }
 
 async function dispatchInvites(req, { kind, surveyId, periodId, recipients, channel, message, subject, greet = true }) {
+  // Her "Gönder" tıklaması ayrı bir gönderim (batch) sayılsın → "Gönderilenler"
+  // listesinde aynı ankette birden fazla gönderim tarihiyle ayrı ayrı görünür
+  const batchId = (await pool.query("select nextval('survey_invite_batch_seq') as id")).rows[0].id;
   // Her alıcıyı çalışan kaydına eşle (employee_id / telefon / ad) → departman raporu + demografik kırılım
   const resolveInvite = await buildInviteResolver();
   const infoFor = r => resolveInvite({ employee_id: r.employee_id, recipient_phone: r.phone, recipient_name: r.name, recipient_department: r.department });
   const insertInvite = (token, r, phone, ok, err) => {
     const info = infoFor(r);
     return pool.query(
-      `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by,recipient_department)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
+      `insert into survey_invites(token,kind,survey_id,period_id,employee_id,recipient_name,recipient_email,recipient_phone,channel,sent_ok,sent_error,created_by,recipient_department,batch_id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
       [token, kind, surveyId, periodId, (info.employee && info.employee.id) || r.employee_id || null,
        r.name, r.email, phone, channel, ok, clean(err || '').slice(0, 500), req.user.name,
-       info.department || clean(r.department)]);
+       info.department || clean(r.department), batchId]);
   };
   // İletişim bilgisi (kanala göre telefon/e-posta) boş olan alıcıya gönderim yapılmaz;
   // sent/başarılı/başarısız sayımına girmez, sonuçta ayrı listelenir.
@@ -2879,17 +3261,20 @@ app.post('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/surveys/:id/invites', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewSurveys, 'Yetkiniz yok')) return;
   const rows = (await pool.query('select * from survey_invites where survey_id=$1 order by id desc', [Number(req.params.id) || 0])).rows;
   res.json(rows.map(inviteListRow));
 }));
 
 // Gönderilmiş anketlerin özeti (şablon listesinin altında gösterilir)
 app.get('/api/surveys/sent', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewSurveys, 'Yetkiniz yok')) return;
   const kind = SURVEY_KINDS.has(clean(req.query.kind)) ? clean(req.query.kind) : 'personel';
+  // Her "Gönder" tıklaması (batch) ayrı bir satır olarak listelenir; eski
+  // kayıtlarda batch_id yoksa (geriye dönük veri) anket başına tek satırda kalır
   const rows = (await pool.query(`
     select s.id, s.title, s.active,
+      coalesce(i.batch_id, -s.id) as batch_id,
       count(i.id)::int as sent,
       count(i.id) filter (where i.sent_ok is true)::int as delivered,
       count(i.id) filter (where i.sent_ok is not true)::int as failed,
@@ -2899,7 +3284,7 @@ app.get('/api/surveys/sent', asyncRoute(async (req, res) => {
     from survey_templates s
     join survey_invites i on i.survey_id = s.id
     where s.kind = $1
-    group by s.id
+    group by s.id, coalesce(i.batch_id, -s.id)
     order by max(i.created_at) desc`, [kind])).rows;
   res.json(rows);
 }));
@@ -3025,12 +3410,14 @@ function surveyQuestionStats(questions, responses) {
 
 // Tek bir anketin ayrıntılı raporu: yanıt durumu + soru bazlı dağılımlar + departman kırılımı
 app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewSurveys, 'Yetkiniz yok')) return;
   const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!survey) return res.status(404).json({ error: 'Anket bulunamadı' });
+  const batchParam = req.query.batch != null && req.query.batch !== '' ? Number(req.query.batch) : null;
   const allInvites = (await pool.query(
-    'select employee_id,recipient_name,recipient_phone,recipient_department,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1 order by id',
-    [survey.id])).rows;
+    'select employee_id,recipient_name,recipient_phone,recipient_department,channel,sent_ok,sent_error,opened_at,used_at,response,created_at from survey_invites where survey_id=$1' +
+    (batchParam != null ? ' and coalesce(batch_id,-survey_id)=$2' : '') + ' order by id',
+    batchParam != null ? [survey.id, batchParam] : [survey.id])).rows;
   // Her davetin departman/cinsiyet/yaş bilgisini çalışan kaydından çöz
   const resolveInvite = await buildInviteResolver();
   const infoOf = new Map(allInvites.map(i => [i, resolveInvite(i)]));
@@ -3073,6 +3460,7 @@ app.get('/api/surveys/:id/report', asyncRoute(async (req, res) => {
 
   res.json({
     survey: { id: survey.id, title: survey.title, description: survey.description, active: survey.active, kind: survey.kind },
+    batch: batchParam,
     department: dsel || null,
     departmentList,
     totals: { sent, delivered, failed, opened, responded },
@@ -3148,12 +3536,14 @@ function svgGroupBars(groups, series) {
 const seriesLegend = series => `<ul class="lg row">${series.map(s => `<li><i style="background:${s.color}"></i><span>${rptEsc(s.name)}</span></li>`).join('')}</ul>`;
 
 app.get('/api/surveys/:id/report/print', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageSurveys, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewSurveys, 'Yetkiniz yok')) return;
   const survey = (await pool.query('select * from survey_templates where id=$1', [Number(req.params.id) || 0])).rows[0];
   if (!survey) return res.status(404).send('Anket bulunamadı');
+  const batchParam = req.query.batch != null && req.query.batch !== '' ? Number(req.query.batch) : null;
   const allInvites = (await pool.query(
-    'select employee_id,recipient_name,recipient_phone,recipient_department,sent_ok,opened_at,used_at,response from survey_invites where survey_id=$1 order by id',
-    [survey.id])).rows;
+    'select employee_id,recipient_name,recipient_phone,recipient_department,sent_ok,opened_at,used_at,response from survey_invites where survey_id=$1' +
+    (batchParam != null ? ' and coalesce(batch_id,-survey_id)=$2' : '') + ' order by id',
+    batchParam != null ? [survey.id, batchParam] : [survey.id])).rows;
   const resolveInvite = await buildInviteResolver();
   const infoOf = new Map(allInvites.map(i => [i, resolveInvite(i)]));
   const deptOf = i => (infoOf.get(i) || {}).department || '(Departman belirtilmemiş)';
@@ -3395,7 +3785,7 @@ app.post('/api/eom/templates/:id/invites', asyncRoute(async (req, res) => {
 
 // Gönderilmiş Make It Right şablonlarının özeti
 app.get('/api/eom/sent', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewEom, 'Yetkiniz yok')) return;
   const rows = (await pool.query(`
     select p.id, p.title, p.status,
       count(i.id)::int as sent,
@@ -3412,7 +3802,7 @@ app.get('/api/eom/sent', asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/eom/templates/:id/report', asyncRoute(async (req, res) => {
-  if (!requireRole(req, res, canManageEom, 'Yetkiniz yok')) return;
+  if (!requireRole(req, res, canViewEom, 'Yetkiniz yok')) return;
   const t = await eomTemplate(req.params.id);
   if (!t) return res.status(404).json({ error: 'Şablon bulunamadı' });
   const candidates = (await pool.query('select id,category,name,subtitle,photo from eom_candidates where period_id=$1 order by id', [t.id])).rows;
@@ -3711,6 +4101,114 @@ app.delete('/api/guncel-tablo/:id', asyncRoute(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// --- Misafir Takip: Lapis (PMS) Excel çıktısının tam senkron içe aktarımı -----
+// Her yüklemede tablo baştan yazılır (delete+insert): yeni dosyada olmayan
+// misafirler otomatik silinir, ekran daima son yüklenen dosyayı yansıtır
+// (kullanıcı isteği 2026-09).
+const guestHeaderKey = h => String(h || '')
+  .toLocaleLowerCase('tr-TR')
+  .replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ş/g, 's').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ç/g, 'c')
+  .replace(/[^a-z0-9]/g, '');
+const GUEST_HEADER_MAP = {
+  firmakodu: 'firma_kodu', musteriadi: 'ad', musterisoyadi: 'soyad', cinsiyet: 'cinsiyet',
+  odanumarasi: 'oda_no', checkin: 'checkin', checkout: 'checkout', uyrugu: 'uyruk', uyruk: 'uyruk',
+  email: 'email', telefon: 'telefon'
+};
+const guestCellText = v => {
+  if (v == null) return '';
+  if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
+  if (typeof v === 'object') {
+    if (v.error) return '';
+    if (v.richText) return v.richText.map(t => t.text).join('');
+    if (v.result != null) return guestCellText(v.result);
+    if (v.text != null) return String(v.text);
+    return '';
+  }
+  return String(v).trim();
+};
+async function parseGuestTrackingWorkbook(buffer) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  const ws = wb.worksheets.find(w => w && w.state !== 'veryHidden' && w.state !== 'hidden') || wb.worksheets[0];
+  if (!ws) return [];
+  const headerRow = ws.getRow(1);
+  const colMap = {};
+  for (let c = 1; c <= ws.columnCount; c++) {
+    const key = GUEST_HEADER_MAP[guestHeaderKey(headerRow.getCell(c).value)];
+    if (key && !colMap[key]) colMap[key] = c;
+  }
+  const cols = ['firma_kodu', 'ad', 'soyad', 'cinsiyet', 'oda_no', 'checkin', 'checkout', 'uyruk', 'email', 'telefon'];
+  const records = [];
+  for (let r = 2; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const rec = {};
+    cols.forEach(k => { rec[k] = colMap[k] ? guestCellText(row.getCell(colMap[k]).value) : ''; });
+    if (rec.ad || rec.soyad || rec.firma_kodu) records.push(rec);
+  }
+  return records;
+}
+
+app.get('/api/guest-tracking', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, u => hmsPerm(u, 'guest_tracking') !== 'none', 'Misafir Takip erişim yetkiniz yok')) return;
+  const rows = (await pool.query(
+    `select id, firma_kodu, ad, soyad, cinsiyet, oda_no, checkin, checkout, uyruk, email, telefon
+     from guest_tracking order by ad, soyad`)).rows;
+  res.json(rows);
+}));
+
+app.get('/api/guest-tracking/meta', asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, u => hmsPerm(u, 'guest_tracking') !== 'none', 'Yetkiniz yok')) return;
+  const row = (await pool.query(
+    'select original_name, row_count, uploaded_by, uploaded_at from guest_tracking_upload order by id desc limit 1')).rows[0] || null;
+  res.json(row);
+}));
+
+app.post('/api/guest-tracking/upload', express.raw({ type: () => true, limit: '20mb' }), asyncRoute(async (req, res) => {
+  if (!requireRole(req, res, u => ['full', 'operate'].includes(hmsPerm(u, 'guest_tracking')), 'Yükleme yetkiniz yok')) return;
+  const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buffer || buffer.length < 100) return res.status(400).json({ error: 'Dosya alınamadı' });
+  if (buffer.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'Dosya çok büyük (en fazla 20 MB)' });
+  if (buffer.slice(0, 2).toString('binary') !== 'PK') return res.status(400).json({ error: 'Geçerli bir .xlsx dosyası değil' });
+  const name = clean(req.get('X-Filename')) || 'Lapis.xlsx';
+  let records;
+  try {
+    records = await parseGuestTrackingWorkbook(buffer);
+  } catch (e) {
+    console.error('guest-tracking parse failed:', e);
+    return res.status(400).json({ error: 'Excel işlenemedi: ' + (e.message || '') });
+  }
+  if (!records.length) return res.status(400).json({ error: 'Excel dosyasında okunabilir kayıt bulunamadı (FirmaKodu/MusteriAdi/MusteriSoyadi sütunları bekleniyor)' });
+  const cols = ['firma_kodu', 'ad', 'soyad', 'cinsiyet', 'oda_no', 'checkin', 'checkout', 'uyruk', 'email', 'telefon'];
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query('delete from guest_tracking');
+    const chunkSize = 200;
+    for (let i = 0; i < records.length; i += chunkSize) {
+      const chunk = records.slice(i, i + chunkSize);
+      const values = [];
+      const placeholders = chunk.map((r, ri) => {
+        const base = ri * cols.length;
+        cols.forEach(k => values.push(r[k]));
+        return `(${cols.map((_, ci) => `$${base + ci + 1}`).join(',')})`;
+      }).join(',');
+      await client.query(`insert into guest_tracking(${cols.join(',')}) values ${placeholders}`, values);
+    }
+    await client.query('delete from guest_tracking_upload');
+    await client.query(
+      'insert into guest_tracking_upload(original_name,row_count,uploaded_by) values($1,$2,$3)',
+      [name.slice(0, 200), records.length, req.user.name]);
+    await client.query('commit');
+  } catch (e) {
+    await client.query('rollback').catch(() => {});
+    console.error('guest-tracking upload failed:', e);
+    return res.status(500).json({ error: 'Kaydedilemedi: ' + (e.message || '') });
+  } finally {
+    client.release();
+  }
+  res.status(201).json({ count: records.length });
+}));
+
 // --- Personel Bütçesi: "Bütçe YYYY" sayfasından departman bazlı kadro bütçesi ---
 const BUTCE_MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 const parseTrNum = s => {
@@ -3719,10 +4217,14 @@ const parseTrNum = s => {
   return Number.isFinite(n) ? n : null;
 };
 const normDeptName = s => String(s || '').toLocaleUpperCase('tr-TR').replace(/\s+/g, ' ').trim();
-const canSeeAllButce = user => companyWideRoles.has(user?.role) || clean(user?.department) === 'İnsan Kaynakları';
+const canSeeAllButce = user => companyWideRoles.has(user?.role) || clean(user?.department) === 'İnsan Kaynakları' || customRoleIsCompanyWide(user);
 const looseDeptMatch = (a, b) => { const x = normDeptName(a), y = normDeptName(b); return !!x && !!y && (x === y || x.includes(y) || y.includes(x)); };
 
 // En yeni yüklenen Excel'in bütçe yılları + o yıllardaki departman adları
+// "Yiyecek İçecek Servis" bazı yıllarda "Yiyecek İçecek" olarak geçiyor (Excel kaynağı
+// yıllar arasında adı değiştirmiş) — departman listesinde/filtresinde tek, güncel ada
+// (kullanıcı isteği 2026-09) indirgenir; kayıtlı ham Excel verisi değişmez.
+const canonDeptLabel = s => { const v = String(s || '').trim(); return v === 'Yiyecek İçecek Servis' ? 'Yiyecek İçecek' : v; };
 async function butceExcelInfo() {
   const wb = (await pool.query('select id from guncel_workbook order by id desc limit 1')).rows[0];
   if (!wb) return { years: [], departments: [] };
@@ -3736,7 +4238,7 @@ async function butceExcelInfo() {
     (newest.data.cells || []).forEach(c => cell.set(c.r * 128 + c.c, c));
     for (let r = 2; r <= (newest.data.rows || 0); r++) {
       const a = (cell.get(r * 128 + 1)?.t || '').trim(), b = (cell.get(r * 128 + 2)?.t || '').trim();
-      if (a && b) departments.add(a);
+      if (a && b) departments.add(canonDeptLabel(a));
     }
   }
   return { years, departments: [...departments], sheets };
@@ -3752,7 +4254,10 @@ function excelPositionsForDept(sheets, dept) {
   const rows = [];
   for (let r = 2; r <= (sheet.data.rows || 0); r++) {
     const a = txt(r, 1), b = txt(r, 2), d = txt(r, 4);
-    if (a === dept && (b || d) && !/toplam/i.test(a)) {
+    // "Toplam Kalite" gibi adında "toplam" geçen GERÇEK departmanları da yanlışlıkla dışlamamak için
+    // alt-toplam/GENEL TOPLAM satırları metin eşleşmesiyle değil, zaten (b || d) koşuluyla ayıklanıyor
+    // (o satırlarda hem Alt_Departman hem Pozisyon her zaman boştur) — kullanıcı isteği 2026-09.
+    if (a === dept && (b || d)) {
       rows.push({ altDepartman: b, bolum: txt(r, 3), pozisyon: d, aylar: BUTCE_MONTHS.map((_, i) => parseTrNum(txt(r, 5 + i))) });
     }
   }
@@ -3770,7 +4275,9 @@ async function butcePositionRows(year, excel) {
     const out = [];
     for (let r = 2; r <= (sheet.data.rows || 0); r++) {
       const a = txt(r, 1), b = txt(r, 2), d = txt(r, 4);
-      if (a && (b || d) && !/toplam/i.test(a)) {
+      // Bkz. excelPositionsForDept'teki aynı düzeltme: "Toplam Kalite" gibi adı "toplam" içeren
+      // departmanları yanlışlıkla dışlamasın diye (b || d) tek başına yeterli (kullanıcı isteği 2026-09).
+      if (a && (b || d)) {
         out.push({ dept: a, pozisyon: d || b, aylar: BUTCE_MONTHS.map((_, i) => parseTrNum(txt(r, 5 + i))) });
       }
     }
@@ -3840,41 +4347,55 @@ function butceEntryRow(r) {
     valuesNum: nums,
     toplamNum: toplam, toplam: toplam ? String(Math.round(toplam * 100) / 100).replace('.', ',') : '',
     ortalamaNum: toplam / 12, ortalama: toplam ? String(Math.round(toplam / 12 * 10) / 10).replace('.', ',') : '',
-    sira: r.sira, updated_by: r.updated_by, updated_at: r.updated_at
+    sira: r.sira, updated_by: r.updated_by, updated_at: r.updated_at, manual: !!r.manual
   };
 }
 
 const normPoz = s => String(s || '').toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ').trim();
-// Satırlara: önceki yılın pozisyon bütçesi (prevValues) + bu yılın İK-girişli gerçekleşeni (actualValues)
+// "Yiyecek İçecek Servis" departmanı, bütçe yılına göre Excel'de bazen "Servis" ekiyle
+// bazen eksiz geçiyor (kullanıcı isteği 2026-09: aynı departman, gerçekleşen eşleşsin diye
+// eşleştirme anahtarında tekleştiriliyor — kayıtlı veri/adlar değiştirilmiyor).
+const canonDept = s => { const n = normPoz(s); return n === normPoz('Yiyecek İçecek Servis') ? normPoz('Yiyecek İçecek') : n; };
+// Satırlara: önceki yılın İK-girişli gerçekleşeni (prevValues) + bu yılın İK-girişli gerçekleşeni (actualValues)
+// Önceki yılın Grç'sine girilen veri, bu yılın tablosunda referans (ilk) sütun olarak görünür (kullanıcı isteği 2026-09).
+async function butcePositionActuals(year) {
+  const map = new Map();
+  (await pool.query('select departman, pozisyon, aylar from personel_pozisyon_gerceklesen where butce_yili=$1', [Number(year)])).rows
+    .forEach(r => map.set(canonDept(r.departman) + '|' + normPoz(r.pozisyon),
+      (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12).map(v => (v == null ? null : Number(v)))));
+  return map;
+}
 async function butceEnrichRows(rows, year, excel) {
   const prevYear = String(Number(year) - 1);
-  const prevRows = await butcePositionRows(prevYear, excel);
-  const prevMap = new Map();
-  prevRows.forEach(r => {
-    const k = normPoz(r.dept) + '|' + normPoz(r.pozisyon);
-    const e = prevMap.get(k) || Array(12).fill(0);
+  const prevMap = await butcePositionActuals(prevYear);
+  const actMap = await butcePositionActuals(year);
+  // Bütçe yılı (gelecek yıl) tablosunda 4'lü sütun için: önceki yılın BÜTÇESİ de ayrıca gerekir
+  // (kullanıcı isteği 2026-09: PY Büt | PY Grç | Y Büt | Y Grç).
+  const prevBudgetMap = new Map();
+  (await butcePositionRows(prevYear, excel)).forEach(r => {
+    const k = canonDept(r.dept) + '|' + normPoz(r.pozisyon);
+    const e = prevBudgetMap.get(k) || Array(12).fill(0);
     r.aylar.forEach((v, i) => { if (v) e[i] += v; });
-    prevMap.set(k, e);
+    prevBudgetMap.set(k, e);
   });
-  const actMap = new Map();
-  (await pool.query('select departman, pozisyon, aylar from personel_pozisyon_gerceklesen where butce_yili=$1', [Number(year)])).rows
-    .forEach(r => actMap.set(normPoz(r.departman) + '|' + normPoz(r.pozisyon),
-      (Array.isArray(r.aylar) ? r.aylar : []).slice(0, 12).map(v => (v == null ? null : Number(v)))));
   const f = v => (v == null || v === 0 || !Number.isFinite(v)) ? '' : String(Math.round(v * 100) / 100).replace('.', ',');
   const total = arr => { const nz = (arr || []).filter(v => v != null); return nz.length ? Math.round(nz.reduce((a, v) => a + v, 0) * 100) / 100 : null; };
 
   const enriched = rows.map(r => {
     if (r.kind && r.kind !== 'position') return { ...r };
-    const k = normPoz(r.dept) + '|' + normPoz(r.pozisyon || r.label);
+    const k = canonDept(r.dept) + '|' + normPoz(r.pozisyon || r.label);
     const prev = prevMap.get(k) || Array(12).fill(null);
     const act = actMap.get(k) || Array(12).fill(null);
-    const pt = total(prev), at = total(act), bt = r.toplamNum != null ? r.toplamNum : total(r.valuesNum);
+    const prevB = prevBudgetMap.get(k) || Array(12).fill(null);
+    const pt = total(prev), at = total(act), pbt = total(prevB), bt = r.toplamNum != null ? r.toplamNum : total(r.valuesNum);
     return {
       ...r,
       prevValues: prev.map(f), prevValuesNum: prev,
+      prevBudgetValues: prevB.map(f), prevBudgetValuesNum: prevB,
       actualValues: act.map(v => (v == null ? '' : String(v).replace('.', ','))), actualValuesNum: act,
       toplamNum: bt,
       prevToplam: pt != null ? f(pt) : '', prevOrt: pt ? f(pt / 12) : '',
+      prevBudgetToplam: pbt != null ? f(pbt) : '', prevBudgetOrt: pbt ? f(pbt / 12) : '',
       actualToplam: at != null ? f(at) : '', actualOrt: at ? f(at / 12) : ''
     };
   });
@@ -3888,23 +4409,22 @@ async function butceEnrichRows(rows, year, excel) {
       members.forEach(m => (m[key] || []).forEach((v, i) => { if (v != null) { acc[i] += v; any = true; } }));
       return any ? acc.map(v => Math.round(v * 100) / 100) : Array(12).fill(null);
     };
-    const prevA = colSum('prevValuesNum'), actA = colSum('actualValuesNum');
-    const pt = total(prevA), at = total(actA);
+    const prevA = colSum('prevValuesNum'), actA = colSum('actualValuesNum'), prevBA = colSum('prevBudgetValuesNum');
+    const pt = total(prevA), at = total(actA), pbt = total(prevBA);
     return {
       ...r,
-      prevValues: prevA.map(f), actualValues: actA.map(f),
+      prevValues: prevA.map(f), actualValues: actA.map(f), prevBudgetValues: prevBA.map(f),
       prevToplam: pt != null ? f(pt) : '', prevOrt: pt ? f(pt / 12) : '',
+      prevBudgetToplam: pbt != null ? f(pbt) : '', prevBudgetOrt: pbt ? f(pbt / 12) : '',
       actualToplam: at != null ? f(at) : '', actualOrt: at ? f(at / 12) : ''
     };
   });
 }
 
-app.get('/api/personel-butcesi', asyncRoute(async (req, res) => {
-  const user = req.user;
-  const all = canSeeAllButce(user);
-  const deptManager = isDepartmentManager(user);
-  if (!all && !deptManager) return res.status(403).json({ error: 'Personel bütçesi görüntüleme yetkiniz yok' });
-
+// GET /api/personel-butcesi ve Excel indirme ucu (aşağıda) aynı veriyi paylaşır — burada
+// tek noktadan hesaplanır (kullanıcı isteği 2026-09: indirilen dosya ekrandakiyle birebir
+// aynı olsun). `all`/`deptManager` çağıran uçta zaten yetki kontrolü için hesaplanmış olur.
+async function personelButcesiView(user, all, deptManager, query) {
   const excel = await butceExcelInfo();
   const excelYears = excel.years;
 
@@ -3915,48 +4435,91 @@ app.get('/api/personel-butcesi', asyncRoute(async (req, res) => {
   for (let y = excelMax + 1; y <= Math.max(new Date().getFullYear() + 1, excelMax + 1); y++) entryYears.add(String(y));
 
   const allYears = [...new Set([...excelYears, ...entryYears])].sort();
-  if (!allYears.length) return res.status(404).json({ error: 'Bütçe verisi yok' });
-  const year = allYears.includes(clean(req.query.year)) ? clean(req.query.year) : allYears[allYears.length - 1];
-  // Bütçe sütunu yalnızca GELECEK yıllar için düzenlenebilir; içinde bulunulan ve geçmiş yıllarda salt-okunur (yalnız gerçekleşen girilir)
-  const editable = !excelYears.includes(year) && Number(year) > new Date().getFullYear();
+  if (!allYears.length) return { error: 'Bütçe verisi yok', status: 404 };
+  const year = allYears.includes(clean(query.year)) ? clean(query.year) : allYears[allYears.length - 1];
+  const isExcelYear = excelYears.includes(year);
+  // Bütçe sütunu yalnızca GELECEK yıllar için düzenlenebilir; içinde bulunulan ve geçmiş yıllarda salt-okunur
+  // (yalnız gerçekleşen girilir). Yıl "bugün"e ulaşınca editable=false olur ve tablo otomatik olarak
+  // normal (Y-Grç sütunlu) görünüme döner — veri kaynağı (personel_butce_giris) değişmez, yalnız Excel
+  // yılları (2025/2026) hâlâ aşağıdaki ayrı, salt-okunur Excel dalından okunur (kullanıcı isteği 2026-09).
+  const editable = !isExcelYear && Number(year) > new Date().getFullYear();
 
-  const scopeDept = await butceResolveScope(user, all, req.query.department, excel.departments);
+  const scopeDept = await butceResolveScope(user, all, query.department, excel.departments);
 
-  if (editable) {
+  if (!isExcelYear) {
     const entryDeptRows = (await pool.query('select distinct departman from personel_butce_giris where butce_yili=$1', [Number(year)])).rows;
-    const departments = [...new Set([...excel.departments, ...entryDeptRows.map(r => r.departman)])].sort((a, b) => a.localeCompare(b, 'tr'));
-    let entries = (await pool.query('select * from personel_butce_giris where butce_yili=$1 order by departman, sira, id', [Number(year)])).rows.map(butceEntryRow);
-    if (scopeDept) entries = entries.filter(e => e.dept === scopeDept);
+    const entryDepts = entryDeptRows.map(r => r.departman);
+    // Departman sırası: alfabetik değil, Excel'deki (önceki yıllardaki) organizasyon
+    // sırasıyla aynı gelir; yalnızca giriş tablosunda olup Excel'de olmayan departmanlar
+    // sona eklenir (kullanıcı isteği 2026-09).
+    const departments = [...excel.departments, ...entryDepts.filter(d => !excel.departments.includes(d))];
+    const allEntryRows = (await pool.query('select * from personel_butce_giris where butce_yili=$1 order by departman, sira, id', [Number(year)])).rows.map(butceEntryRow);
+    const entriesByDept = new Map();
+    allEntryRows.forEach(e => { const list = entriesByDept.get(e.dept) || []; list.push(e); entriesByDept.set(e.dept, list); });
 
-    // Bu departman için henüz giriş yoksa: önceki yılın pozisyon listesini taslak olarak getir
+    // "Tümü" görünümünde her departman görünsün diye, henüz giriş yapılmamış her
+    // departman için de önceki yılın pozisyon listesi taslak olarak eklenir — daha önce
+    // yalnız tek bir departman seçiliyken yapılıyordu (kullanıcı isteği 2026-09).
+    const targetDepts = scopeDept ? [scopeDept] : departments;
+    let entries = [];
     let draftSource = null;
-    if (scopeDept && !entries.length) {
-      const prev = excelPositionsForDept(excel.sheets || [], scopeDept);
+    for (const dept of targetDepts) {
+      const existing = entriesByDept.get(dept) || [];
+      if (existing.length) { entries.push(...existing); continue; }
+      const prev = excelPositionsForDept(excel.sheets || [], dept);
       if (prev.rows.length) {
-        draftSource = prev.year;
-        entries = prev.rows.map((p, i) => butceEntryRow({
-          id: null, departman: scopeDept, alt_departman: p.altDepartman, bolum: p.bolum,
+        draftSource = draftSource || prev.year;
+        entries.push(...prev.rows.map((p, i) => butceEntryRow({
+          id: null, departman: dept, alt_departman: p.altDepartman, bolum: p.bolum,
           pozisyon: p.pozisyon, aylar: Array(12).fill(null), sira: i, updated_by: '', updated_at: null
-        }));
+        })));
       }
     }
 
-    return res.json({
-      year, prevYear: String(Number(year) - 1), years: allYears, editable: true,
-      canEdit: all || (deptManager && !!scopeDept),
-      canEditActual: all || (deptManager && !!scopeDept),
+    // Departman alt toplamı + (yalnız "Tümü" görünümünde) genel toplam satırları eklenir —
+    // Excel kaynaklı yıllarla aynı yapı (kullanıcı isteği 2026-09). Satırın kendi bütçe
+    // rakamları burada toplanır; önceki yıl/gerçekleşen sütunları butceEnrichRows'un
+    // mevcut alt-toplam mantığıyla otomatik hesaplanır.
+    const sumMonthCols = list => {
+      const acc = Array(12).fill(0); let any = false;
+      list.forEach(r => (r.valuesNum || []).forEach((v, i) => { if (v != null) { acc[i] += v; any = true; } }));
+      return any ? acc.map(v => Math.round(v * 100) / 100) : Array(12).fill(null);
+    };
+    const buildTotalRow = (dept, label, members) => {
+      const valuesNum = sumMonthCols(members);
+      const nz = valuesNum.filter(v => v != null);
+      const toplamNum = nz.length ? Math.round(nz.reduce((a, v) => a + v, 0) * 100) / 100 : null;
+      return {
+        kind: dept ? 'subtotal' : 'grand', dept: dept || '', label,
+        values: valuesNum.map(v => v == null ? '' : String(v).replace('.', ',')), valuesNum,
+        toplamNum, toplam: toplamNum ? String(Math.round(toplamNum * 100) / 100).replace('.', ',') : '',
+        ortalamaNum: toplamNum != null ? toplamNum / 12 : null,
+        ortalama: toplamNum ? String(Math.round(toplamNum / 12 * 10) / 10).replace('.', ',') : ''
+      };
+    };
+    const entriesWithTotals = [];
+    for (const dept of [...new Set(entries.map(e => e.dept))]) {
+      const members = entries.filter(e => e.dept === dept);
+      entriesWithTotals.push(...members, buildTotalRow(dept, dept + ' — Toplam', members));
+    }
+    if (!scopeDept && entries.length) entriesWithTotals.push(buildTotalRow('', 'GENEL TOPLAM', entries));
+
+    return {
+      year, prevYear: String(Number(year) - 1), years: allYears, editable,
+      canEdit: editable && (all || (deptManager && !!scopeDept)),
+      canEditActual: isHRUser(user),
       scope: all ? 'all' : 'department',
       department: scopeDept,
       departments,
       draftSource,
       months: BUTCE_MONTHS,
-      rows: await butceEnrichRows(entries, year, excel)
-    });
+      rows: await butceEnrichRows(entriesWithTotals, year, excel)
+    };
   }
 
   // Excel'den (salt-okunur)
   const sheet = (excel.sheets || []).find(s => new RegExp('^Bütçe *' + year + '$').test(s.name));
-  if (!sheet) return res.status(404).json({ error: year + ' bütçe sayfası bulunamadı' });
+  if (!sheet) return { error: year + ' bütçe sayfası bulunamadı', status: 404 };
   const cells = new Map();
   (sheet.data.cells || []).forEach(c => cells.set(c.r * 128 + c.c, c));
   const txt = (r, c) => (cells.get(r * 128 + c)?.t || '').trim();
@@ -3974,26 +4537,163 @@ app.get('/api/personel-butcesi', asyncRoute(async (req, res) => {
     if (/genel toplam/i.test(a)) { rec.kind = 'grand'; rec.dept = ''; rec.label = 'GENEL TOPLAM'; }
     else if (a && !b) {
       rec.kind = 'subtotal';
-      rec.dept = txt(r, 21) || a.replace(/\s*(Toplam[ıi]?|T)\.?\s*$/i, '').trim();
+      rec.dept = canonDeptLabel(txt(r, 21) || a.replace(/\s*(Toplam[ıi]?|T)\.?\s*$/i, '').trim());
       rec.label = (rec.dept || a) + ' — Toplam';
     } else if (a && (b || d)) {
       rec.kind = 'position';
-      rec.dept = a; rec.altDept = b; rec.bolum = txt(r, 3); rec.pozisyon = d;
+      rec.dept = canonDeptLabel(a); rec.altDept = b; rec.bolum = txt(r, 3); rec.pozisyon = d;
       rec.label = d || b || a;
-      departments.add(a);
+      departments.add(rec.dept);
     } else continue;
     out.push(rec);
   }
-  const rows = scopeDept ? out.filter(x => x.dept === scopeDept && x.kind !== 'grand') : out;
-  res.json({
+  const rows = scopeDept ? out.filter(x => x.dept === canonDeptLabel(scopeDept) && x.kind !== 'grand') : out;
+  return {
     year, prevYear: String(Number(year) - 1), years: allYears, editable: false, canEdit: false,
-    canEditActual: all || (deptManager && !!scopeDept),
+    // 2025 sekmesi tamamen kilitli — Sistem yöneticisi dahil hiç kimse "gerçekleşen" giremez
+    // (kullanıcı isteği 2026-09). Diğer Excel yılları (2026) için gerçekleşen girişi yalnızca
+    // İK yetkisine açık kalır.
+    canEditActual: String(year) !== '2025' && isHRUser(user),
     scope: all ? 'all' : 'department',
     department: scopeDept,
     departments: [...new Set([...departments, ...excel.departments])].sort((a, b) => a.localeCompare(b, 'tr')),
     months: BUTCE_MONTHS,
     rows: await butceEnrichRows(rows, year, excel)
+  };
+}
+
+app.get('/api/personel-butcesi', asyncRoute(async (req, res) => {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const deptManager = isDepartmentManager(user) || Boolean(customRoleModuleLevel(user, 'personel-butcesi'));
+  if (!all && !deptManager) return res.status(403).json({ error: 'Personel bütçesi görüntüleme yetkiniz yok' });
+  const data = await personelButcesiView(user, all, deptManager, req.query);
+  if (data.error) return res.status(data.status).json({ error: data.error });
+  res.json(data);
+}));
+
+// Ekrandakiyle birebir aynı veriyi Excel (.xlsx) olarak indirir — seçili departman veya
+// tüm departmanlar için (kullanıcı isteği 2026-09).
+app.get('/api/personel-butcesi/export', asyncRoute(async (req, res) => {
+  const user = req.user;
+  const all = canSeeAllButce(user);
+  const deptManager = isDepartmentManager(user) || Boolean(customRoleModuleLevel(user, 'personel-butcesi'));
+  if (!all && !deptManager) return res.status(403).json({ error: 'Personel bütçesi görüntüleme yetkiniz yok' });
+  const data = await personelButcesiView(user, all, deptManager, req.query);
+  if (data.error) return res.status(data.status).json({ error: data.error });
+
+  const isFuture = !!data.editable;
+  const tripleLabels = isFuture
+    ? [`${data.prevYear} Bütçe`, `${data.prevYear} Gerç.`, `${data.year} Bütçe`]
+    : [`${data.prevYear} Gerç.`, `${data.year} Bütçe`, `${data.year} Gerç.`];
+  const showDept = !data.department;
+  const header = [...(showDept ? ['Departman'] : []), 'Pozisyon'];
+  data.months.forEach(m => tripleLabels.forEach(label => header.push(`${m} ${label}`)));
+  tripleLabels.forEach(label => header.push(`Toplam ${label}`));
+  tripleLabels.forEach(label => header.push(`Ortalama ${label}`));
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet(`Bütçe ${data.year}`.slice(0, 31));
+  sheet.columns = header.map((h, i) => ({ width: i < (showDept ? 2 : 1) ? 24 : 13 }));
+  sheet.addRow(header);
+  sheet.getRow(1).font = { bold: true };
+
+  // Alt toplam/genel toplam satırlarında yalnızca kendi bütçe sütunu değil, önceki
+  // yıl/gerçekleşen sütunları da dolsun diye biçimlenmiş metin alanları (Values, Num
+  // eki olmayanlar) üzerinden ayrıştırılır — Num'lu diziler yalnızca pozisyon
+  // satırlarında dolu geliyor (kullanıcı isteği 2026-09).
+  const parseArr = arr => (Array.isArray(arr) ? arr : []).map(v => parseTrNum(v));
+  // Departmanları ayırt etmek için her birine sırayla farklı bir pastel renk; genel
+  // toplam ayrı, belirgin bir renkle vurgulanır (kullanıcı isteği 2026-09).
+  const DEPT_FILL_COLORS = ['FFD9E8FB', 'FFD9F2E3', 'FFFDE8D2', 'FFF6D9E8', 'FFE6DFFB', 'FFFFF3C4', 'FFD2F0ED', 'FFF0D9D2', 'FFE0F0D2', 'FFEAD9FB'];
+  const GRAND_FILL_COLOR = 'FFB9C6E8';
+  const deptColorIndex = new Map();
+
+  // Toplam/Ortalama (ve alt-toplam/genel toplam satırlarında ay hücreleri de) statik sayı
+  // olarak değil, Excel formülü olarak yazılır — dosyada bir ay değeri değiştirilince
+  // Toplam/Ortalama/alt-toplam/Genel Toplam otomatik güncellensin (kullanıcı isteği 2026-09).
+  const colLetter = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+  const firstMonthCol = showDept ? 3 : 2;
+  const monthCol = (i, t) => firstMonthCol + i * 3 + t;
+  const toplamCol = t => firstMonthCol + 36 + t;
+  const ortCol = t => firstMonthCol + 39 + t;
+  const ref = (col, row) => colLetter(col) + row;
+  const asNum = v => (typeof v === 'number' ? v : 0);
+  let posStart = null, curDept = null;
+  const deptRanges = [];
+
+  for (const r of data.rows) {
+    const isTotalRow = !!r.kind && r.kind !== 'position';
+    const row = [];
+    if (showDept) row.push(isTotalRow ? (r.kind === 'grand' ? '' : r.dept) : (r.dept || ''));
+    row.push(isTotalRow ? r.label : (r.pozisyon || r.label || ''));
+    const monthTriples = isFuture
+      ? [parseArr(r.prevBudgetValues), parseArr(r.prevValues), r.valuesNum]
+      : [parseArr(r.prevValues), r.valuesNum, parseArr(r.actualValues)];
+    for (let i = 0; i < 12; i++) monthTriples.forEach(arr => row.push(arr?.[i] ?? null));
+    const totalsTriple = isFuture
+      ? [parseTrNum(r.prevBudgetToplam), parseTrNum(r.prevToplam), r.toplamNum ?? null]
+      : [parseTrNum(r.prevToplam), r.toplamNum ?? null, parseTrNum(r.actualToplam)];
+    totalsTriple.forEach(v => row.push(v));
+    const avgTriple = isFuture
+      ? [parseTrNum(r.prevBudgetOrt), parseTrNum(r.prevOrt), r.ortalamaNum ?? null]
+      : [parseTrNum(r.prevOrt), r.ortalamaNum ?? null, parseTrNum(r.actualOrt)];
+    avgTriple.forEach(v => row.push(v));
+    const excelRow = sheet.addRow(row);
+    const rn = excelRow.number;
+    if (!isTotalRow) {
+      // Pozisyon satırı: Toplam = kendi 12 aylık hücresinin SUM'u, Ortalama = Toplam/12.
+      if (curDept !== (r.dept || '')) { curDept = r.dept || ''; posStart = rn; }
+      for (let t = 0; t < 3; t++) {
+        const monthRefs = []; for (let i = 0; i < 12; i++) monthRefs.push(ref(monthCol(i, t), rn));
+        const tCell = excelRow.getCell(toplamCol(t));
+        tCell.value = { formula: `SUM(${monthRefs.join(',')})`, result: asNum(tCell.value) };
+        const oCell = excelRow.getCell(ortCol(t));
+        oCell.value = { formula: `${ref(toplamCol(t), rn)}/12`, result: asNum(oCell.value) };
+      }
+    } else {
+      // Alt toplam: kendi departmanının pozisyon satır aralığından; Genel Toplam: tüm
+      // departman aralıklarından SUM. Ay hücreleri de formüle çevrilir ki alt/genel toplam
+      // da kaynağından canlı hesaplansın.
+      const ranges = r.kind === 'grand' ? deptRanges.slice()
+        : (posStart != null && rn - 1 >= posStart ? [{ start: posStart, end: rn - 1 }] : []);
+      if (r.kind === 'subtotal' && ranges.length) deptRanges.push(ranges[0]);
+      for (let t = 0; t < 3; t++) {
+        if (ranges.length) {
+          for (let i = 0; i < 12; i++) {
+            const c = monthCol(i, t);
+            const cell = excelRow.getCell(c);
+            const parts = ranges.map(rg => `${ref(c, rg.start)}:${ref(c, rg.end)}`);
+            cell.value = { formula: `SUM(${parts.join(',')})`, result: asNum(cell.value) };
+          }
+        }
+        const monthRefs = []; for (let i = 0; i < 12; i++) monthRefs.push(ref(monthCol(i, t), rn));
+        const tCell = excelRow.getCell(toplamCol(t));
+        tCell.value = { formula: `SUM(${monthRefs.join(',')})`, result: asNum(tCell.value) };
+        const oCell = excelRow.getCell(ortCol(t));
+        oCell.value = { formula: `${ref(toplamCol(t), rn)}/12`, result: asNum(oCell.value) };
+      }
+      posStart = null; curDept = null;
+    }
+    if (isTotalRow) {
+      excelRow.font = { bold: true };
+      let fillColor = GRAND_FILL_COLOR;
+      if (r.kind !== 'grand') {
+        if (!deptColorIndex.has(r.dept)) deptColorIndex.set(r.dept, deptColorIndex.size % DEPT_FILL_COLORS.length);
+        fillColor = DEPT_FILL_COLORS[deptColorIndex.get(r.dept)];
+      }
+      excelRow.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } }; });
+    }
+  }
+  workbook.calcProperties.fullCalcOnLoad = true;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const filename = `personel-butcesi-${data.year}-${data.department || 'tum-departmanlar'}.xlsx`;
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
   });
+  res.send(Buffer.from(buffer));
 }));
 
 // Geçen yılla karşılaştırma: aylık toplam kadro + pozisyon bazında
@@ -4173,21 +4873,19 @@ app.put('/api/personel-butcesi/:year/gerceklesen', asyncRoute(async (req, res) =
   res.json({ department: row.departman, aylar: row.aylar });
 }));
 
-// Pozisyon bazında gerçekleşen — İK girer, tüm yıllar (Excel yılları dahil)
+// Pozisyon bazında gerçekleşen — yalnızca İK girer, tüm yıllar (Excel yılları dahil).
+// Departman yöneticileri artık gerçekleşen giremez (kullanıcı isteği 2026-09) — yalnızca
+// gelecek yıl bütçesini (Bütçe sütunu) kendi departmanları için girebilirler.
 async function butceActualWriteContext(req, res, yearParam, bodyDept) {
   const user = req.user;
-  const all = canSeeAllButce(user);
-  const dm = isDepartmentManager(user);
-  if (!all && !dm) { res.status(403).json({ error: 'Bu işlem için yetkiniz yok' }); return null; }
+  if (!isHRUser(user)) { res.status(403).json({ error: 'Gerçekleşen verisi yalnızca İK tarafından girilebilir' }); return null; }
   const year = Number(yearParam);
   if (!Number.isInteger(year) || year < 2020 || year > 2100) { res.status(400).json({ error: 'Geçersiz yıl' }); return null; }
-  const excel = await butceExcelInfo();
-  const scopeDept = await butceResolveScope(user, all, bodyDept, excel.departments);
-  if (!all) {
-    if (!scopeDept) { res.status(400).json({ error: 'Departmanınız belirlenemedi' }); return null; }
-    if (bodyDept && !looseDeptMatch(bodyDept, scopeDept)) { res.status(403).json({ error: 'Yalnızca kendi departmanınızı düzenleyebilirsiniz' }); return null; }
-  } else if (!scopeDept) { res.status(400).json({ error: 'Departman gerekli' }); return null; }
-  return { user, all, dm, year, department: scopeDept };
+  // 2025 sekmesi tamamen kilitli — Sistem yöneticisi dahil hiç kimse düzenleyemez (kullanıcı isteği 2026-09).
+  if (year === 2025) { res.status(403).json({ error: '2025 bütçesi kilitlidir; hiçbir veri düzenlenemez' }); return null; }
+  const scopeDept = clean(bodyDept);
+  if (!scopeDept) { res.status(400).json({ error: 'Departman gerekli' }); return null; }
+  return { user, all: true, dm: false, year, department: scopeDept };
 }
 
 app.put('/api/personel-butcesi/:year/pozisyon-gerceklesen', asyncRoute(async (req, res) => {
@@ -4236,9 +4934,11 @@ app.post('/api/personel-butcesi/:year/entries', asyncRoute(async (req, res) => {
   const ctx = await butceWriteContext(req, res, req.params.year, req.body?.department);
   if (!ctx) return;
   const b = req.body || {};
+  // Bu uç yalnızca "+ Pozisyon ekle" ile departmanın sonradan eklediği satırlar için kullanılır
+  // (önceki yıldan taslak kopyalama ayrı /entries/seed ucundan gelir) — manual=true işaretlenir.
   const row = (await pool.query(
-    `insert into personel_butce_giris(butce_yili,departman,alt_departman,bolum,pozisyon,aylar,sira,updated_by)
-     values($1,$2,$3,$4,$5,$6::jsonb,$7,$8) returning *`,
+    `insert into personel_butce_giris(butce_yili,departman,alt_departman,bolum,pozisyon,aylar,sira,updated_by,manual)
+     values($1,$2,$3,$4,$5,$6::jsonb,$7,$8,true) returning *`,
     [ctx.year, ctx.department, clean(b.altDept).slice(0, 120), clean(b.bolum).slice(0, 120),
      clean(b.pozisyon).slice(0, 200), JSON.stringify(sanitizeAylar(b.aylar)), Number(b.sira) || 0, ctx.user.name])).rows[0];
   res.status(201).json(butceEntryRow(row));
@@ -4293,10 +4993,15 @@ app.put('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res) =
   res.json(butceEntryRow(row));
 }));
 
+// Pozisyon silme yalnızca: bütçe yılında (henüz gelecek) + departmanın KENDİ eklediği
+// (manual=true) satırlar için, o departmanın yöneticisi (ya da Sistem yöneticisi) tarafından
+// yapılabilir. Önceki yıldan taslak olarak gelen satırlar hiçbir zaman silinemez (kullanıcı isteği 2026-09).
 app.delete('/api/personel-butcesi/:year/entries/:id', asyncRoute(async (req, res) => {
   const existing = (await pool.query('select * from personel_butce_giris where id=$1 and butce_yili=$2',
     [Number(req.params.id) || 0, Number(req.params.year) || 0])).rows[0];
   if (!existing) return res.status(404).json({ error: 'Satır bulunamadı' });
+  if (!existing.manual) return res.status(403).json({ error: 'Yalnızca sonradan eklenen pozisyonlar silinebilir' });
+  // butceWriteContext: bütçe yılı kontrolü + "yalnızca kendi departmanı" kapsamı aynı /entries POST/PUT ile birebir.
   const ctx = await butceWriteContext(req, res, req.params.year, existing.departman);
   if (!ctx) return;
   await pool.query('delete from personel_butce_giris where id=$1', [existing.id]);
@@ -4321,10 +5026,16 @@ const kysCloseGateError = (module, data) => {
   }
   return null;
 };
+const KYS_MODULE_KEYS = ['kys-eys','kys-dokuman','kys-dof','kys-hedefler','kys-ygg','kys-tedarikci','kys-kalibrasyon','kys-sikayet','kys-denetim','kys-haccp'];
 function kysAccess(user) {
   if (isHRUser(user)) return 'full';
   if (normalizeDepartmentValue(user.department).includes('KALİTE')) return 'full'; // "Eğitim ve Kalite" dahil
   if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return 'read';
+  // "Yeni Rol" oluşturucusuyla KYS alt modülleri seçilmiş özel roller: en az bir
+  // modül yazma/tam kontrol seviyesindeyse 'full', yalnız görme seviyesindeyse 'read'.
+  const levels = KYS_MODULE_KEYS.map(k => customRoleModuleLevel(user, k)).filter(Boolean);
+  if (levels.some(lv => lv === 'write' || lv === 'full')) return 'full';
+  if (levels.length) return 'read';
   return 'none';
 }
 // Doküman Yönetimi: diğer KYS modüllerinden farklı olarak Departman yöneticisi de
@@ -4521,7 +5232,8 @@ app.get('/api/kys/dokuman/:id/file', asyncRoute(async (req, res) => {
 
 // --- Entegre Yönetim Sistemi (EYS) — doküman arşivi klasör gezgini -----
 // Gerçek dosya sistemi (bind mount, salt-okunur); veritabanına yazılmaz.
-// Aynı KYS erişim modeli (İK/Kalite tam, üst yönetim salt-okunur) kullanılır.
+// Yazma/onay içermeyen salt-okunur bir arşiv olduğundan diğer KYS modüllerinin
+// aksine erişim rol/departmana bağlı değil — oturum açan her kullanıcı görür.
 // İki ayrı ağ paylaşımı: "eys" (Entegre Yönetim Sistemi) ve "kayitlar"
 // (Entegre Yönetim Sistemi Kayıtlar) — frontend'de sekme olarak seçiliyor.
 const EYS_SOURCES = {
@@ -4542,7 +5254,6 @@ function eysSafePath(source, relPath) {
 }
 
 app.get('/api/eys/list', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const target = eysSafePath(req.query.source, req.query.path);
   if (!target) return res.status(400).json({ error: 'Geçersiz yol' });
   let entries;
@@ -4606,7 +5317,6 @@ async function eysConvertToPdf(target, st) {
 }
 
 app.get('/api/eys/file', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const target = eysSafePath(req.query.source, req.query.path);
   if (!target || !target.rel) return res.status(400).json({ error: 'Geçersiz yol' });
   const st = await fsp.stat(target.abs).catch(() => null);
@@ -4652,7 +5362,6 @@ async function eysGetSearchIndex(source) {
 }
 
 app.get('/api/eys/search', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const source = EYS_SOURCES[req.query.source] ? req.query.source : 'eys';
   const term = clean(req.query.q).toLocaleLowerCase('tr-TR');
   if (term.length < 2) return res.json({ items: [] });
@@ -4696,7 +5405,6 @@ async function eysReadForPreview(source, relPath, prefix) {
 // Tek uçta hem sayfa listesi hem istenen sayfanın verisi dönüyor (eskiden iki
 // ayrı istek dosyayı iki kez baştan ayrıştırıyordu — önizleme bu yüzden yavaştı).
 app.get('/api/eys/xlsx', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const idx = Number(req.query.idx) || 0;
   const r = await eysReadForPreview(req.query.source, req.query.path, 'xlsx');
   let parsed;
@@ -4715,7 +5423,6 @@ app.get('/api/eys/xlsx', asyncRoute(async (req, res) => {
 // yerelde çalışır (dış servise gönderim yok). Eski ikili .doc mammoth ile
 // okunamaz; hata durumunda frontend "önizlenemiyor" gösterir.
 app.get('/api/eys/docx', asyncRoute(async (req, res) => {
-  if (kysAccess(req.user) === 'none') return res.status(403).json({ error: 'Yetkiniz yok' });
   const r = await eysReadForPreview(req.query.source, req.query.path, 'docx');
   let html;
   if (r.hit) html = r.value;
@@ -4736,6 +5443,9 @@ function dofAccess(user) {
   if (isHRUser(user) || normalizeDepartmentValue(user.department).includes('KALİTE')) return { level: 'kalite' };
   if (['Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi'].includes(user.role)) return { level: 'read' };
   if (user.role === 'Departman yöneticisi' && clean(user.department)) return { level: 'dept', dept: normalizeDepartmentValue(user.department) };
+  const dofLevel = customRoleModuleLevel(user, 'kys-dof');
+  if (dofLevel === 'write' || dofLevel === 'full') return { level: 'kalite' };
+  if (dofLevel) return { level: 'read' };
   return { level: 'none' };
 }
 const dofRow = r => ({ id: r.id, department: r.department, ...r.data, created_at: r.created_at, updated_at: r.updated_at });
@@ -4851,6 +5561,516 @@ app.delete('/api/dof/:id', asyncRoute(async (req, res) => {
   res.status(204).end();
 }));
 
+// --- İK Yanımda: Duyurular ve Yemekhane Menüsü ---------------------------
+// Mobil uygulama içeriği. kys_records tablosu module='announcement' ve
+// module='cafeteria_menu' ile yeniden kullanılıyor (DÖF ile aynı desen).
+// Yazma yetkisi İK'da (isHRUser); okuma panele erişebilen herkese açık.
+const announcementRow = r => ({ id: r.id, title: r.data?.title || '', body: r.data?.body || '', pinned: Boolean(r.data?.pinned), created_by_name: r.data?.created_by_name || '', created_at: r.created_at, updated_at: r.updated_at });
+
+app.get('/api/announcements', asyncRoute(async (req, res) => {
+  const rows = (await pool.query("select * from kys_records where module='announcement' order by created_at desc")).rows;
+  res.json(rows.map(announcementRow));
+}));
+
+app.post('/api/announcements', asyncRoute(async (req, res) => {
+  if (!isHRUser(req.user)) return res.status(403).json({ error: 'Duyuru oluşturma yetkiniz yok' });
+  const title = clean(req.body?.title);
+  if (!title) return res.status(400).json({ error: 'Başlık zorunludur' });
+  const data = { title, body: clean(req.body?.body), pinned: Boolean(req.body?.pinned), created_by_name: req.user.name };
+  const row = (await pool.query('insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *',
+    ['announcement', '', JSON.stringify(data), req.user?.name || null])).rows[0];
+  res.status(201).json(announcementRow(row));
+  notifyMobilePushAll(`Yeni duyuru: ${title}`, data.body).catch(() => {});
+}));
+
+app.put('/api/announcements/:id', asyncRoute(async (req, res) => {
+  if (!isHRUser(req.user)) return res.status(403).json({ error: 'Düzenleme yetkiniz yok' });
+  const existing = (await pool.query("select * from kys_records where id=$1 and module='announcement'", [Number(req.params.id) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Duyuru bulunamadı' });
+  const title = clean(req.body?.title) || existing.data.title;
+  const data = { ...existing.data, title, body: clean(req.body?.body), pinned: Boolean(req.body?.pinned) };
+  const row = (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *', [existing.id, JSON.stringify(data)])).rows[0];
+  res.json(announcementRow(row));
+}));
+
+app.delete('/api/announcements/:id', asyncRoute(async (req, res) => {
+  if (!isHRUser(req.user)) return res.status(403).json({ error: 'Silme yetkiniz yok' });
+  const existing = (await pool.query("select id from kys_records where id=$1 and module='announcement'", [Number(req.params.id) || 0])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'Duyuru bulunamadı' });
+  await pool.query('delete from kys_records where id=$1', [existing.id]);
+  res.status(204).end();
+}));
+
+const cafeteriaMenuRow = r => ({ id: r.id, ...r.data, updated_at: r.updated_at });
+// Yemekhane Menüsü paneli: yalnızca Sistem yöneticisi ve Ana Mutfak departmanı görür/düzenler.
+// (Mobil uygulamadaki /api/mobile/menu ayrı ve tüm çalışanlara açık — bu kısıtlama sadece web paneli içindir.)
+const canManageCafeteriaMenu = user => user?.role === 'Sistem yöneticisi' || normalizeDepartmentValue(user?.department) === 'ANA MUTFAK';
+
+app.get('/api/cafeteria-menu', asyncRoute(async (req, res) => {
+  if (!canManageCafeteriaMenu(req.user)) return res.status(403).json({ error: 'Bu sayfayı görüntüleme yetkiniz yok' });
+  const rows = (await pool.query("select * from kys_records where module='cafeteria_menu' order by data->>'week_start' desc limit 12")).rows;
+  res.json(rows.map(cafeteriaMenuRow));
+}));
+
+// Genel Bakış (dashboard) kartı: yalnızca bugünün menüsünü, departman kısıtlaması
+// olmadan panele erişen herkese gösterir (mobildeki /api/mobile/menu ile aynı mantık).
+const CAFETERIA_CATEGORIES = [['soup', 'Çorba'], ['main', 'Ana Yemek'], ['alt', 'Alternatif'], ['dessert', 'Tatlı/Ek']];
+function normalizeCafeteriaDay(d) {
+  if (!d) return [];
+  if (Array.isArray(d.items)) return d.items.filter(x => x && x.value).map(x => ({ type: x.type || 'main', value: x.value }));
+  const items = [];
+  CAFETERIA_CATEGORIES.forEach(([k]) => { if (d[k]) items.push({ type: k, value: d[k] }); });
+  (Array.isArray(d.extra) ? d.extra : []).forEach(x => { if (x && x.value) items.push({ type: 'main', value: x.value }); });
+  return items;
+}
+app.get('/api/cafeteria-menu/today', asyncRoute(async (req, res) => {
+  const date = istanbulDate();
+  const row = (await pool.query("select data from kys_records where module='cafeteria_menu' and data->'days' ? $1", [date])).rows[0];
+  const items = normalizeCafeteriaDay(row?.data?.days?.[date]);
+  const rank = t => { const i = CAFETERIA_CATEGORIES.findIndex(([k]) => k === t); return i === -1 ? CAFETERIA_CATEGORIES.length : i; };
+  items.sort((a, b) => rank(a.type) - rank(b.type));
+  res.json({ date, items: items.map(x => ({ ...x, label: (CAFETERIA_CATEGORIES.find(([k]) => k === x.type) || [, x.type])[1] })) });
+}));
+
+app.put('/api/cafeteria-menu', asyncRoute(async (req, res) => {
+  if (!canManageCafeteriaMenu(req.user)) return res.status(403).json({ error: 'Menü düzenleme yetkiniz yok' });
+  const weekStart = clean(req.body?.week_start);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) return res.status(400).json({ error: 'Geçerli bir hafta başlangıç tarihi (Pazartesi) zorunludur' });
+  const days = req.body?.days && typeof req.body.days === 'object' ? req.body.days : {};
+  const data = { week_start: weekStart, days };
+  const existing = (await pool.query("select id from kys_records where module='cafeteria_menu' and data->>'week_start'=$1", [weekStart])).rows[0];
+  const row = existing
+    ? (await pool.query('update kys_records set data=$2::jsonb, updated_at=now() where id=$1 returning *', [existing.id, JSON.stringify(data)])).rows[0]
+    : (await pool.query('insert into kys_records(module,department,data,created_by) values($1,$2,$3::jsonb,$4) returning *', ['cafeteria_menu', '', JSON.stringify(data), req.user?.name || null])).rows[0];
+  res.json(cafeteriaMenuRow(row));
+}));
+
+// --- A La Carte Rezervasyon (Konsiyerj, kapalı devre) -----------------------
+const alacarteAccess = user => {
+  if (user?.role === 'Sistem yöneticisi') return 'full';
+  return customRoleModuleLevel(user, 'alacarte') || 'none';
+};
+const requireAlacarte = (req, res, min) => {
+  const level = alacarteAccess(req.user);
+  const rank = { none: 0, view: 1, write: 2, full: 3 };
+  if (rank[level] < rank[min]) { res.status(403).json({ error: 'Bu modüle erişim yetkiniz yok' }); return false; }
+  return true;
+};
+const ALACARTE_CURRENCIES = new Set(['TRY', 'USD', 'EUR', 'GBP']);
+const alacarteRestaurantRow = r => ({ id: r.id, name: r.name, description: r.description, active: r.active, sort_order: r.sort_order, currency: r.currency });
+const alacarteSessionRow = r => ({
+  id: r.id, restaurant_id: r.restaurant_id, name: r.name, days_of_week: r.days_of_week,
+  start_time: r.start_time, end_time: r.end_time, capacity: r.capacity,
+  price_adult: Number(r.price_adult), price_child: Number(r.price_child),
+  child_min_age: r.child_min_age, child_max_age: r.child_max_age, accepts_children: r.accepts_children,
+  min_party: r.min_party, max_party: r.max_party, active: r.active
+});
+const alacarteGuestRow = r => ({ id: r.id, name: r.name, room_no: r.room_no, guest_type: r.guest_type, phone: r.phone });
+const alacarteReservationRow = r => ({
+  id: r.id, restaurant_id: r.restaurant_id, restaurant_name: r.restaurant_name, restaurant_currency: r.restaurant_currency, session_id: r.session_id, session_name: r.session_name,
+  guest_id: r.guest_id, guest_name: r.guest_name, room_no: r.room_no, phone: r.phone, guest_type: r.guest_type,
+  adult_count: r.adult_count, child_count: r.child_count, infant_count: r.infant_count,
+  reservation_date: r.reservation_date instanceof Date ? r.reservation_date.toISOString().slice(0, 10) : r.reservation_date,
+  reservation_time: r.reservation_time, amount: Number(r.amount), status: r.status, arrived: r.arrived, note: r.note,
+  created_by: r.created_by, created_at: r.created_at
+});
+
+app.get('/api/alacarte/restaurants', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const rows = (await pool.query('select * from alacarte_restaurants order by sort_order, name')).rows;
+  res.json(rows.map(alacarteRestaurantRow));
+}));
+app.post('/api/alacarte/restaurants', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const name = clean(req.body?.name);
+  const currency = ALACARTE_CURRENCIES.has(clean(req.body?.currency)) ? clean(req.body.currency) : 'TRY';
+  if (!name) return res.status(400).json({ error: 'Restoran adı zorunludur' });
+  const row = (await pool.query(
+    `insert into alacarte_restaurants(name,description,active,sort_order,currency) values($1,$2,$3,$4,$5) returning *`,
+    [name, clean(req.body?.description), req.body?.active !== false, Number(req.body?.sort_order) || 0, currency])).rows[0];
+  res.status(201).json(alacarteRestaurantRow(row));
+}));
+app.put('/api/alacarte/restaurants/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const name = clean(req.body?.name);
+  const currency = ALACARTE_CURRENCIES.has(clean(req.body?.currency)) ? clean(req.body.currency) : 'TRY';
+  if (!name) return res.status(400).json({ error: 'Restoran adı zorunludur' });
+  const row = (await pool.query(
+    `update alacarte_restaurants set name=$2,description=$3,active=$4,sort_order=$5,currency=$6,updated_at=now() where id=$1 returning *`,
+    [Number(req.params.id), name, clean(req.body?.description), req.body?.active !== false, Number(req.body?.sort_order) || 0, currency])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Restoran bulunamadı' });
+  res.json(alacarteRestaurantRow(row));
+}));
+app.delete('/api/alacarte/restaurants/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'full')) return;
+  await pool.query('delete from alacarte_restaurants where id=$1', [Number(req.params.id)]);
+  res.status(204).end();
+}));
+
+app.get('/api/alacarte/restaurants/:id/sessions', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const rows = (await pool.query('select * from alacarte_sessions where restaurant_id=$1 order by start_time', [Number(req.params.id)])).rows;
+  res.json(rows.map(alacarteSessionRow));
+}));
+app.post('/api/alacarte/restaurants/:id/sessions', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const b = req.body || {};
+  const name = clean(b.name), start = clean(b.start_time), end = clean(b.end_time);
+  if (!name || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return res.status(400).json({ error: 'Program adı ve başlangıç/bitiş saatini kontrol edin' });
+  const days = Array.isArray(b.days_of_week) ? b.days_of_week.map(Number).filter(d => d >= 1 && d <= 7) : [1, 2, 3, 4, 5, 6, 7];
+  const row = (await pool.query(
+    `insert into alacarte_sessions(restaurant_id,name,days_of_week,start_time,end_time,capacity,price_adult,price_child,child_min_age,child_max_age,accepts_children,min_party,max_party,active)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
+    [Number(req.params.id), name, days, start, end, Number(b.capacity) || 0, Number(b.price_adult) || 0, Number(b.price_child) || 0,
+      Number(b.child_min_age) || 7, Number(b.child_max_age) || 11, b.accepts_children !== false, Number(b.min_party) || 0, Number(b.max_party) || 0, b.active !== false])).rows[0];
+  res.status(201).json(alacarteSessionRow(row));
+}));
+app.put('/api/alacarte/sessions/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const b = req.body || {};
+  const name = clean(b.name), start = clean(b.start_time), end = clean(b.end_time);
+  if (!name || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) return res.status(400).json({ error: 'Program adı ve başlangıç/bitiş saatini kontrol edin' });
+  const days = Array.isArray(b.days_of_week) ? b.days_of_week.map(Number).filter(d => d >= 1 && d <= 7) : [1, 2, 3, 4, 5, 6, 7];
+  const row = (await pool.query(
+    `update alacarte_sessions set name=$2,days_of_week=$3,start_time=$4,end_time=$5,capacity=$6,price_adult=$7,price_child=$8,
+       child_min_age=$9,child_max_age=$10,accepts_children=$11,min_party=$12,max_party=$13,active=$14,updated_at=now()
+     where id=$1 returning *`,
+    [Number(req.params.id), name, days, start, end, Number(b.capacity) || 0, Number(b.price_adult) || 0, Number(b.price_child) || 0,
+      Number(b.child_min_age) || 7, Number(b.child_max_age) || 11, b.accepts_children !== false, Number(b.min_party) || 0, Number(b.max_party) || 0, b.active !== false])).rows[0];
+  if (!row) return res.status(404).json({ error: 'Program bulunamadı' });
+  res.json(alacarteSessionRow(row));
+}));
+app.delete('/api/alacarte/sessions/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'full')) return;
+  await pool.query('delete from alacarte_sessions where id=$1', [Number(req.params.id)]);
+  res.status(204).end();
+}));
+
+// Günlük misafir listesi: sabit sütun adları aranır (Türkçe/İngilizce eş anlamlılar
+// dahil, büyük/küçük harf duyarsız); eşleşmeyen sütunlar yok sayılır.
+function alacarteGuestHeaderMap(headerRow) {
+  const aliases = {
+    name: ['ad soyad', 'isim', 'misafir', 'guest name', 'name', 'adı soyadı'],
+    room_no: ['oda no', 'oda', 'room', 'room no', 'room number'],
+    guest_type: ['tip', 'durum', 'type', 'guest type', 'status'],
+    phone: ['telefon', 'tel', 'phone', 'gsm']
+  };
+  const map = {};
+  headerRow.forEach((header, idx) => {
+    const h = clean(header).toLocaleLowerCase('tr-TR');
+    if (!h) return;
+    for (const [field, names] of Object.entries(aliases)) {
+      if (names.some(n => h === n || h.includes(n))) { map[field] = idx; break; }
+    }
+  });
+  return map;
+}
+function alacarteGuestTypeFrom(raw) {
+  const v = clean(raw).toLocaleLowerCase('tr-TR');
+  if (/arriv|geli[şs]|var[ıi][şs]/.test(v)) return 'arrival';
+  return 'inhouse';
+}
+app.post('/api/alacarte/guests/import', express.raw({ type: () => true, limit: '15mb' }), asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buffer || buffer.length < 100) return res.status(400).json({ error: 'Dosya alınamadı' });
+  if (buffer.slice(0, 2).toString('binary') !== 'PK') return res.status(400).json({ error: 'Geçerli bir .xlsx dosyası değil' });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) return res.status(400).json({ error: 'Dosyada sayfa bulunamadı' });
+  const headerRow = (sheet.getRow(1).values || []).slice(1).map(v => String(v ?? ''));
+  const map = alacarteGuestHeaderMap(headerRow);
+  if (map.name === undefined) return res.status(400).json({ error: 'Sütun başlıklarında isim (Ad Soyad) bulunamadı' });
+  const guests = [];
+  sheet.eachRow((row, num) => {
+    if (num === 1) return;
+    const values = (row.values || []).slice(1);
+    const name = clean(values[map.name]);
+    if (!name) return;
+    guests.push([
+      name,
+      map.room_no !== undefined ? clean(values[map.room_no]) : '',
+      map.guest_type !== undefined ? alacarteGuestTypeFrom(values[map.guest_type]) : 'inhouse',
+      map.phone !== undefined ? clean(values[map.phone]) : ''
+    ]);
+  });
+  if (!guests.length) return res.status(422).json({ error: 'İşlenecek misafir satırı bulunamadı' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query('delete from alacarte_guests');
+    for (const g of guests) await client.query('insert into alacarte_guests(name,room_no,guest_type,phone) values($1,$2,$3,$4)', g);
+    await client.query('commit');
+  } catch (e) { await client.query('rollback').catch(() => {}); throw e; }
+  finally { client.release(); }
+  res.status(201).json({ ok: true, count: guests.length });
+}));
+app.get('/api/alacarte/guests', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const type = clean(req.query.type);
+  const search = clean(req.query.search).toLocaleLowerCase('tr-TR');
+  const params = [];
+  let where = '';
+  if (type && ['inhouse', 'arrival'].includes(type)) { params.push(type); where += ` and guest_type=$${params.length}`; }
+  if (search) { params.push(`%${search}%`); where += ` and (lower(name) like $${params.length} or lower(room_no) like $${params.length})`; }
+  const rows = (await pool.query(`select * from alacarte_guests where true${where} order by name limit 200`, params)).rows;
+  res.json(rows.map(alacarteGuestRow));
+}));
+app.get('/api/alacarte/guests/status', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const row = (await pool.query('select max(imported_at) as imported_at, count(*)::int as count from alacarte_guests')).rows[0];
+  res.json(row);
+}));
+
+const alacarteReservationSelect = `
+  select r.*, rest.name as restaurant_name, rest.currency as restaurant_currency, s.name as session_name
+  from alacarte_reservations r
+  join alacarte_restaurants rest on rest.id=r.restaurant_id
+  left join alacarte_sessions s on s.id=r.session_id`;
+
+// Oturumun kapasitesi gün bazlıdır: her rezervasyon tarihi kendi kapasitesini
+// kullanır. İptal edilen rezervasyonlar kapasiteyi tüketmez. Bebekler ("infant")
+// kişi sayısına/kapasiteye dahil edilmez (otel pratiğiyle uyumlu).
+async function alacarteSessionCapacityInfo(sessionId, date, excludeReservationId) {
+  const session = (await pool.query('select capacity from alacarte_sessions where id=$1', [sessionId])).rows[0];
+  if (!session) return null;
+  if (!session.capacity) return { capacity: 0, used: 0, remaining: null };
+  const params = [sessionId, date];
+  let exclude = '';
+  if (excludeReservationId) { params.push(excludeReservationId); exclude = ` and id <> $${params.length}`; }
+  const used = (await pool.query(
+    `select coalesce(sum(adult_count+child_count),0)::int as used from alacarte_reservations
+     where session_id=$1 and reservation_date=$2 and status<>'İptal'${exclude}`, params)).rows[0].used;
+  return { capacity: session.capacity, used, remaining: Math.max(0, session.capacity - used) };
+}
+app.get('/api/alacarte/sessions/:id/capacity', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const date = dateOnly(req.query.date);
+  if (!date) return res.status(400).json({ error: 'Tarih zorunludur' });
+  const info = await alacarteSessionCapacityInfo(Number(req.params.id), date, req.query.exclude ? Number(req.query.exclude) : null);
+  if (!info) return res.status(404).json({ error: 'Oturum bulunamadı' });
+  res.json(info);
+}));
+
+// Rezervasyonlar sayfasındaki özet panel: seçili tarih aralığı + restoran
+// filtresine göre her oturumun toplam rezervasyon/kişi/gelir ve o aralıktaki
+// kalan kapasitesi (yalnızca oturumun çalıştığı günler sayılır).
+app.get('/api/alacarte/reservations/summary', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const from = dateOnly(req.query.from) || istanbulDate();
+  const to = dateOnly(req.query.to) || from;
+  const restaurantId = clean(req.query.restaurant_id) ? Number(req.query.restaurant_id) : null;
+  const sessionParams = [];
+  let sessionWhere = '';
+  if (restaurantId) { sessionParams.push(restaurantId); sessionWhere = ' and s.restaurant_id=$1'; }
+  const sessions = (await pool.query(
+    `select s.id, s.name, s.capacity, s.days_of_week, rest.name as restaurant_name, rest.currency as restaurant_currency
+     from alacarte_sessions s join alacarte_restaurants rest on rest.id=s.restaurant_id
+     where s.active=true${sessionWhere} order by rest.name, s.start_time`, sessionParams)).rows;
+  const resParams = [from, to];
+  let resWhere = '';
+  if (restaurantId) { resParams.push(restaurantId); resWhere = ' and restaurant_id=$3'; }
+  const reservations = (await pool.query(
+    `select session_id, restaurant_id, adult_count, child_count, infant_count, amount, reservation_date
+     from alacarte_reservations where reservation_date>=$1 and reservation_date<=$2 and status<>'İptal'${resWhere}`, resParams)).rows;
+
+  const daysInRange = [];
+  for (let d = new Date(from + 'T00:00:00'); d <= new Date(to + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+    daysInRange.push({ iso: d.toISOString().slice(0, 10), dow: d.getDay() === 0 ? 7 : d.getDay() });
+  }
+
+  const summary = sessions.map(s => {
+    const rows = reservations.filter(r => r.session_id === s.id);
+    const runningDays = daysInRange.filter(d => (s.days_of_week || []).includes(d.dow)).length;
+    const used = rows.reduce((a, r) => a + r.adult_count + r.child_count, 0);
+    const remaining = s.capacity ? Math.max(0, runningDays * s.capacity - used) : null;
+    return {
+      session_id: s.id, session_name: s.name, restaurant_name: s.restaurant_name, restaurant_currency: s.restaurant_currency,
+      total_reservations: rows.length, adult_count: rows.reduce((a, r) => a + r.adult_count, 0), child_count: rows.reduce((a, r) => a + r.child_count, 0),
+      infant_count: rows.reduce((a, r) => a + r.infant_count, 0),
+      revenue: rows.reduce((a, r) => a + Number(r.amount), 0), capacity_per_day: s.capacity, running_days: runningDays,
+      total_capacity: s.capacity ? runningDays * s.capacity : null, remaining_capacity: remaining
+    };
+  });
+  const noSessionRows = reservations.filter(r => !r.session_id && (!restaurantId || r.restaurant_id === restaurantId));
+  if (noSessionRows.length) summary.push({
+    session_id: null, session_name: 'Oturumsuz / elle girilen', restaurant_name: '', restaurant_currency: sessions[0]?.restaurant_currency || 'TRY',
+    total_reservations: noSessionRows.length, adult_count: noSessionRows.reduce((a, r) => a + r.adult_count, 0), child_count: noSessionRows.reduce((a, r) => a + r.child_count, 0),
+    infant_count: noSessionRows.reduce((a, r) => a + r.infant_count, 0),
+    revenue: noSessionRows.reduce((a, r) => a + Number(r.amount), 0), capacity_per_day: 0, running_days: 0, total_capacity: null, remaining_capacity: null
+  });
+  res.json(summary);
+}));
+
+app.get('/api/alacarte/reservations', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const params = [];
+  let where = '';
+  const from = dateOnly(req.query.from), to = dateOnly(req.query.to);
+  if (from) { params.push(from); where += ` and r.reservation_date >= $${params.length}`; }
+  if (to) { params.push(to); where += ` and r.reservation_date <= $${params.length}`; }
+  if (clean(req.query.restaurant_id)) { params.push(Number(req.query.restaurant_id)); where += ` and r.restaurant_id = $${params.length}`; }
+  if (clean(req.query.session_id)) { params.push(Number(req.query.session_id)); where += ` and r.session_id = $${params.length}`; }
+  if (clean(req.query.status)) { params.push(clean(req.query.status)); where += ` and r.status = $${params.length}`; }
+  const search = clean(req.query.search).toLocaleLowerCase('tr-TR');
+  if (search) { params.push(`%${search}%`); where += ` and (lower(r.guest_name) like $${params.length} or lower(r.room_no) like $${params.length})`; }
+  const rows = (await pool.query(`${alacarteReservationSelect} where true${where} order by r.reservation_date desc, r.reservation_time desc limit 1000`, params)).rows;
+  res.json(rows.map(alacarteReservationRow));
+}));
+app.post('/api/alacarte/reservations', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const b = req.body || {};
+  const restaurantId = Number(b.restaurant_id), guestName = clean(b.guest_name), date = dateOnly(b.reservation_date), time = clean(b.reservation_time);
+  if (!restaurantId || !guestName || !date || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: 'Restoran, misafir adı, tarih ve saat zorunludur' });
+  const sessionId = b.session_id ? Number(b.session_id) : null;
+  const partySize = (Number(b.adult_count) || 0) + (Number(b.child_count) || 0);
+  if (sessionId && clean(b.status) !== 'İptal') {
+    const capacityInfo = await alacarteSessionCapacityInfo(sessionId, date);
+    if (capacityInfo && capacityInfo.remaining !== null && partySize > capacityInfo.remaining) {
+      return res.status(409).json({ error: `Bu oturum için kapasite yetersiz (kalan: ${capacityInfo.remaining} kişi)` });
+    }
+  }
+  const row = (await pool.query(
+    `insert into alacarte_reservations(restaurant_id,session_id,guest_id,guest_name,room_no,phone,guest_type,adult_count,child_count,infant_count,reservation_date,reservation_time,amount,status,note,created_by)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) returning id`,
+    [restaurantId, sessionId, b.guest_id ? Number(b.guest_id) : null, guestName,
+      clean(b.room_no), clean(b.phone), clean(b.guest_type), Number(b.adult_count) || 1, Number(b.child_count) || 0, Number(b.infant_count) || 0,
+      date, time, Number(b.amount) || 0, clean(b.status) || 'Onaylandı', clean(b.note), req.user.name])).rows[0];
+  const full = (await pool.query(`${alacarteReservationSelect} where r.id=$1`, [row.id])).rows[0];
+  res.status(201).json(alacarteReservationRow(full));
+}));
+app.put('/api/alacarte/reservations/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  const b = req.body || {};
+  const restaurantId = Number(b.restaurant_id), guestName = clean(b.guest_name), date = dateOnly(b.reservation_date), time = clean(b.reservation_time);
+  if (!restaurantId || !guestName || !date || !/^\d{2}:\d{2}$/.test(time)) return res.status(400).json({ error: 'Restoran, misafir adı, tarih ve saat zorunludur' });
+  const sessionId = b.session_id ? Number(b.session_id) : null;
+  const partySize = (Number(b.adult_count) || 0) + (Number(b.child_count) || 0);
+  if (sessionId && clean(b.status) !== 'İptal') {
+    const capacityInfo = await alacarteSessionCapacityInfo(sessionId, date, Number(req.params.id));
+    if (capacityInfo && capacityInfo.remaining !== null && partySize > capacityInfo.remaining) {
+      return res.status(409).json({ error: `Bu oturum için kapasite yetersiz (kalan: ${capacityInfo.remaining} kişi)` });
+    }
+  }
+  const result = await pool.query(
+    `update alacarte_reservations set restaurant_id=$2,session_id=$3,guest_id=$4,guest_name=$5,room_no=$6,phone=$7,guest_type=$8,
+       adult_count=$9,child_count=$10,infant_count=$11,reservation_date=$12,reservation_time=$13,amount=$14,status=$15,note=$16,
+       arrived=$17,updated_at=now()
+     where id=$1`,
+    [Number(req.params.id), restaurantId, sessionId, b.guest_id ? Number(b.guest_id) : null, guestName,
+      clean(b.room_no), clean(b.phone), clean(b.guest_type), Number(b.adult_count) || 1, Number(b.child_count) || 0, Number(b.infant_count) || 0,
+      date, time, Number(b.amount) || 0, clean(b.status) || 'Onaylandı', clean(b.note), Boolean(b.arrived)]);
+  if (!result.rowCount) return res.status(404).json({ error: 'Rezervasyon bulunamadı' });
+  const full = (await pool.query(`${alacarteReservationSelect} where r.id=$1`, [Number(req.params.id)])).rows[0];
+  res.json(alacarteReservationRow(full));
+}));
+app.patch('/api/alacarte/reservations/:id/arrived', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'write')) return;
+  await pool.query('update alacarte_reservations set arrived=$2,updated_at=now() where id=$1', [Number(req.params.id), Boolean(req.body?.arrived)]);
+  res.json({ ok: true });
+}));
+app.delete('/api/alacarte/reservations/:id', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'full')) return;
+  await pool.query('delete from alacarte_reservations where id=$1', [Number(req.params.id)]);
+  res.status(204).end();
+}));
+
+app.get('/api/alacarte/reservations/export', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const params = [];
+  let where = '';
+  const from = dateOnly(req.query.from), to = dateOnly(req.query.to);
+  if (from) { params.push(from); where += ` and r.reservation_date >= $${params.length}`; }
+  if (to) { params.push(to); where += ` and r.reservation_date <= $${params.length}`; }
+  if (clean(req.query.restaurant_id)) { params.push(Number(req.query.restaurant_id)); where += ` and r.restaurant_id = $${params.length}`; }
+  const rows = (await pool.query(`${alacarteReservationSelect} where true${where} order by r.reservation_date, r.reservation_time`, params)).rows;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Rezervasyonlar');
+  sheet.columns = [
+    { header: 'Tarih', key: 'date', width: 12 }, { header: 'Saat', key: 'time', width: 8 },
+    { header: 'Restoran', key: 'restaurant', width: 22 }, { header: 'Misafir', key: 'guest', width: 24 },
+    { header: 'Oda No', key: 'room', width: 10 }, { header: 'Telefon', key: 'phone', width: 16 },
+    { header: 'Yetişkin', key: 'adult', width: 10 }, { header: 'Çocuk', key: 'child', width: 8 }, { header: 'Bebek', key: 'infant', width: 8 },
+    { header: 'Tutar', key: 'amount', width: 12 }, { header: 'Para Birimi', key: 'currency', width: 10 }, { header: 'Durum', key: 'status', width: 14 }, { header: 'Geldi', key: 'arrived', width: 8 },
+    { header: 'Not', key: 'note', width: 30 }
+  ];
+  for (const r of rows) sheet.addRow({
+    date: r.reservation_date instanceof Date ? r.reservation_date.toISOString().slice(0, 10) : r.reservation_date,
+    time: r.reservation_time, restaurant: r.restaurant_name, guest: r.guest_name, room: r.room_no, phone: r.phone,
+    adult: r.adult_count, child: r.child_count, infant: r.infant_count, amount: Number(r.amount), currency: r.restaurant_currency, status: r.status,
+    arrived: r.arrived ? 'Evet' : 'Hayır', note: r.note
+  });
+  sheet.getRow(1).font = { bold: true };
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="alacarte-rezervasyonlar.xlsx"`
+  });
+  res.send(Buffer.from(buffer));
+}));
+
+// Restoran bazlı Excel raporu — Konsiyerj'in kullandığı önceki (üçüncü parti)
+// sistemin rapor formatıyla birebir aynı sütun sırası/başlıkları (kullanıcının
+// örnek olarak verdiği .xlsx ile eşleştirildi) — o sistemden buraya geçişte
+// alışkanlık/entegrasyon kolaylığı için.
+const ALACARTE_STATUS_EXPORT_MAP = { 'Onaylandı': 'Yapıldı', 'İptal': 'Reddedildi', 'Beklemede': 'Beklemede' };
+app.get('/api/alacarte/restaurants/:id/export', asyncRoute(async (req, res) => {
+  if (!requireAlacarte(req, res, 'view')) return;
+  const restaurant = (await pool.query('select * from alacarte_restaurants where id=$1', [Number(req.params.id)])).rows[0];
+  if (!restaurant) return res.status(404).json({ error: 'Restoran bulunamadı' });
+  const params = [Number(req.params.id)];
+  let where = '';
+  const from = dateOnly(req.query.from), to = dateOnly(req.query.to);
+  if (from) { params.push(from); where += ` and reservation_date >= $${params.length}`; }
+  if (to) { params.push(to); where += ` and reservation_date <= $${params.length}`; }
+  const rows = (await pool.query(
+    `select * from alacarte_reservations where restaurant_id=$1${where} order by reservation_date, reservation_time`, params)).rows;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Sheet1');
+  sheet.columns = [
+    { header: 'Talebi Oluşturan', key: 'creator', width: 18 },
+    { key: 'a', width: 4 }, { key: 'b', width: 10 },
+    { header: 'Misafir', key: 'guest', width: 24 },
+    { header: 'Yetişkin', key: 'adult', width: 9 }, { header: 'Çocuk', key: 'child', width: 9 }, { header: 'Bebek', key: 'infant', width: 9 },
+    { header: 'İlgilenen', key: 'interested', width: 14 },
+    { header: 'Lokasyon', key: 'location', width: 10 }, { header: 'Sipariş Konumu', key: 'orderLoc', width: 14 },
+    { header: 'Çözüm Notu', key: 'note', width: 24 }, { header: 'Tarih', key: 'date', width: 12 }, { header: 'Zaman', key: 'time', width: 8 },
+    { header: 'Talep Türü', key: 'reqType', width: 18 }, { header: 'Departman', key: 'department', width: 24 },
+    { header: 'Görev Adı', key: 'taskName', width: 18 }, { header: 'Erteleme Nedeni', key: 'postpone', width: 16 },
+    { header: 'Durum', key: 'status', width: 12 }, { header: 'Kalan Süre', key: 'remaining', width: 10 },
+    { header: 'Görev Süresi', key: 'duration', width: 10 }, { header: 'Görev Türü', key: 'taskType', width: 10 }
+  ];
+  for (const r of rows) sheet.addRow({
+    creator: r.created_by || '', a: '', b: 'Misafir', guest: r.guest_name,
+    adult: r.adult_count, child: r.child_count, infant: r.infant_count,
+    interested: '', location: r.room_no || '',
+    orderLoc: '', note: r.note || '',
+    date: (r.reservation_date instanceof Date ? r.reservation_date.toISOString().slice(0, 10) : r.reservation_date).split('-').reverse().join('-'),
+    time: r.reservation_time, reqType: 'Facility Reservation', department: restaurant.name, taskName: 'Facility Reservation',
+    postpone: '', status: ALACARTE_STATUS_EXPORT_MAP[r.status] || r.status, remaining: '', duration: '0', taskType: 'None'
+  });
+  const headerRow = sheet.getRow(1);
+  headerRow.eachCell(cell => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } };
+  });
+  for (let i = 2; i <= sheet.rowCount; i++) {
+    sheet.getRow(i).eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+      cell.font = { color: { argb: 'FF006100' } };
+    });
+  }
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: sheet.columns.length } };
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="${encodeURIComponent(restaurant.name)}.xlsx"`,
+    'Cache-Control': 'no-store'
+  });
+  res.send(Buffer.from(buffer));
+}));
+
 app.use((error, _req, res, _next) => {
   console.error(error);
   res.status(error.status || 500).json({ error: error.status ? error.message : 'Sunucu hatası' });
@@ -4863,5 +6083,9 @@ app.listen(3000, () => {
   runBirthdaySmsIfDue();
   const birthdaySmsTimer = setInterval(runBirthdaySmsIfDue, 5 * 60000);
   birthdaySmsTimer.unref();
+  runPayrollSyncIfDue();
+  const payrollSyncTimer = setInterval(runPayrollSyncIfDue, 5 * 60000);
+  payrollSyncTimer.unref();
   seedHmsIfEmpty().catch(cause => console.error('HMS örnek verisi yüklenemedi', cause?.message || cause));
+  refreshCustomRoleDefs().catch(cause => console.error('Özel rol önbelleği yüklenemedi', cause?.message || cause));
 });

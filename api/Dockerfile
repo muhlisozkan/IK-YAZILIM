@@ -5,6 +5,6 @@ RUN apk add --no-cache libreoffice-writer libreoffice-calc font-noto
 WORKDIR /app
 COPY package.json .
 RUN npm install --omit=dev
-COPY server.js .
+COPY server.js mobile-api.mjs mobile-auth.mjs ./
 COPY templates ./templates
 CMD ["npm","start"]

@@ -10,6 +10,17 @@
   const selectedWeek=()=>localStorage.getItem(weekKey)||isoWeek(new Date());
   const weekLabel=week=>{const start=weekStart(week),end=new Date(start);end.setDate(start.getDate()+6);const fmt=date=>date.toLocaleDateString('tr-TR',{day:'numeric',month:'long'});return start.getMonth()===end.getMonth()?`${start.getDate()}-${end.toLocaleDateString('tr-TR',{day:'numeric',month:'long'})}`:`${fmt(start)}-${fmt(end)}`};
   const itemFor=(employeeId,date)=>shifts.find(item=>String(item.employee_id)===String(employeeId)&&item.date===date);
+  // Çalışanın işe giriş tarihinden önceki, ve çıkış yaptığı tarihten (o tarih dahil)
+  // itibaren sonraki günler kimse için düzenlenemez — istihdam ilişkisi olmayan bir gün
+  // için vardiya girilemez (kullanıcı isteği 2026-09, puantajla aynı kural).
+  const outOfPeriod=(emp,dateStr)=>{
+    if(!emp)return false;
+    const start=emp.start_date?String(emp.start_date).slice(0,10):'';
+    const term=emp.termination_date?String(emp.termination_date).slice(0,10):'';
+    if(start&&dateStr<start)return true;
+    if(term&&dateStr>=term)return true;
+    return false;
+  };
   const sendShift=async(employeeId,date,patch)=>{
     const response=await fetch('/api/shifts',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({employee_id:Number(employeeId),work_date:date,...patch})});
     if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'Vardiya kaydedilemedi')}
@@ -41,13 +52,26 @@
     const isDeptManager=window.__ikCurrentUser?.()?.role==='Departman yöneticisi';
     const departments=[...new Set(state.employees.map(employee=>employee.department).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'tr'));
     const department=isAdmin?(localStorage.getItem(departmentKey)||''):'';
-    const employees=(isAdmin&&!department?[]:state.employees.filter(employee=>!department||employee.department===department))
+    // Çıkış yaptığı aydan sonraki haftalarda çalışan artık listede görünmez — ayrıldığı
+    // ayı kapsayan haftalarda (o hafta ay sınırını aşsa bile) görünmeye devam eder
+    // (kullanıcı isteği 2026-09, puantajla aynı kural).
+    const visibleThisWeek=employee=>{
+      const term=employee.termination_date?String(employee.termination_date).slice(0,7):'';
+      return !term||days.some(day=>day.date.slice(0,7)<=term);
+    };
+    const employees=(isAdmin&&!department?[]:state.employees.filter(employee=>(!department||employee.department===department)&&visibleThisWeek(employee)))
       .slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr'));
     const rows=employees.map(employee=>['normal','fazla'].map((rowType,idx)=>`<tr class="shift-row-${rowType}">${idx===0?`<td class="shift-person"><strong>${employee.name}</strong><small class="muted" style="display:block">${employee.department}</small></td>`:`<td class="shift-person shift-person-cont"></td>`}<td class="att-type ${rowType==='normal'?'normal':'extra'}">${rowType==='normal'?'Normal Çalışma':'Fazla Mesai'}</td>${days.map(day=>{const item=itemFor(employee.id,day.date);const locked=item?.hrLocked?' shift-locked':'';return `<td><select class="select shift-select${locked}" data-employee-id="${employee.id}" data-date="${day.date}" data-row="${rowType}" data-locked="${item?.hrLocked?'1':''}">${rowType==='normal'?normalOptions(item):overtimeOptions(item)}</select></td>`;}).join('')}</tr>`).join('')).join('');
     const departmentFilter=isAdmin?`<div class="field"><label>Departman</label><select class="select" id="shift-department"><option value="">Tüm departmanlar</option>${departments.map(value=>`<option value="${value}" ${value===department?'selected':''}>${value}</option>`).join('')}</select></div>`:'';
     $('#app').innerHTML=`<div class="section-title"><div><h2>Haftalık vardiya planı</h2><span class="muted">Vardiya ve fazla mesai puantajla anlık senkronize olur</span></div></div><div class="card shift-toolbar"><div class="field"><label>Planlama haftası</label><input class="input" id="shift-week" type="week" value="${week}"></div>${departmentFilter}<button class="btn secondary" id="shift-current-week">Bu hafta</button><span class="muted">Normal satırında puantaj kodları, Fazla Mesai satırında saat değerleri kullanılır.</span></div><div class="card shift-card"><div class="shift-scroll"><table class="shift-table"><thead><tr><th>ÇALIŞAN</th><th>ÇALIŞMA TİPİ</th>${days.map(day=>`<th>${day.label}</th>`).join('')}</tr></thead><tbody>${rows||'<tr><td colspan="9" class="empty">Çalışan bulunmuyor</td></tr>'}</tbody></table></div></div><div class="formula" style="margin-top:18px"><strong>Çift yönlü senkron:</strong> Buraya girilen vardiya/fazla mesai anında puantaja işlenir; puantajda yapılan değişiklikler de bu haftanın planına yansır. Günü geldiğinde saat 17.00'de kalan planlar da otomatik aktarılır.</div>`;
     const shiftCutoff=new Date();shiftCutoff.setHours(0,0,0,0);shiftCutoff.setDate(shiftCutoff.getDate()-1);
     document.querySelectorAll('.shift-select').forEach(select=>{
+      const emp=state.employees.find(x=>String(x.id)===select.dataset.employeeId);
+      if(outOfPeriod(emp,select.dataset.date)){
+        select.disabled=true;select.classList.add('shift-locked-period');
+        select.title=emp&&emp.start_date&&select.dataset.date<String(emp.start_date).slice(0,10)?'Çalışan bu tarihte henüz işe başlamamış':'Çalışan bu tarihte işten ayrılmış';
+        return;
+      }
       const pastCutoff=new Date(`${select.dataset.date}T00:00:00`)<shiftCutoff;
       const hrLocked=select.dataset.locked==='1';
       select.disabled=pastCutoff||(hrLocked&&isDeptManager);

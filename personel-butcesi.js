@@ -22,7 +22,9 @@
     const u = window.__ikCurrentUser?.() || {};
     const all = ['Sistem yöneticisi', 'İK yöneticisi', 'Genel müdür', 'Genel müdür yardımcısı', 'Bölge yöneticisi', 'Mali İşler', 'Finans yöneticisi'].includes(u.role)
       || String(u.department || '').toLocaleUpperCase('tr-TR').trim() === 'İNSAN KAYNAKLARI';
-    return all || u.role === 'Departman yöneticisi';
+    if (all || u.role === 'Departman yöneticisi') return true;
+    // "Yeni Rol" oluşturucusuyla bu modül seçilmiş özel roller: en az görüntüleme.
+    return window.__ikCan ? window.__ikCan('personel-butcesi') : false;
   }
 
   function fetchData() {
@@ -90,15 +92,34 @@
     document.querySelectorAll('[data-pb-year]').forEach(b => b.onclick = () => { S.year = b.dataset.pbYear; render(); });
     const ds = document.querySelector('#pb-dept');
     if (ds) ds.onchange = () => { S.dept = ds.value; render(); };
+    const exportBtn = document.querySelector('#pb-export');
+    if (exportBtn) exportBtn.onclick = () => exportBudget();
+  }
+  // Ekrandaki tablo — seçili departman veya "Tüm departmanlar" — Excel (.xlsx) olarak
+  // indirilir (kullanıcı isteği 2026-09).
+  async function exportBudget() {
+    const params = new URLSearchParams({ year: S.year });
+    if (S.dept) params.set('department', S.dept);
+    try {
+      const response = await fetch(`/api/personel-butcesi/export?${params.toString()}`);
+      if (!response.ok) { toast('Excel indirilemedi'); return; }
+      const blob = await response.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = `personel-butcesi-${S.year}-${S.dept || 'tum-departmanlar'}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (_) { toast('Excel indirilemedi'); }
   }
 
   function paint() {
     const d = S.data;
     const bEdit = !!(d.editable && d.canEdit && d.department);
-    const subtitle = `${d.year} — her ay: ${d.prevYear} bütçe · ${d.year} bütçe · ${d.year} gerçekleşen (İK girer)${d.scope === 'all' ? '' : ' · ' + (d.department || 'departmanınız')}`;
+    const subtitle = d.editable
+      ? `${d.year} — her ay: ${d.prevYear} bütçe · ${d.prevYear} gerçekleşen · ${d.year} bütçe (departman girer) · ${d.year} gerçekleşen (İK girer)${d.scope === 'all' ? '' : ' · ' + (d.department || 'departmanınız')}`
+      : `${d.year} — her ay: ${d.prevYear} gerçekleşen · ${d.year} bütçe · ${d.year} gerçekleşen (İK girer)${d.scope === 'all' ? '' : ' · ' + (d.department || 'departmanınız')}`;
 
+    const headerExtra = `${bEdit ? '<button class="btn" id="pb-add">+ Pozisyon ekle</button>' : ''}<button class="btn secondary" id="pb-export">⬇ Excel'e indir</button>`;
     $('#app').innerHTML = `
-      ${pbHeader(d, subtitle, bEdit ? '<button class="btn" id="pb-add">+ Pozisyon ekle</button>' : '')}
+      ${pbHeader(d, subtitle, headerExtra)}
       ${d.editable && d.canEdit && !d.department ? '<div class="card" style="padding:12px 16px;margin-bottom:12px;color:var(--muted)">Bütçe girişi için önce bir departman seçin.</div>' : ''}
       ${bEdit && d.draftSource ? `<div class="card pb-draftbar"><span>Pozisyon listesi <strong>${esc(d.draftSource)}</strong> yılından geldi — aylık sayılar <strong>boş</strong>, departman girer. Liste <strong>henüz kaydedilmedi</strong>.</span><button class="btn" id="pb-seed">Pozisyon listesini ${esc(d.year)}'ye ekle</button></div>` : ''}
       ${d.canEditActual ? '<div class="muted" style="font-size:12px;margin:0 2px 8px">Yeşil <strong>Grç</strong> hücrelerine o ayın gerçekleşen kişi sayısını girin — otomatik kaydedilir.</div>' : ''}
@@ -120,7 +141,20 @@
       } catch (err) { seed.disabled = false; toast(err.message); }
     };
     if (d.canEdit || d.canEditActual) bindTableRows(d);
+    fitScroll();
   }
+  // .pb-scroll'un yüksekliği sabit bir "calc(100vh - Xpx)" değeriyle hesaplanıyordu; bazı
+  // görünümlerde (ör. 2027 "Tüm departmanlar": "Bütçe girişi için departman seçin" uyarısı gibi
+  // ek banner'lar) üstteki içerik bu sabit değerden fazla yer kaplayınca .pb-scroll ekranın
+  // altına taşıyor ve <tfoot> sabitlemesi bu yüzden görünmüyordu/kayboluyordu. Gerçek kalan
+  // alan JS ile ölçülüp doğrudan uygulanır (kullanıcı isteği 2026-09).
+  function fitScroll() {
+    const el = document.querySelector('#pb-wrap .pb-scroll');
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    el.style.maxHeight = Math.max(160, window.innerHeight - top - 16) + 'px';
+  }
+  window.addEventListener('resize', () => { if (state.view === 'personel-butcesi') fitScroll(); });
 
   // list = [{budget:[12], actual:[12]|null}]
   function computeSub(list) {
@@ -139,79 +173,127 @@
     const positions = rows.filter(r => r.kind === 'position');
     const bEdit = !!(d.editable && d.canEdit && d.department);   // bütçe hücreleri düzenlenebilir
     const aEdit = !!d.canEditActual;                             // gerçekleşen hücreleri düzenlenebilir
+    // Bütçe yılında (d.editable) henüz o yılın gerçekleşeni olamayacağı için Y-Grç sütunu
+    // gösterilmez; onun yerine önceki yılın hem bütçesi hem gerçekleşeni referans gösterilir.
+    // Yıl "bugün"e ulaşıp artık gelecek olmaktan çıkınca (d.editable=false) sütun otomatik geri gelir.
+    const isFuture = !!d.editable;
     if (!positions.length && !bEdit) return '<div class="card"><div class="empty">Bu seçim için satır bulunamadı.</div></div>';
     const showDept = !d.department;
-    const py = String(d.prevYear || '').slice(2);
+    // Yıl + tür üst üste: hangi sütunun hangi yıla/bütçe-gerçekleşene ait olduğu tek bakışta anlaşılsın
+    const subTh = (yr, label, cls) => `<th class="${cls}" title="${esc(yr)} ${label}"><span class="pb-sc-yr">${esc(yr)}</span><span class="pb-sc-ty">${esc(label)}</span></th>`;
     const mtop = d.months.map((m, i) => `<th colspan="3" class="pb-mtop${i === (d.monthIdx ?? -1) ? ' now' : ''}">${esc(m.slice(0, 3).toLocaleUpperCase('tr-TR'))}</th>`).join('');
-    const triple = `<th class="pb-sc-p" title="${esc(d.prevYear)}">${esc(py)}</th><th class="pb-sc-b" title="${esc(d.year)} bütçe">Büt</th><th class="pb-sc-a" title="${esc(d.year)} gerçekleşen">Grç</th>`;
+    const triple = isFuture
+      ? subTh(d.prevYear, 'Bütçe', 'pb-sc-pb') + subTh(d.prevYear, 'Grç', 'pb-sc-p') + subTh(d.year, 'Bütçe', 'pb-sc-b')
+      : subTh(d.prevYear, 'Grç', 'pb-sc-p') + subTh(d.year, 'Bütçe', 'pb-sc-b') + subTh(d.year, 'Grç', 'pb-sc-a');
     const msub = d.months.map(() => triple).join('');
     const head = `<thead>
       <tr>${showDept ? '<th rowspan="2">DEP.</th>' : ''}<th rowspan="2" class="pb-pos">POZİSYON</th>${mtop}<th colspan="3" class="pb-mtop">TOPLAM</th><th colspan="3" class="pb-mtop">ORT.</th>${bEdit ? '<th rowspan="2"></th>' : ''}</tr>
       <tr>${msub}${triple}${triple}</tr>
     </thead>`;
 
-    let body;
+    let body, foot = '';
     if (bEdit) {
+      // Tek departman bütçe girişi ekranında da toplam satırı altta sabit kalır (kullanıcı isteği 2026-09).
       body = positions.map(r => posRowHtml(r, d, true, aEdit, showDept)).join('');
-      body += subRowHtml(d, showDept, true);
+      foot = subRowHtml(d, showDept, true);
     } else {
-      body = rows.map(r => r.kind === 'position'
+      // GENEL TOPLAM satırı <tfoot>'a ayrılır: <tbody> içindeki bir satırın altta sabitlenmesi
+      // (position:sticky) tarayıcılarda güvenilir çalışmıyor — sayfa açılışında görünmüyor,
+      // ancak en alta kaydırılınca ortaya çıkıp sonra kaybolabiliyordu. <thead>/<tfoot> için
+      // sticky, başlıktaki aynı mekanizmayla (position:sticky;top/bottom) güvenilir çalışır
+      // (kullanıcı isteği 2026-09).
+      body = rows.filter(r => r.kind !== 'grand').map(r => r.kind === 'position'
         ? posRowHtml(r, d, false, aEdit, showDept)
-        : nonPosRowHtml(r, d, showDept)).join('');
+        : nonPosRowHtml(r, d, aEdit, showDept)).join('');
+      foot = rows.filter(r => r.kind === 'grand').map(r => nonPosRowHtml(r, d, aEdit, showDept)).join('');
     }
-    return `<div class="card pb-card"><div class="pb-scroll"><table class="pb-table pb-3col${bEdit || aEdit ? ' pb-edit' : ''}">${head}<tbody>${body}</tbody></table></div></div>`;
+    return `<div class="card pb-card"><div class="pb-scroll"><table class="pb-table pb-3col${bEdit || aEdit ? ' pb-edit' : ''}">${head}<tbody>${body}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table></div></div>`;
   }
 
   function cellsHtml(r, d, bEdit, aEdit) {
+    const isFuture = !!d.editable;
     return d.months.map((m, i) => {
       const pv = (r.prevValues || [])[i] || '';
+      const pbv = (r.prevBudgetValues || [])[i] || '';
       const bvNum = (r.valuesNum || [])[i];
       const bvTxt = (r.values || [])[i] || (bvNum == null ? '' : fmt(bvNum));
       const avNum = (r.actualValuesNum || [])[i];
       const avTxt = avNum == null ? '' : fmt(avNum);
-      return `<td class="num pb-gy pb-mp" data-mp="${i}">${esc(pv)}</td>`
-        + (bEdit
-          ? `<td class="num pb-bd"><input class="pb-in pb-m" inputmode="decimal" data-m="${i}" value="${bvNum == null ? '' : fmt(bvNum)}"></td>`
-          : `<td class="num pb-bd">${esc(bvTxt)}</td>`)
-        + (aEdit
-          ? `<td class="num pb-gcell"><input class="pb-in pb-a" inputmode="decimal" data-m="${i}" value="${avTxt}"></td>`
-          : `<td class="num pb-ac">${esc(avTxt)}</td>`);
+      const budgetCell = bEdit
+        ? `<td class="num pb-bd"><input class="pb-in pb-m" inputmode="decimal" data-m="${i}" value="${bvNum == null ? '' : fmt(bvNum)}"></td>`
+        : `<td class="num pb-bd">${esc(bvTxt)}</td>`;
+      if (isFuture) {
+        return `<td class="num pb-gy pb-mpb" data-mpb="${i}">${esc(pbv)}</td><td class="num pb-gy pb-mp" data-mp="${i}">${esc(pv)}</td>${budgetCell}`;
+      }
+      const prevCell = `<td class="num pb-gy pb-mp" data-mp="${i}">${esc(pv)}</td>`;
+      const actCell = aEdit
+        ? `<td class="num pb-gcell"><input class="pb-in pb-a" inputmode="decimal" data-m="${i}" value="${avTxt}"></td>`
+        : `<td class="num pb-ac">${esc(avTxt)}</td>`;
+      return `${prevCell}${budgetCell}${actCell}`;
     }).join('');
   }
 
   function posRowHtml(r, d, bEdit, aEdit, showDept) {
     const bt = r.toplamNum != null ? r.toplamNum : (r.valuesNum || []).reduce((a, v) => a + (v || 0), 0);
     const budT = esc(r.toplam || fmt(bt || null)), budO = esc(r.ortalama || fmt(bt ? bt / 12 : null));
-    return `<tr class="pb-row" data-id="${r.id == null ? '' : r.id}" data-dept="${esc(r.dept || d.department || '')}" data-poz="${esc(r.pozisyon || r.label || '')}">
+    const isFuture = !!d.editable;
+    // Departmanın bütçe yılına sonradan eklediği pozisyon: kırmızı yazıyla ayırt edilir (kullanıcı isteği 2026-09).
+    const isManual = !!r.manual;
+    const tail = isFuture
+      ? `<td class="num pb-gy pb-tpb">${esc(r.prevBudgetToplam || '')}</td><td class="num pb-gy pb-tp">${esc(r.prevToplam || '')}</td><td class="num pb-tb">${budT}</td>`
+        + `<td class="num pb-gy pb-opb">${esc(r.prevBudgetOrt || '')}</td><td class="num pb-gy pb-op">${esc(r.prevOrt || '')}</td><td class="num pb-ob">${budO}</td>`
+      : `<td class="num pb-gy pb-tp">${esc(r.prevToplam || '')}</td><td class="num pb-tb">${budT}</td><td class="num pb-gcell pb-ta">${esc(r.actualToplam || '')}</td>`
+        + `<td class="num pb-gy pb-op">${esc(r.prevOrt || '')}</td><td class="num pb-ob">${budO}</td><td class="num pb-gcell pb-oa">${esc(r.actualOrt || '')}</td>`;
+    return `<tr class="pb-row${isManual ? ' pb-manual' : ''}" data-id="${r.id == null ? '' : r.id}" data-dept="${esc(r.dept || d.department || '')}" data-poz="${esc(r.pozisyon || r.label || '')}" data-sira="${r.sira != null ? r.sira : ''}">
       ${showDept ? `<td>${esc(r.dept || '')}</td>` : ''}
       <td class="pb-pos">${bEdit ? `<input class="pb-in pb-pos-in" data-k="pozisyon" value="${esc(r.pozisyon || '')}" placeholder="Pozisyon adı">` : esc(r.pozisyon || r.label || '')}</td>
       ${cellsHtml(r, d, bEdit, aEdit)}
-      <td class="num pb-gy pb-tp">${esc(r.prevToplam || '')}</td><td class="num pb-tb">${budT}</td><td class="num pb-gcell pb-ta">${esc(r.actualToplam || '')}</td>
-      <td class="num pb-gy pb-op">${esc(r.prevOrt || '')}</td><td class="num pb-ob">${budO}</td><td class="num pb-gcell pb-oa">${esc(r.actualOrt || '')}</td>
-      ${bEdit ? '<td><button class="btn ghost danger-text pb-del" title="Sil">×</button></td>' : ''}
+      ${tail}
+      ${bEdit ? `<td>${isManual ? '<button class="btn ghost danger-text pb-del" title="Sil">×</button>' : ''}</td>` : ''}
     </tr>`;
   }
 
-  function nonPosRowHtml(r, d, showDept) {
+  function nonPosRowHtml(r, d, aEdit, showDept) {
     const cls = r.kind === 'grand' ? 'pb-grand' : 'pb-sub';
-    const mc = (r.values || Array(12).fill('')).map((v, i) => `<td class="pb-gy num pb-mp">${esc((r.prevValues || [])[i] || '')}</td><td class="num pb-bd">${esc(v || '')}</td><td class="num pb-ac">${esc((r.actualValues || [])[i] || '')}</td>`).join('');
-    return `<tr class="${cls}">
+    const isFuture = !!d.editable;
+    // Bu alt-toplam, o an düzenlenmekte olan (seçili) departmana aitse ve tabloda düzenlenebilir
+    // en az bir sütun varsa (Gerçekleşen ve/veya — Sistem yöneticisi için — Bütçe), recalcSub'ın
+    // hedeflediği id/data-* iskeletini taşır ve satırlar değiştikçe anlık güncellenir
+    // (kullanıcı isteği 2026-09: "formüllü şekilde güncellesin").
+    // "Tümü" görünümünde birden çok alt-toplam satırı + tek bir GENEL TOPLAM satırı aynı anda
+    // görünebilir — her biri kendi departmanına ait pozisyon satırlarından (GENEL TOPLAM için
+    // tümünden) anlık yeniden hesaplanır (kullanıcı isteği 2026-09: "genel toplam sütununa
+    // yansımıyor"). recalcTotals hangi sütun grubunun (PY Grç/Bütçe/Y Grç) gerçekten düzenlenebilir
+    // olduğunu DOM'dan kendi tespit eder; burada yalnızca hedef data-* iskeleti bırakılır.
+    const isLive = !isFuture;
+    const liveAttr = isLive ? ` data-live-dept="${esc(r.dept || '')}"` : '';
+    const mc = (r.values || Array(12).fill('')).map((v, i) => isFuture
+      ? `<td class="pb-gy num pb-mpb">${esc((r.prevBudgetValues || [])[i] || '')}</td><td class="pb-gy num pb-mp">${esc((r.prevValues || [])[i] || '')}</td><td class="num pb-bd">${esc(v || '')}</td>`
+      : `<td class="pb-gy num pb-mp"${isLive ? ` data-sp="${i}"` : ''}>${esc((r.prevValues || [])[i] || '')}</td><td class="num pb-bd"${isLive ? ` data-sb="${i}"` : ''}>${esc(v || '')}</td><td class="num pb-ac"${isLive ? ` data-sa="${i}"` : ''}>${esc((r.actualValues || [])[i] || '')}</td>`
+    ).join('');
+    const tail = isFuture
+      ? `<td class="num pb-gy pb-tpb">${esc(r.prevBudgetToplam || '')}</td><td class="num pb-gy pb-tp">${esc(r.prevToplam || '')}</td><td class="num pb-bd pb-tb">${esc(r.toplam || '')}</td>`
+        + `<td class="num pb-gy pb-opb">${esc(r.prevBudgetOrt || '')}</td><td class="num pb-gy pb-op">${esc(r.prevOrt || '')}</td><td class="num pb-bd pb-ob">${esc(r.ortalama || '')}</td>`
+      : `<td class="num pb-gy pb-tp"${isLive ? ' data-stp="1"' : ''}>${esc(r.prevToplam || '')}</td><td class="num pb-bd pb-tb"${isLive ? ' data-stb="1"' : ''}>${esc(r.toplam || '')}</td><td class="num pb-ac pb-ta"${isLive ? ' data-sta="1"' : ''}>${esc(r.actualToplam || '')}</td>`
+        + `<td class="num pb-gy pb-op"${isLive ? ' data-sop="1"' : ''}>${esc(r.prevOrt || '')}</td><td class="num pb-bd pb-ob"${isLive ? ' data-sob="1"' : ''}>${esc(r.ortalama || '')}</td><td class="num pb-ac pb-oa"${isLive ? ' data-soa="1"' : ''}>${esc(r.actualOrt || '')}</td>`;
+    return `<tr class="${cls}"${liveAttr}>
       ${showDept ? '<td></td>' : ''}
       <td class="pb-pos">${esc(r.label || '')}</td>
       ${mc}
-      <td class="num pb-gy pb-tp">${esc(r.prevToplam || '')}</td><td class="num pb-bd pb-tb">${esc(r.toplam || '')}</td><td class="num pb-ac pb-ta">${esc(r.actualToplam || '')}</td>
-      <td class="num pb-gy pb-op">${esc(r.prevOrt || '')}</td><td class="num pb-bd pb-ob">${esc(r.ortalama || '')}</td><td class="num pb-ac pb-oa">${esc(r.actualOrt || '')}</td>
+      ${tail}
     </tr>`;
   }
 
   function subRowHtml(d, showDept) {
-    const cells = d.months.map((_, i) => `<td class="pb-gy num pb-mp" data-sp="${i}"></td><td class="num pb-bd" data-sb="${i}"></td><td class="num pb-ac" data-sa="${i}"></td>`).join('');
+    // Bu fonksiyon yalnızca bEdit (=> d.editable) durumunda çağrılır: bütçe yılında Y-Grç yok,
+    // onun yerine önceki yılın bütçe + gerçekleşen sütunları referans olarak gösterilir.
+    const cells = d.months.map((_, i) => `<td class="pb-gy num pb-mpb" data-spb="${i}"></td><td class="pb-gy num pb-mp" data-sp="${i}"></td><td class="num pb-bd" data-sb="${i}"></td>`).join('');
     return `<tr class="pb-sub" id="pb-subrow">
       ${showDept ? '<td></td>' : ''}
       <td class="pb-pos">${esc(d.department || '')} — Toplam</td>
       ${cells}
-      <td class="num pb-gy pb-tp" id="pb-subTp"></td><td class="num pb-bd pb-tb" id="pb-subTb"></td><td class="num pb-ac pb-ta" id="pb-subTa"></td>
-      <td class="num pb-gy pb-op" id="pb-subOp"></td><td class="num pb-bd pb-ob" id="pb-subOb"></td><td class="num pb-ac pb-oa" id="pb-subOa"></td>
+      <td class="num pb-gy pb-tpb" id="pb-subTpb"></td><td class="num pb-gy pb-tp" id="pb-subTp"></td><td class="num pb-bd pb-tb" id="pb-subTb"></td>
+      <td class="num pb-gy pb-opb" id="pb-subOpb"></td><td class="num pb-gy pb-op" id="pb-subOp"></td><td class="num pb-bd pb-ob" id="pb-subOb"></td>
       <td></td>
     </tr>`;
   }
@@ -222,11 +304,24 @@
   }
   function bindRow(row, d) {
     row.querySelectorAll('.pb-in').forEach(inp => {
-      inp.addEventListener('input', () => { recalcRow(row); recalcSub(d); scheduleSave(row, inp); });
+      inp.addEventListener('input', () => { recalcRow(row); recalcSub(d); recalcTotals(); scheduleSave(row, inp); });
       inp.addEventListener('blur', () => flushSave(row));
+      // Sayı girip Enter: bir alttaki satırda aynı ay sütununa (kaydırma yapmadan) geç — tablo girişini hızlandırır.
+      if (inp.classList.contains('pb-m') || inp.classList.contains('pb-a')) {
+        inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); focusCellBelow(inp); } });
+      }
     });
+    // Yalnızca departmanın kendi eklediği (kırmızı/"manual") pozisyonlarda Sil butonu var.
     const del = row.querySelector('.pb-del');
     if (del) del.onclick = () => removeRow(row, d);
+  }
+  function focusCellBelow(inp) {
+    const row = inp.closest('tr');
+    const next = row && row.nextElementSibling;
+    if (!next) return;
+    const cls = inp.classList.contains('pb-m') ? '.pb-m' : '.pb-a';
+    const target = next.querySelector(`${cls}[data-m="${inp.dataset.m}"]`);
+    if (target) { target.focus(); target.select(); }
   }
   const rowBudget = row => [...row.querySelectorAll('.pb-m')].map(i => parseNum(i.value));
   const rowActual = row => [...row.querySelectorAll('.pb-a')].map(i => parseNum(i.value));
@@ -251,23 +346,26 @@
     const sr = document.querySelector('#pb-subrow');
     if (!sr) return;
     const months = (d || S.data).months;
-    const prevM = Array(12).fill(0), budM = Array(12).fill(0), actM = Array(12).fill(0);
-    let hasPrev = false, hasAct = false;
+    const prevBM = Array(12).fill(0), prevM = Array(12).fill(0), budM = Array(12).fill(0), actM = Array(12).fill(0);
+    let hasPrevB = false, hasPrev = false, hasAct = false;
     document.querySelectorAll('#pb-wrap tr.pb-row').forEach(row => {
+      row.querySelectorAll('[data-mpb]').forEach(td => { const v = parseNum(td.textContent); if (v != null) { prevBM[+td.dataset.mpb] += v; hasPrevB = true; } });
       row.querySelectorAll('[data-mp]').forEach(td => { const v = parseNum(td.textContent); if (v != null) { prevM[+td.dataset.mp] += v; hasPrev = true; } });
       rowBudget(row).forEach((v, i) => { if (v) budM[i] += v; });
       const a = rowActual(row);
       if (a.length) a.forEach((v, i) => { if (v != null) { actM[i] += v; hasAct = true; } });
     });
     months.forEach((_, i) => {
-      const p = sr.querySelector(`[data-sp="${i}"]`), b = sr.querySelector(`[data-sb="${i}"]`), a = sr.querySelector(`[data-sa="${i}"]`);
+      const pb = sr.querySelector(`[data-spb="${i}"]`), p = sr.querySelector(`[data-sp="${i}"]`), b = sr.querySelector(`[data-sb="${i}"]`), a = sr.querySelector(`[data-sa="${i}"]`);
+      if (pb) pb.textContent = hasPrevB ? fmt(prevBM[i] || null) : '';
       if (p) p.textContent = hasPrev ? fmt(prevM[i] || null) : '';
       if (b) b.textContent = fmt(budM[i] || null);
       if (a) a.textContent = hasAct ? fmt(actM[i] || null) : '';
     });
     const s = arr => arr.reduce((x, v) => x + v, 0);
-    const pT = s(prevM), bT = s(budM), aT = s(actM);
+    const pbT = s(prevBM), pT = s(prevM), bT = s(budM), aT = s(actM);
     const set = (id, val) => { const el = document.querySelector('#' + id); if (el) el.textContent = val; };
+    set('pb-subTpb', hasPrevB ? fmt(pbT || null) : ''); set('pb-subOpb', hasPrevB && pbT ? fmt(pbT / 12) : '');
     set('pb-subTp', hasPrev ? fmt(pT || null) : ''); set('pb-subOp', hasPrev && pT ? fmt(pT / 12) : '');
     set('pb-subTb', fmt(bT || null)); set('pb-subOb', bT ? fmt(bT / 12) : '');
     set('pb-subTa', hasAct ? fmt(aT || null) : ''); set('pb-subOa', hasAct && aT ? fmt(aT / 12) : '');
@@ -275,6 +373,35 @@
   function recalcAll(d) {
     document.querySelectorAll('#pb-wrap tr.pb-row').forEach(recalcRow);
     recalcSub(d);
+    recalcTotals();
+  }
+  // Excel yılı (2025/2026 vb.) tablosundaki alt-toplam(lar) + GENEL TOPLAM satırı — "Tümü"
+  // görünümünde birden fazla departman alt-toplamı aynı anda görünebileceğinden recalcSub'ın
+  // (yalnız tek bir #pb-subrow'a yazan) aksine, sayfadaki TÜM data-live-dept satırlarını kendi
+  // departmanının (GENEL TOPLAM için tüm departmanların) pozisyon satırlarından yeniden hesaplar.
+  // Yalnızca Gerçekleşen (Y Grç) sütununda gerçekten bir giriş kutusu varsa güncellenir — yoksa
+  // sunucudan gelen statik değer olduğu gibi kalır (kullanıcı isteği 2026-09).
+  function recalcTotals() {
+    const liveRows = [...document.querySelectorAll('#pb-wrap tr[data-live-dept]')];
+    if (!liveRows.length) return;
+    const posRows = [...document.querySelectorAll('#pb-wrap tr.pb-row')];
+    if (!posRows.some(r => r.querySelector('.pb-a'))) return;
+    liveRows.forEach(sr => {
+      const isGrand = sr.classList.contains('pb-grand');
+      const dept = sr.dataset.liveDept;
+      const members = isGrand ? posRows : posRows.filter(row => (row.dataset.dept || '') === dept);
+      const actM = Array(12).fill(0);
+      let hasAct = false;
+      members.forEach(row => {
+        rowActual(row).forEach((v, i) => { if (v != null) { actM[i] += v; hasAct = true; } });
+      });
+      for (let i = 0; i < 12; i++) {
+        const el = sr.querySelector(`[data-sa="${i}"]`); if (el) el.textContent = hasAct ? fmt(actM[i] || null) : '';
+      }
+      const aT = actM.reduce((x, v) => x + v, 0);
+      const set = (sel, val) => { const el = sr.querySelector(sel); if (el) el.textContent = val; };
+      set('[data-sta]', hasAct ? fmt(aT || null) : ''); set('[data-soa]', hasAct && aT ? fmt(aT / 12) : '');
+    });
   }
 
   const rowKey = row => row.dataset.id || row.dataset.tmp || (row.dataset.tmp = 't' + Math.random().toString(36).slice(2));
@@ -306,7 +433,8 @@
     try {
       const base = '/api/personel-butcesi/' + S.data.year + '/entries';
       const hdr = { 'Content-Type': 'application/json' };
-      const body = JSON.stringify({ department: S.data.department, pozisyon, aylar });
+      const sira = row.dataset.sira !== '' && row.dataset.sira != null ? Number(row.dataset.sira) : undefined;
+      const body = JSON.stringify({ department: S.data.department, pozisyon, aylar, ...(sira != null ? { sira } : {}) });
       const saved = id ? await api(base + '/' + id, { method: 'PUT', headers: hdr, body })
         : await api(base, { method: 'POST', headers: hdr, body });
       if (!id && saved && saved.id) row.dataset.id = saved.id;
@@ -333,9 +461,16 @@
   function addRow() {
     const sub = document.querySelector('#pb-subrow');
     if (!sub) { render(); return; }
-    const empty = { id: null, pozisyon: '', dept: S.data.department, values: [], valuesNum: Array(12).fill(null), prevValues: Array(12).fill(''), actualValuesNum: Array(12).fill(null) };
-    sub.insertAdjacentHTML('beforebegin', posRowHtml(empty, S.data, true, !!S.data.canEditActual, !S.data.department));
-    const row = sub.previousElementSibling;
+    // Toplam satırı artık <tfoot>'ta (sabit) — yeni satır <tbody>'nin sonuna eklenir
+    // (kullanıcı isteği 2026-09).
+    const tbody = document.querySelector('#pb-wrap tbody');
+    if (!tbody) { render(); return; }
+    // Yeni pozisyon listenin en altında kalsın diye mevcut en yüksek sıradan bir fazlası verilir
+    // (yalnızca sayfa içi ekleme sırası değil, kayıttan sonra sayfa yenilense de sırası korunur).
+    const maxSira = Math.max(-1, ...[...document.querySelectorAll('#pb-wrap tr.pb-row')].map(r => Number(r.dataset.sira) || 0));
+    const empty = { id: null, pozisyon: '', dept: S.data.department, values: [], valuesNum: Array(12).fill(null), prevValues: Array(12).fill(''), actualValuesNum: Array(12).fill(null), manual: true, sira: maxSira + 1 };
+    tbody.insertAdjacentHTML('beforeend', posRowHtml(empty, S.data, true, !!S.data.canEditActual, !S.data.department));
+    const row = tbody.lastElementChild;
     bindRow(row, S.data);
     row.querySelector('.pb-pos-in').focus();
   }
@@ -455,8 +590,11 @@
       <tr><th rowspan="2" class="pb-pos">DEPARTMAN</th>${monthTop}<th colspan="4" class="pb-ttop">TOPLAM</th></tr>
       <tr>${monthSub}<th>${esc(d.prevYear.slice(2))} G</th><th>Bütçe</th><th>Grç</th><th>Fark</th></tr>
     </thead>`;
-    const body = rows.map(r => bgRowHtml(r, d)).join('');
-    return `<div class="card pb-card"><div class="pb-scroll"><table class="pb-table pb-bg-table">${head}<tbody>${body}</tbody></table></div></div>`;
+    // GENEL TOPLAM satırı <tfoot>'a ayrılır — <tbody> içinde position:sticky:bottom
+    // güvenilir çalışmadığı için (kullanıcı isteği 2026-09, bkz. tableHtml).
+    const body = rows.filter(r => !r.grand).map(r => bgRowHtml(r, d)).join('');
+    const foot = rows.filter(r => r.grand).map(r => bgRowHtml(r, d)).join('');
+    return `<div class="card pb-card"><div class="pb-scroll"><table class="pb-table pb-bg-table">${head}<tbody>${body}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ''}</table></div></div>`;
   }
   function bgRowHtml(r, d) {
     const cells = d.months.map((m, i) => `

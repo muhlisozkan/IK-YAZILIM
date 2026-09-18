@@ -5,54 +5,71 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#1b3a62" />
   <title>Hilton Dalaman Otel Yönetim Sistemi</title>
+  <script>try{var t=localStorage.getItem('ik_theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}</script>
   <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="styles.css?v=83" />
+  <link rel="stylesheet" href="styles.css?v=127" />
+  <link rel="stylesheet" href="/login-hotel.css?v=20260917-remember" />
 </head>
 <body>
   <div class="auth-overlay" id="login-overlay">
-    <div class="login-card">
-      <div class="login-brand"><span class="brand-mark">HD</span><div><strong>Hilton Dalaman</strong><small>Otel Yönetim Sistemi</small></div></div>
-      <h1>Oturum açın</h1>
-      <p>Otel yönetim sistemine devam etmek için kullanıcı bilgilerinizle giriş yapın.</p>
+    <div class="auth-loading" id="auth-loading"><span class="brand-mark">HD</span><div class="auth-spinner"></div></div>
+    <div class="login-card" id="login-card" hidden>
+      <div class="hotel-identity"><img src="/hilton-logo.png" alt="Hilton Dalaman Sarıgerme Resort & Golf"><strong>Hilton Dalaman</strong><small>Otel Yönetim Sistemi</small></div>
+      <div class="hotel-topline"><span>Yönetim portalı</span><span>TR / Türkçe</span></div>
+      <h1>Hoş geldiniz.</h1>
+      <p>Devam etmek için kurumsal hesabınızla giriş yapın.</p>
       <form id="login-form">
         <div class="field"><label for="login-username">Kullanıcı adı</label><input class="input" id="login-username" name="username" autocomplete="username" required autofocus></div>
         <div class="field"><label for="login-password">Şifre</label><input class="input" id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+        <div class="login-remember"><label><input type="checkbox" id="login-remember" name="remember"> Beni hatırla</label></div>
         <div class="login-error" id="login-error" role="alert"></div>
         <button class="btn login-submit" type="submit">Giriş yap</button>
       </form>
+      <p class="hotel-footer">Yalnızca yetkili kullanıcılar içindir.<br>Erişim desteği için bilgi işlem birimiyle iletişime geçin.</p>
     </div>
   </div>
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark">HD</span><div><strong>Hilton Dalaman</strong><small>Otel Yönetim Sistemi</small></div></div>
     <nav>
-      <button class="nav-item active" data-view="dashboard" onclick="window.__ikNavigate('dashboard')">▦ <span>Genel Bakış</span></button>
-      <button class="nav-item" data-view="attendance" onclick="window.__ikNavigate('attendance')">◫ <span>Puantaj ve Devam</span></button>
-      <button class="nav-item" data-view="shifts" onclick="window.__ikNavigate('shifts')">◷ <span>Vardiya Planı</span></button>
-      <button class="nav-item" data-view="leave" onclick="window.__ikNavigate('leave')">◷ <span>İzin Yönetimi</span></button>
-      <button class="nav-item" data-view="birthdays" onclick="window.__ikNavigate('birthdays')">✺ <span>Doğum Günleri</span></button>
-      <button class="nav-item" data-view="documents" onclick="window.__ikNavigate('documents')">▤ <span>Özlük Dosyaları</span></button>
-      <button class="nav-item" data-view="training" onclick="window.__ikNavigate('training')">◆ <span>Eğitim ve Gelişim</span></button>
-      <button class="nav-item" data-view="performance" onclick="window.__ikNavigate('performance')">★ <span>Performans</span></button>
-      <button class="nav-item" data-view="survey" onclick="window.__ikNavigate('survey')">▤ <span>Anket</span></button>
-      <button class="nav-item" data-view="employees" onclick="window.__ikNavigate('employees')">♙ <span>Çalışanlar</span></button>
-      <button class="nav-item" data-view="departments" onclick="window.__ikNavigate('departments')">▤ <span>Departmanlar</span></button>
-      <button class="nav-item" data-view="recruitment" onclick="window.__ikNavigate('recruitment')">♧ <span>CV Yönetimi</span></button>
-      <button class="nav-item" data-view="reports" onclick="window.__ikNavigate('reports')">▥ <span>Raporlar</span></button>
-      <button class="nav-item" data-view="security" onclick="window.__ikNavigate('security')">♢ <span>Güvenlik</span></button>
-      <button class="nav-item" data-view="lostfound" onclick="window.__ikNavigate('lostfound')">▱ <span>Kayıp Eşya</span></button>
+      <button class="nav-item active" data-view="dashboard" onclick="window.__ikNavigate('dashboard')"><svg class="nav-svg" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> <span>Genel Bakış</span></button>
+      <button class="nav-item" data-view="security" onclick="window.__ikNavigate('security')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/></svg> <span>Güvenlik</span></button>
+      <button class="nav-item" data-view="shifts" onclick="window.__ikNavigate('shifts')"><svg class="nav-svg" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/></svg> <span>Vardiya Planı</span></button>
+      <button class="nav-item" data-view="attendance" onclick="window.__ikNavigate('attendance')"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> <span>Puantaj ve Devam</span></button>
+      <button class="nav-item" data-view="leave" onclick="window.__ikNavigate('leave')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg> <span>İzin Yönetimi</span></button>
+      <button class="nav-item" data-view="birthdays" onclick="window.__ikNavigate('birthdays')"><svg class="nav-svg" viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg> <span>Doğum Günleri</span></button>
+      <button class="nav-item" data-view="announcements" onclick="window.__ikNavigate('announcements')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M3 11v2a2 2 0 0 0 2 2h1l3 4v-4h8a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v0"/><path d="M3 11l4-4h10"/></svg> <span>Duyurular</span></button>
+      <button class="nav-item" data-view="cafeteria-menu" onclick="window.__ikNavigate('cafeteria-menu')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M6 2v7a2 2 0 0 0 4 0V2"/><path d="M8 2v20"/><path d="M17 2c-2 0-3 2-3 5v3a2 2 0 0 0 2 2h1v10"/></svg> <span>Yemekhane Menüsü</span></button>
+      <button class="nav-item" data-view="documents" onclick="window.__ikNavigate('documents')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg> <span>Özlük Dosyaları</span></button>
+      <button class="nav-item" data-view="training" onclick="window.__ikNavigate('training')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M2 9l10-5 10 5-10 5-10-5z"/><path d="M6 11v5c0 1 3 3 6 3s6-2 6-3v-5"/></svg> <span>Eğitim ve Gelişim</span></button>
+      <button class="nav-item" data-view="performance" onclick="window.__ikNavigate('performance')"><svg class="nav-svg" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/></svg> <span>Performans</span></button>
+      <button class="nav-item" data-view="survey" onclick="window.__ikNavigate('survey')"><svg class="nav-svg" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><rect x="9" y="1" width="6" height="4" rx="1"/><line x1="8" y1="11" x2="16" y2="11"/><line x1="8" y1="15" x2="16" y2="15"/></svg> <span>Anket</span></button>
+      <button class="nav-item" data-view="employees" onclick="window.__ikNavigate('employees')"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.5 2.5-6 5.5-6s5.5 2.5 5.5 6"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 20c0-2.5 1-4.5 3-5.2"/></svg> <span>Çalışanlar</span></button>
+      <button class="nav-item" data-view="departments" onclick="window.__ikNavigate('departments')"><svg class="nav-svg" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><line x1="8" y1="7" x2="8" y2="7.01"/><line x1="12" y1="7" x2="12" y2="7.01"/><line x1="16" y1="7" x2="16" y2="7.01"/><line x1="8" y1="11" x2="8" y2="11.01"/><line x1="12" y1="11" x2="12" y2="11.01"/><line x1="16" y1="11" x2="16" y2="11.01"/><path d="M9 21v-4h6v4"/></svg> <span>Departmanlar</span></button>
+      <button class="nav-item" data-view="recruitment" onclick="window.__ikNavigate('recruitment')"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.5 2.5-6 6-6s6 2.5 6 6"/><line x1="18" y1="8" x2="18" y2="14"/><line x1="15" y1="11" x2="21" y2="11"/></svg> <span>CV Yönetimi</span></button>
+      <button class="nav-item" data-view="reports" onclick="window.__ikNavigate('reports')"><svg class="nav-svg" viewBox="0 0 24 24"><line x1="5" y1="20" x2="5" y2="11"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="19" y1="20" x2="19" y2="14"/></svg> <span>Raporlar</span></button>
+      <button class="nav-item" data-view="lostfound" onclick="window.__ikNavigate('lostfound')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v9l9 5 9-5V8"/><path d="M12 13v9"/></svg> <span>Kayıp Eşya</span></button>
+      <div class="nav-group" id="alacarte-nav-group">
+        <button class="nav-item nav-group-toggle" data-view="alacarte-group" type="button" onclick="window.__ikToggleAlacarteMenu(event)"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M6 2v7a2 2 0 0 0 4 0V2"/><path d="M8 2v20"/><path d="M17 2c-2 0-3 2-3 5v3a2 2 0 0 0 2 2h1v10"/></svg> <span>A La Carte Rezervasyon</span><i class="nav-caret">▾</i></button>
+        <div class="nav-sub">
+          <button class="nav-item nav-sub-item" data-view="alacarte-restaurants" onclick="window.__ikNavigate('alacarte-restaurants')"><span>Restoranlar</span></button>
+          <button class="nav-item nav-sub-item" data-view="alacarte-reservations" onclick="window.__ikNavigate('alacarte-reservations')"><span>Rezervasyonlar</span></button>
+        </div>
+      </div>
+      <button class="nav-item" data-view="spa-reservations" onclick="window.__ikNavigate('spa-reservations')"><svg class="nav-svg" viewBox="0 0 24 24"><path d="M12 2c2 3-2 4-2 7a4 4 0 0 0 8 0c0-1.5-1-2.5-2-3"/><path d="M8 13a5 5 0 0 0 8 0"/><path d="M4 18c2-1.5 4-1.5 6 0s4 1.5 6 0s4-1.5 4 0"/></svg> <span>Spa Rezervasyon</span></button>
       <div class="nav-group" id="users-nav-group">
-        <button class="nav-item nav-group-toggle" data-view="users-group" type="button" onclick="window.__ikToggleUsersMenu()">♙ <span>Kullanıcı ve Yetkiler</span><i class="nav-caret">▾</i></button>
+        <button class="nav-item nav-group-toggle" data-view="users-group" type="button" onclick="window.__ikToggleUsersMenu(event)"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="8" cy="14" r="4.5"/><path d="M11.5 10.5L20 2"/><path d="M16 6l3 3"/><path d="M13.5 8.5l2.5 2.5"/></svg> <span>Kullanıcı ve Yetkiler</span><i class="nav-caret">▾</i></button>
         <div class="nav-sub">
           <button class="nav-item nav-sub-item" data-view="users" onclick="window.__ikNavigate('users')"><span>Kullanıcılar</span></button>
           <button class="nav-item nav-sub-item" data-view="approval-matrix" onclick="window.__ikNavigate('approval-matrix')"><span>Onay Matrisi</span></button>
           <button class="nav-item nav-sub-item" data-view="smtp-settings" onclick="window.__ikNavigate('smtp-settings')"><span>E-posta Ayarları</span></button>
           <button class="nav-item nav-sub-item" data-view="sms-settings" onclick="window.__ikNavigate('sms-settings')"><span>SMS Entegrasyonu</span></button>
+          <button class="nav-item nav-sub-item" data-view="vehicle-definitions" onclick="window.__ikNavigate('vehicle-definitions')"><span>Araç Tanımları</span></button>
         </div>
       </div>
-      <button class="nav-item" data-view="personel-butcesi" onclick="window.__ikNavigate('personel-butcesi')">₺ <span>Personel Bütçesi</span></button>
-      <button class="nav-item" data-view="guncel-tablo" onclick="window.__ikNavigate('guncel-tablo')">▦ <span>Güncel Tablo</span></button>
+      <button class="nav-item" data-view="personel-butcesi" onclick="window.__ikNavigate('personel-butcesi')"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v10"/><path d="M15 9.5c0-1.4-1.3-2.5-3-2.5s-3 1.1-3 2.5c0 3 6 1.5 6 4.5 0 1.4-1.3 2.5-3 2.5s-3-1.1-3-2.5"/></svg> <span>Personel Bütçesi</span></button>
+      <button class="nav-item" data-view="guncel-tablo" onclick="window.__ikNavigate('guncel-tablo')"><svg class="nav-svg" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg> <span>Güncel Tablo</span></button>
       <div class="nav-group" id="kys-nav-group">
-        <button class="nav-item nav-group-toggle" data-view="kys-group" type="button" onclick="window.__ikToggleKysMenu()">◈ <span>Kalite Yönetim Sistemi</span><i class="nav-caret">▾</i></button>
+        <button class="nav-item nav-group-toggle" data-view="kys-group" type="button" onclick="window.__ikToggleKysMenu(event)"><svg class="nav-svg" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M8.5 13.5L7 22l5-3 5 3-1.5-8.5"/></svg> <span>Kalite Yönetim Sistemi</span><i class="nav-caret">▾</i></button>
         <div class="nav-sub">
           <button class="nav-item nav-sub-item" data-view="kys-eys" onclick="window.__ikNavigate('kys-eys')"><span>Entegre Yönetim Sistemi</span></button>
           <button class="nav-item nav-sub-item" data-view="kys-dokuman" onclick="window.__ikNavigate('kys-dokuman')"><span>Doküman Yönetimi</span></button>
@@ -74,37 +91,43 @@
     <section id="app" class="content"></section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="auth.js?v=2"></script>
+  <script src="auth.js?v=6"></script>
   <script src="server-store.js?v=8"></script>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=15"></script>
   <script src="combobox.js?v=1"></script>
-  <script src="enhancements.js?v=15"></script>
+  <script src="enhancements.js?v=16"></script>
   <script src="navigation-fix.js?v=2"></script>
-  <script src="mobile-nav.js?v=1"></script>
+  <script src="mobile-nav.js?v=2"></script>
   <script src="leave-enhancements.js?v=18"></script>
   <script src="attendance.js?v=5"></script>
   <script src="approval.js?v=7"></script>
-  <script src="users.js?v=13"></script>
-  <script src="permissions.js?v=27"></script>
+  <script src="users.js?v=22"></script>
+  <script src="permissions.js?v=42"></script>
   <script src="departments.js?v=2"></script>
   <script src="expense-advance.js?v=5"></script>
-  <script src="shifts.js?v=10"></script>
+  <script src="shifts.js?v=13"></script>
   <script src="reports-enhancements.js?v=5"></script>
-  <script src="notifications.js?v=22"></script>
+  <script src="notifications.js?v=24"></script>
+  <script src="vehicle-definitions.js?v=1"></script>
   <script src="documents.js?v=2"></script>
   <script src="birthdays.js?v=1"></script>
+  <script src="announcements.js?v=1"></script>
+  <script src="cafeteria-menu.js?v=7"></script>
   <script src="recruitment.js?v=3"></script>
   <script src="performance.js?v=3"></script>
   <script src="training.js?v=2"></script>
   <script src="training-dept.js?v=2"></script>
-  <script src="employee-details.js?v=4"></script>
-  <script src="attendance-paged.js?v=13"></script>
+  <script src="employee-details.js?v=5"></script>
+  <script src="attendance-paged.js?v=16"></script>
   <script src="attendance-controls.js?v=3"></script>
-  <script src="hms.js?v=16"></script>
-  <script src="survey.js?v=26"></script>
-  <script src="personel-butcesi.js?v=10"></script>
+  <script src="hms.js?v=47"></script>
+  <script src="survey.js?v=28"></script>
+  <script src="personel-butcesi.js?v=25"></script>
   <script src="guncel-tablo.js?v=3"></script>
-  <script src="kys.js?v=17"></script>
-  <script src="dashboard.js?v=7"></script>
+  <script src="kys.js?v=24"></script>
+  <script src="dashboard.js?v=11"></script>
+  <script src="alacarte.js?v=16"></script>
+  <script src="spa.js?v=1"></script>
+  <script src="i18n.js?v=3"></script>
 </body>
 </html>

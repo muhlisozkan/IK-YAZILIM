@@ -22,3 +22,13 @@ imports/
 
 # SMB paylaşım kimlik bilgileri — asla repoya girmemeli
 .smb-eys-credentials
+.aider*
+
+
+# Sunucuya/Mac’e özel çalışma dosyaları ve ekran görüntüleri
+/Desktop/
+/Ekran Resmi *.png
+*.before*
+
+# İçinde yerel SMB parolası bulunan kurulum betiği
+/setup-mac-share.sh

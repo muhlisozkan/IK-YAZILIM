@@ -333,12 +333,27 @@
       <div class="form-grid" style="margin-top:14px">
         <div class="field"><label>Doğum günü SMS'ini etkinleştir</label><select class="select" id="sms-bday-enabled"><option value="true" ${s.birthday_enabled?'selected':''}>Etkin</option><option value="false" ${!s.birthday_enabled?'selected':''}>Kapalı</option></select></div>
         <div class="field" style="grid-column:1/-1"><label>Mesaj taslağı</label><textarea class="input" id="sms-bday-template" rows="3" style="width:100%">${esc(s.birthday_message_template||'')}</textarea><small class="muted">Ad-soyad sistemden otomatik eklenir ("Sayın Ahmet Yılmaz, " + buraya yazdığınız metin) — yalnızca kutlama metnini yazın</small></div>
+        <div class="field"><label>Test numarası</label><input class="input" id="sms-bday-test-recipient" type="tel" value="${esc(window.__ikCurrentUser?.()?.phone||'')}" placeholder="5xxxxxxxxx"><small class="muted" id="sms-bday-test-match">&nbsp;</small></div>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" id="sms-save-bday">Doğum günü ayarlarını kaydet</button></div>`;
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px"><button class="btn secondary" id="sms-test-bday">Doğum günü test SMS gönder</button><button class="btn" id="sms-save-bday">Doğum günü ayarlarını kaydet</button></div>`;
     $('#app').appendChild(card);
     $('#sms-save').onclick=saveSmsSettings;
     $('#sms-save-bday').onclick=saveSmsSettings;
     $('#sms-test').onclick=testSmsSettings;
+    $('#sms-test-bday').onclick=testBirthdaySms;
+    let phoneLookupTimer=null;
+    $('#sms-bday-test-recipient').oninput=e=>{
+      clearTimeout(phoneLookupTimer);
+      const phone=e.target.value.trim();
+      const hint=$('#sms-bday-test-match');
+      if(phone.replace(/\D/g,'').length<10){hint.innerHTML='&nbsp;';return}
+      phoneLookupTimer=setTimeout(async()=>{
+        try{
+          const r=await api('/api/employees/phone-lookup?phone='+encodeURIComponent(phone));
+          hint.textContent=r.found?`Kayıtlı çalışan: ${r.name}`:'Bu numara sistemde kayıtlı bir çalışana ait değil';
+        }catch{hint.innerHTML='&nbsp;'}
+      },400);
+    };
     $('#sms-preset-tm').onclick=()=>{
       $('#sms-provider').value='Teknomart';
       $('#sms-url').value='https://app.teknomart.com.tr:9588/sms/create';
@@ -383,6 +398,14 @@
     if(!recipient)return toast('Test telefon numarası girin');
     const button=$('#sms-test');button.disabled=true;
     try{await api('/api/sms-settings/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient})});toast('Test SMS gönderildi')}
+    catch(error){toast(error.message)}
+    finally{button.disabled=false}
+  }
+  async function testBirthdaySms(){
+    const recipient=$('#sms-bday-test-recipient').value.trim();
+    if(!recipient)return toast('Test telefon numarası girin');
+    const button=$('#sms-test-bday');button.disabled=true;
+    try{await api('/api/sms-settings/test-birthday',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient})});toast('Doğum günü test SMS\'i gönderildi')}
     catch(error){toast(error.message)}
     finally{button.disabled=false}
   }

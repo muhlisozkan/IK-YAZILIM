@@ -38,6 +38,14 @@
     });
   };
 
+  const savedTheme=()=>{try{return localStorage.getItem('ik_theme')}catch{return null}};
+  const isDarkNow=()=>document.documentElement.dataset.theme==='dark'||(!document.documentElement.dataset.theme&&matchMedia('(prefers-color-scheme: dark)').matches);
+  const applyTheme=dark=>{
+    document.documentElement.dataset.theme=dark?'dark':'light';
+    try{localStorage.setItem('ik_theme',dark?'dark':'light')}catch{}
+  };
+  const currentLang=()=>window.__ikCurrentLang?window.__ikCurrentLang():(()=>{try{return localStorage.getItem('ik_lang')||'tr'}catch{return 'tr'}})();
+
   const setupAccountMenu=()=>{
     const host=document.querySelector('.top-actions'),avatar=host?.querySelector('.avatar');
     if(!host||!avatar||document.querySelector('#account-dropdown'))return;
@@ -54,11 +62,45 @@
     const username=document.createElement('small');
     username.textContent='@'+window.__ikAuthUser.username+' · '+window.__ikAuthUser.role;
     identity.append(name,username);
+    const themeRow=document.createElement('div');
+    themeRow.className='account-theme-row';
+    const themeLabel=document.createElement('span');
+    themeLabel.textContent='Gece modu';
+    const themeSwitch=document.createElement('label');
+    themeSwitch.className='theme-switch';
+    const themeInput=document.createElement('input');
+    themeInput.type='checkbox';
+    themeInput.checked=isDarkNow();
+    const themeTrack=document.createElement('span');
+    themeTrack.className='theme-switch-track';
+    themeSwitch.append(themeInput,themeTrack);
+    themeRow.append(themeLabel,themeSwitch);
+    themeInput.onchange=()=>applyTheme(themeInput.checked);
+    const langRow=document.createElement('div');
+    langRow.className='account-theme-row';
+    const langLabel=document.createElement('span');
+    langLabel.textContent='Dil / Language';
+    const langPill=document.createElement('div');
+    langPill.className='lang-pill';
+    const trButton=document.createElement('button');
+    trButton.type='button';trButton.textContent='TR';
+    const enButton=document.createElement('button');
+    enButton.type='button';enButton.textContent='EN';
+    const syncLangButtons=()=>{
+      const lang=currentLang();
+      trButton.classList.toggle('active',lang!=='en');
+      enButton.classList.toggle('active',lang==='en');
+    };
+    syncLangButtons();
+    trButton.onclick=()=>{if(currentLang()!=='tr')window.__ikSetLanguage?.('tr')};
+    enButton.onclick=()=>{if(currentLang()!=='en')window.__ikSetLanguage?.('en')};
+    langPill.append(trButton,enButton);
+    langRow.append(langLabel,langPill);
     const passwordButton=document.createElement('button');
     passwordButton.type='button';passwordButton.textContent='Şifre değiştir';
     const logoutButton=document.createElement('button');
     logoutButton.type='button';logoutButton.className='danger-text';logoutButton.textContent='Çıkış yap';
-    menu.append(identity,passwordButton,logoutButton);
+    menu.append(identity,themeRow,langRow,passwordButton,logoutButton);
     host.appendChild(menu);
     const close=()=>{menu.classList.remove('open');avatar.setAttribute('aria-expanded','false')};
     avatar.onclick=event=>{event.stopPropagation();const open=menu.classList.toggle('open');avatar.setAttribute('aria-expanded',String(open))};
@@ -76,12 +118,20 @@
       return;
     }
     document.body.classList.add('auth-required');
+    document.querySelector('#auth-loading')?.setAttribute('hidden','');
+    document.querySelector('#login-card')?.removeAttribute('hidden');
+    const remembered=(()=>{try{return localStorage.getItem('ik_remember_user')||''}catch{return ''}})();
+    if(remembered&&form){form.username.value=remembered;if(form.remember)form.remember.checked=true;form.password.focus()}
     form?.addEventListener('submit',async event=>{
       event.preventDefault();error.textContent='';const button=form.querySelector('button');button.disabled=true;
       try{
         const response=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:form.username.value.trim(),password:form.password.value})});
         const data=await response.json().catch(()=>({}));
         if(!response.ok)throw new Error(data.error||'Giriş yapılamadı');
+        try{
+          if(form.remember?.checked)localStorage.setItem('ik_remember_user',form.username.value.trim());
+          else localStorage.removeItem('ik_remember_user');
+        }catch{}
         location.reload();
       }catch(problem){error.textContent=problem.message}
       finally{button.disabled=false}

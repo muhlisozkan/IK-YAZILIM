@@ -95,7 +95,7 @@
     </div>
     ${sentCardHtml(sent)}`);
     if($('#survey-add'))$('#survey-add').onclick=()=>openBuilder('personel',null);
-    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>openSurveyReport(b.dataset.surveyReport));
+    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>{const[sid,bid]=b.dataset.surveyReport.split(':');openSurveyReport(sid,bid);});
     document.querySelectorAll('[data-survey-preview]').forEach(b=>b.onclick=()=>previewSurvey(list.find(s=>String(s.id)===b.dataset.surveyPreview)));
     document.querySelectorAll('[data-survey-edit]').forEach(b=>b.onclick=()=>openBuilder('personel',list.find(s=>String(s.id)===b.dataset.surveyEdit)));
     document.querySelectorAll('[data-survey-send]').forEach(b=>b.onclick=()=>{
@@ -158,7 +158,7 @@
       try{await api('/api/surveys/'+b.dataset.perfDel,{method:'DELETE'});renderPerformance();toast('Form silindi');}
       catch(err){toast(err.message);}
     });
-    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>openSurveyReport(b.dataset.surveyReport));
+    document.querySelectorAll('[data-survey-report]').forEach(b=>b.onclick=()=>{const[sid,bid]=b.dataset.surveyReport.split(':');openSurveyReport(sid,bid);});
   }
 
   // --- Gönderilen anketler & rapor -------------------------------
@@ -172,9 +172,10 @@
     const rows=(sent||[]).map(s=>{
       const delivered=s.delivered??s.sent, failed=s.failed??0;
       const rate=delivered?Math.round(s.responded/delivered*100):0;
+      const idAttr=eom?s.id:`${s.id}:${s.batch_id}`;
       return `<tr>
-        <td><button class="btn ghost" ${attr}="${s.id}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
-          <small class="muted" style="display:block">Son gönderim: ${esc(fmtDT(s.last_sent_at))}</small></td>
+        <td><button class="btn ghost" ${attr}="${esc(String(idAttr))}" style="padding:2px 0;font-weight:700;text-align:left">${esc(s.title)}</button>
+          <small class="muted" style="display:block">Gönderim tarihi: ${esc(fmtDT(s.last_sent_at))}</small></td>
         <td>${delivered}</td><td>${failed?`<span class="danger-text">${failed}</span>`:'0'}</td><td>${s.opened}</td><td>${s.responded}</td>
         <td style="min-width:150px"><div class="bar"><i style="width:${rate}%"></i></div><small class="muted">%${rate} ${eom?'oy':'yanıt'}</small></td>
       </tr>`;
@@ -244,7 +245,7 @@
     const pb=bar.querySelector('#rep-pdf');
     if(pb)pb.onclick=()=>{
       if(!repRepId)return;
-      window.open('/api/surveys/'+repRepId+'/report/print'+(repDept?'?department='+encodeURIComponent(repDept):''),'_blank','noopener');
+      window.open('/api/surveys/'+repRepId+'/report/print'+reportQS(),'_blank','noopener');
     };
   }
   function avgClass(v){ if(v==null)return ''; return v>=3.5?'avg-hi':(v>=2.5?'avg-mid':'avg-lo'); }
@@ -324,7 +325,14 @@
       (rep.departmentCompare||[]).map(r=>r.byDept.map(x=>x.average).join('.')).join('|')
     ].join(';');
   }
-  let repTimer=null, repTab='summary', repDept='', repRepId=null, lastRepSig='';
+  let repTimer=null, repTab='summary', repDept='', repRepId=null, repBatchId=null, lastRepSig='';
+  const reportQS=()=>{
+    const p=new URLSearchParams();
+    if(repDept)p.set('department',repDept);
+    if(repBatchId!=null)p.set('batch',repBatchId);
+    const s=p.toString();
+    return s?'?'+s:'';
+  };
   function paintReport(rep,keepScroll){
     const bar=document.querySelector('#rep-tabs'), body=document.querySelector('#rep-body');
     if(!body)return;
@@ -339,13 +347,13 @@
   async function reloadReport(){
     if(!repRepId)return;
     let fresh;
-    try{fresh=await api('/api/surveys/'+repRepId+'/report'+(repDept?'?department='+encodeURIComponent(repDept):''));}catch(err){return toast(err.message);}
+    try{fresh=await api('/api/surveys/'+repRepId+'/report'+reportQS());}catch(err){return toast(err.message);}
     paintReport(fresh,true);
   }
-  async function openSurveyReport(id){
-    repTab='summary';repDept='';repRepId=id;
+  async function openSurveyReport(id,batch){
+    repTab='summary';repDept='';repRepId=id;repBatchId=(batch!=null&&batch!=='')?Number(batch):null;
     let rep;
-    try{rep=await api('/api/surveys/'+id+'/report');}catch(err){return toast(err.message);}
+    try{rep=await api('/api/surveys/'+id+'/report'+reportQS());}catch(err){return toast(err.message);}
     modal('Rapor · '+esc(rep.survey.title),reportTabsHtml(rep)+reportHtml(rep),()=>closeModal());
     document.querySelector('.modal')?.classList.add('survey-modal');
     bindReportTabs();
@@ -357,7 +365,7 @@
       const body=document.querySelector('#rep-body');
       if(!body||!document.body.contains(body)){clearInterval(repTimer);repTimer=null;return;}
       let fresh;
-      try{fresh=await api('/api/surveys/'+repRepId+'/report'+(repDept?'?department='+encodeURIComponent(repDept):''));}catch(_){return;}
+      try{fresh=await api('/api/surveys/'+repRepId+'/report'+reportQS());}catch(_){return;}
       if(repSig(fresh)===lastRepSig)return;
       paintReport(fresh,true);
       toast('Yeni yanıt geldi — rapor güncellendi');
@@ -764,10 +772,16 @@
     const s=document.querySelector('.modal .submit');if(s){s.textContent='Kapat';s.onclick=()=>{closeModal();afterChange&&afterChange();};}
     const box=()=>$('#rg-body');
     let editing=null;            // düzenlenen grup (yoksa: yeni grup)
+    let mode='dept';             // 'dept' = departman bazlı (dinamik) | 'members' = çalışan seç (statik)
     let picked=new Set();        // seçili departmanlar
+    let pickedMembers=[];        // seçili çalışanlar: [{employee_id,name,email,phone}]
     let gname='';
     async function reload(){try{groups=await api('/api/recipient-groups');}catch(_){}draw();afterChange&&afterChange();}
-    function resetForm(){editing=null;picked=new Set();gname='';}
+    function resetForm(){editing=null;mode='dept';picked=new Set();pickedMembers=[];gname='';}
+    const empOptions=()=>(state.employees||[]).filter(e=>e.status!=='Pasif')
+      .filter(e=>!pickedMembers.some(m=>m.employee_id===e.id))
+      .map(e=>({id:e.id,name:e.name||'',email:e.email||'',phone:normPhone(e.phone),department:e.department||''}))
+      .sort((a,b)=>a.name.localeCompare(b.name,'tr'));
     function draw(){
       const depts=empDepartments();
       box().innerHTML=`
@@ -776,32 +790,61 @@
           <td><strong>${esc(g.name)}</strong></td>
           <td style="max-width:260px">${g.departments&&g.departments.length?esc(g.departments.join(', ')):'<span class="muted">Statik liste</span>'}</td>
           <td>${g.member_count} kişi<small class="muted" style="display:block">${g.with_phone} tel · ${g.with_email} e-posta</small></td>
-          <td class="row-actions">${g.departments&&g.departments.length?`<button class="btn ghost" data-rg-edit="${g.id}">Düzenle</button>`:''}<button class="btn ghost danger-text" data-rg-del="${g.id}">Sil</button></td>
+          <td class="row-actions"><button class="btn ghost" data-rg-edit="${g.id}">Düzenle</button><button class="btn ghost danger-text" data-rg-del="${g.id}">Sil</button></td>
         </tr>`).join('')||'<tr><td colspan="4" class="empty">Henüz grup yok</td></tr>'}
         </tbody></table></div>
         <div class="field" style="margin-top:18px">
-          <label>${editing?'Grubu düzenle':'Yeni departman grubu'}</label>
+          <label>${editing?'Grubu düzenle':'Yeni grup'}</label>
           <input class="input" id="rg-name" placeholder="Grup adı" value="${esc(gname)}" style="margin-bottom:10px">
+          <div class="inv-channel" style="margin-bottom:10px">
+            <label><input type="radio" name="rg-mode" value="dept" ${mode==='dept'?'checked':''}> Departman bazlı</label>
+            <label><input type="radio" name="rg-mode" value="members" ${mode==='members'?'checked':''}> Çalışan seç</label>
+          </div>
+          ${mode==='dept'?`
           <div class="muted" style="font-size:11px;margin-bottom:6px">Bir veya birden fazla departman seçin. Grup her gönderimde bu departmanların güncel çalışanlarını içerir.</div>
           <div class="rg-depts">${depts.map(d=>`<label class="rg-dchip ${picked.has(d)?'on':''}"><input type="checkbox" value="${esc(d)}" ${picked.has(d)?'checked':''}> ${esc(d)}</label>`).join('')}</div>
+          `:`
+          <div class="muted" style="font-size:11px;margin-bottom:6px">Arayarak çalışan seçin, seçtikleriniz listeye eklenir. Bu grup, seçim anındaki ad/e-posta/telefon bilgileriyle sabit kalır.</div>
+          <select class="select" id="rg-emp-pick" data-cb-placeholder="Çalışan ara ve ekle…"><option value="">+ Çalışan ara ve ekle…</option>${empOptions().map(e=>`<option value="${e.id}">${esc(e.name)}${e.department?' — '+esc(e.department):''}</option>`).join('')}</select>
+          <div class="rg-depts" style="margin-top:8px">${pickedMembers.length?pickedMembers.map(m=>`<span class="rg-dchip on" data-rg-mrm="${m.employee_id}" style="cursor:pointer" title="Listeden çıkar">${esc(m.name)} ×</span>`).join(''):'<span class="muted" style="font-size:12px">Henüz çalışan seçilmedi</span>'}</div>
+          `}
           <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
             <button class="btn" id="rg-save">${editing?'Kaydet':'Oluştur'}</button>
             ${editing?`<button class="btn ghost" id="rg-cancel">İptal</button>`:''}
-            <span class="muted" id="rg-cnt" style="align-self:center;font-size:12px">${picked.size} departman seçili</span>
+            <span class="muted" id="rg-cnt" style="align-self:center;font-size:12px">${mode==='dept'?picked.size+' departman seçili':pickedMembers.length+' çalışan seçili'}</span>
           </div>
         </div>`;
       box().querySelector('#rg-name').oninput=e=>{gname=e.target.value;};
-      box().querySelectorAll('.rg-depts input').forEach(cb=>cb.onchange=()=>{
+      box().querySelectorAll('[name="rg-mode"]').forEach(r=>r.onchange=e=>{mode=e.target.value;draw();});
+      box().querySelectorAll('.rg-depts input[type="checkbox"]').forEach(cb=>cb.onchange=()=>{
         if(cb.checked)picked.add(cb.value);else picked.delete(cb.value);
         cb.closest('.rg-dchip').classList.toggle('on',cb.checked);
         const cnt=box().querySelector('#rg-cnt');
         if(cnt)cnt.textContent=picked.size+' departman seçili';
       });
+      const empPick=box().querySelector('#rg-emp-pick');
+      if(empPick)empPick.onchange=e=>{
+        const id=Number(e.target.value);e.target.value='';if(!id)return;
+        const emp=(state.employees||[]).find(x=>x.id===id);if(!emp)return;
+        pickedMembers.push({employee_id:emp.id,name:emp.name||'',email:emp.email||'',phone:normPhone(emp.phone)});
+        draw();
+      };
+      box().querySelectorAll('[data-rg-mrm]').forEach(chip=>chip.onclick=()=>{
+        const id=Number(chip.dataset.rgMrm);
+        pickedMembers=pickedMembers.filter(m=>m.employee_id!==id);
+        draw();
+      });
       box().querySelector('#rg-save').onclick=async()=>{
         const name=(gname||'').trim();
         if(!name)return toast('Grup adı girin');
-        if(!picked.size)return toast('En az bir departman seçin');
-        const payload={name,departments:[...picked]};
+        let payload;
+        if(mode==='dept'){
+          if(!picked.size)return toast('En az bir departman seçin');
+          payload={name,departments:[...picked]};
+        }else{
+          if(!pickedMembers.length)return toast('En az bir çalışan seçin');
+          payload={name,departments:[],members:pickedMembers};
+        }
         try{
           if(editing)await api('/api/recipient-groups/'+editing.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
           else await api('/api/recipient-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -811,7 +854,10 @@
       if($('#rg-cancel'))$('#rg-cancel').onclick=()=>{resetForm();draw();};
       box().querySelectorAll('[data-rg-edit]').forEach(b=>b.onclick=async()=>{
         try{const g=await api('/api/recipient-groups/'+b.dataset.rgEdit);
-          editing=g;gname=g.name;picked=new Set(g.departments||[]);draw();
+          editing=g;gname=g.name;
+          if(g.departments&&g.departments.length){mode='dept';picked=new Set(g.departments);pickedMembers=[];}
+          else{mode='members';picked=new Set();pickedMembers=(g.members||[]).map(m=>({employee_id:m.employee_id,name:m.name,email:m.email,phone:m.phone}));}
+          draw();
           box().querySelector('#rg-name')?.scrollIntoView({block:'center'});
         }catch(err){toast(err.message);}
       });

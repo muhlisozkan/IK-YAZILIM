@@ -41,7 +41,7 @@
       if (e.key === 'Escape') close();
     });
     window.addEventListener('resize', function () {
-      if (window.innerWidth > 900) close();
+      if (window.innerWidth > 1200) close();
     });
 
     topbar.insertBefore(btn, topbar.firstChild);

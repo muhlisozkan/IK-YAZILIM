@@ -51,11 +51,26 @@
       const earliest=new Date(today);earliest.setDate(earliest.getDate()-2);
       return d>=earliest;
     };
+    // Çalışanın işe giriş tarihinden önceki, ve çıkış yaptığı tarihten (o tarih dahil)
+    // itibaren sonraki günler kimse için (İK/Sistem yöneticisi dahil) düzenlenemez —
+    // bu bir yetki sınırı değil, o günlerde zaten istihdam ilişkisi olmadığı için veri
+    // girişi anlamsız (kullanıcı isteği 2026-09).
+    const outOfPeriod=(emp,dateStr)=>{
+      if(!emp)return false;
+      const start=emp.start_date?String(emp.start_date).slice(0,10):'';
+      const term=emp.termination_date?String(emp.termination_date).slice(0,10):'';
+      if(start&&dateStr<start)return true;
+      if(term&&dateStr>=term)return true;
+      return false;
+    };
     const options=(id,d,type)=>{const value=store[key(id,d,type)]||'';return type==='normal'?codes.map(s=>`<option value="${s}" ${value===s?'selected':''}>${s==='Y'?'Y - Yıllık İzin':s}</option>`).join(''):['0.5','1','1.5','2','2.5','3'].map(s=>`<option value="${s}" ${String(value||'')===s?'selected':''}>${s}</option>`).join('')};
+    // Çıkış yaptığı aydan sonraki aylarda çalışan artık listede görünmez — ayrıldığı
+    // ay dahil, önceki aylarda görünmeye devam eder (kullanıcı isteği 2026-09).
+    const visibleInMonth=e=>{const term=e.termination_date?String(e.termination_date).slice(0,7):'';return !term||term>=month};
     function render(){
       const [year,monthNumber]=month.split('-').map(Number),days=new Date(year,monthNumber,0).getDate();
       const unrestricted=canEditWithoutDateLimit();
-      const filtered=[...state.employees].filter(e=>(!search||`${e.name} ${e.department} ${e.payroll_sicil||''}`.toLocaleLowerCase('tr-TR').includes(search.toLocaleLowerCase('tr-TR')))&&(!department||e.department===department)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr')),
+      const filtered=[...state.employees].filter(e=>visibleInMonth(e)&&(!search||`${e.name} ${e.department} ${e.payroll_sicil||''}`.toLocaleLowerCase('tr-TR').includes(search.toLocaleLowerCase('tr-TR')))&&(!department||e.department===department)).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'tr')),
         pages=Math.max(1,Math.ceil(filtered.length/pageSize)); page=Math.min(page,pages); const list=filtered.slice((page-1)*pageSize,page*pageSize);
       const rows=list.flatMap(e=>['normal','fazla'].map((type,index)=>`<tr>${index===0?`<td rowspan="2" class="att-person"><strong>${e.name}</strong><small class="muted" style="display:block">${e.payroll_sicil||''} · ${e.department}</small></td>`:''}<td class="att-type ${type==='normal'?'normal':'extra'}">${type==='normal'?'Normal Çalışma':'Fazla Mesai'}</td>${Array.from({length:days},(_,i)=>`<td><select class="att-select" data-key="${key(e.id,i+1,type)}"><option value="">—</option>${options(e.id,i+1,type)}</select></td>`).join('')}</tr>`)).join('');
       const isAdmin=window.__ikCurrentUser?.()?.role==='Sistem yöneticisi';
@@ -75,7 +90,19 @@
       document.querySelectorAll('.att-select').forEach(s=>{s.dataset.savedValue=s.value;s.onchange=()=>saveEntry(s)});
       const monthInput=document.createElement('input'); monthInput.type='month'; monthInput.id='att-month'; monthInput.className='input'; monthInput.value=month; monthInput.title='Puantaj dönemi'; document.querySelector('.toolbar').prepend(monthInput);
       monthInput.onchange=async()=>{month=monthInput.value||attMonth();page=1;monthInput.disabled=true;try{await loadMonth(month);render()}catch(error){toast(error.message)}finally{monthInput.disabled=false}};
-      document.querySelectorAll('.att-select').forEach(select=>{const parts=select.dataset.key.split('-'), day=parts[3],canEdit=editable(`${month}-${String(day).padStart(2,'0')}`);select.disabled=!canEdit;if(!canEdit)select.title=month===attMonth()?'Bu tarih için 2 günlük düzeltme süresi doldu':'Önceki aylarda puantaj değiştirilemez'});
+      document.querySelectorAll('.att-select').forEach(select=>{
+        const parts=select.dataset.key.split('-'), day=parts[3], dateStr=`${month}-${String(day).padStart(2,'0')}`;
+        const emp=state.employees.find(x=>String(x.id)===parts[2]);
+        if(outOfPeriod(emp,dateStr)){
+          select.disabled=true;select.classList.add('att-locked');
+          select.title=emp&&emp.start_date&&dateStr<String(emp.start_date).slice(0,10)?'Çalışan bu tarihte henüz işe başlamamış':'Çalışan bu tarihte işten ayrılmış';
+          return;
+        }
+        select.classList.remove('att-locked');
+        const canEdit=editable(dateStr);
+        select.disabled=!canEdit;
+        if(!canEdit)select.title=month===attMonth()?'Bu tarih için 2 günlük düzeltme süresi doldu':'Önceki aylarda puantaj değiştirilemez';
+      });
     }
     try{await loadMonth(month)}catch(error){toast(error.message)}
     render();

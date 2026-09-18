@@ -23,15 +23,65 @@
   }
   const baseEmployees = employees;
   const baseFilterEmployees = filterEmployees;
+  const rowEmployee = row => {
+    const id = row.querySelector('[data-edit]')?.dataset.edit;
+    return id ? state.employees.find(item => String(item.id) === String(id)) : null;
+  };
+  const inRange = (dateStr, from, to) => {
+    if (!dateStr) return false;
+    const d = String(dateStr).slice(0, 10);
+    if (from && d < from) return false;
+    if (to && d > to) return false;
+    return true;
+  };
   filterEmployees = function () {
     baseFilterEmployees();
     const selectedStatus = document.querySelector('#status-filter')?.value || '';
-    if (!selectedStatus) return;
-    document.querySelectorAll('#emp-table tbody tr').forEach(row => {
-      const badge = row.querySelector('.badge');
-      row.style.display = row.style.display !== 'none' && (!badge || badge.textContent.trim() === selectedStatus) ? '' : 'none';
-    });
+    if (selectedStatus) {
+      document.querySelectorAll('#emp-table tbody tr').forEach(row => {
+        const badge = row.querySelector('.badge');
+        row.style.display = row.style.display !== 'none' && (!badge || badge.textContent.trim() === selectedStatus) ? '' : 'none';
+      });
+    }
+    const hireFrom = document.querySelector('#hire-from')?.value || '';
+    const hireTo = document.querySelector('#hire-to')?.value || '';
+    const termFrom = document.querySelector('#term-from')?.value || '';
+    const termTo = document.querySelector('#term-to')?.value || '';
+    if (hireFrom || hireTo) {
+      document.querySelectorAll('#emp-table tbody tr').forEach(row => {
+        if (row.style.display === 'none') return;
+        const employee = rowEmployee(row);
+        if (!employee || !inRange(firstEmploymentStart(employee), hireFrom, hireTo)) row.style.display = 'none';
+      });
+    } else if (termFrom || termTo) {
+      document.querySelectorAll('#emp-table tbody tr').forEach(row => {
+        if (row.style.display === 'none') return;
+        const employee = rowEmployee(row);
+        if (!employee || !inRange(employee.termination_date, termFrom, termTo)) row.style.display = 'none';
+      });
+    }
   };
+  // İşe giriş ve işten çıkış tarih filtreleri birbirini dışlar: biri kullanılınca
+  // diğeri temizlenip devre dışı bırakılır (kullanıcı isteği 2026-09).
+  function bindDateRangeFilters() {
+    const hireFrom = document.querySelector('#hire-from'), hireTo = document.querySelector('#hire-to');
+    const termFrom = document.querySelector('#term-from'), termTo = document.querySelector('#term-to');
+    if (!hireFrom || !termFrom) return;
+    const onHireChange = () => {
+      const active = !!(hireFrom.value || hireTo.value);
+      termFrom.disabled = termTo.disabled = active;
+      if (active) { termFrom.value = ''; termTo.value = ''; }
+      filterEmployees();
+    };
+    const onTermChange = () => {
+      const active = !!(termFrom.value || termTo.value);
+      hireFrom.disabled = hireTo.disabled = active;
+      if (active) { hireFrom.value = ''; hireTo.value = ''; }
+      filterEmployees();
+    };
+    [hireFrom, hireTo].forEach(input => input.onchange = onHireChange);
+    [termFrom, termTo].forEach(input => input.onchange = onTermChange);
+  }
   employees = function () {
     baseEmployees();
     const table = document.querySelector('#emp-table');
@@ -87,12 +137,20 @@
     }
     const toolbar = document.querySelector('.toolbar');
     if (toolbar && !document.querySelector('#status-filter')) {
+      toolbar.style.flexWrap = 'wrap';
       const statusFilter = document.createElement('select');
       statusFilter.id = 'status-filter';
       statusFilter.className = 'select';
       statusFilter.innerHTML = '<option value="">Tüm durumlar</option><option value="Aktif">Aktif</option><option value="Pasif">Pasif</option>';
       statusFilter.onchange = filterEmployees;
       toolbar.appendChild(statusFilter);
+      const dateFilters = document.createElement('div');
+      dateFilters.style.cssText = 'display:flex;gap:14px;align-items:center;flex-wrap:wrap';
+      dateFilters.innerHTML = `
+        <span style="display:flex;gap:6px;align-items:center"><small class="muted">İşe giriş</small><input class="input" type="date" id="hire-from" style="min-width:0;width:145px"><input class="input" type="date" id="hire-to" style="min-width:0;width:145px"></span>
+        <span style="display:flex;gap:6px;align-items:center"><small class="muted">İşten çıkış</small><input class="input" type="date" id="term-from" style="min-width:0;width:145px"><input class="input" type="date" id="term-to" style="min-width:0;width:145px"></span>`;
+      toolbar.appendChild(dateFilters);
+      bindDateRangeFilters();
     }
   };
 })();

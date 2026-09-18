@@ -400,7 +400,22 @@
     return null;
   };
 
-  const EYS = { items: [], searchTerm: '', searching: false, selected: null, xlsx: null, docx: null };
+  const EYS = { items: [], searchTerm: '', searching: false, selected: null, xlsx: null, docx: null, pdf: null };
+
+  // PDF önizleme: bazı tarayıcılarda (ör. Samsung Internet / Android'de birçok
+  // tarayıcı) <iframe src="...pdf"> hiçbir şey göstermiyor — yerleşik PDF
+  // görüntüleyicileri yok. Bunun yerine PDF.js'i (kendi sunucumuzdan, /pdfjs/)
+  // gömüp sayfaları <canvas>'a çiziyoruz — tüm tarayıcılarda aynı şekilde çalışır.
+  let pdfjsLibPromise = null;
+  function loadPdfjs() {
+    if (!pdfjsLibPromise) {
+      pdfjsLibPromise = import('/pdfjs/pdf.min.js').then(mod => {
+        mod.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.js';
+        return mod;
+      });
+    }
+    return pdfjsLibPromise;
+  }
 
   function eysXlsxBodyHtml() {
     const x = EYS.xlsx;
@@ -420,28 +435,116 @@
     return `<div class="eys-docx-wrap">${d.html}</div>`;
   }
 
+  function eysPdfBodyHtml() {
+    const p = EYS.pdf;
+    if (!p || p.loading) return '<div class="empty">PDF yükleniyor…</div>';
+    if (p.error) return `<div class="empty">${esc(p.error)}</div>`;
+    return `<div class="eys-pdf-wrap">
+      <div class="eys-pdf-meta">
+        <span class="muted">${p.pages} sayfa</span>
+        <div class="eys-pdf-zoom">
+          <button type="button" class="btn ghost" id="eys-pdf-zoom-out" title="Küçült">−</button>
+          <span class="muted eys-pdf-zoom-pct">%${Math.round((p.zoom || 1) * 100)}</span>
+          <button type="button" class="btn ghost" id="eys-pdf-zoom-in" title="Büyüt">+</button>
+        </div>
+      </div>
+      <div class="eys-pdf-pages" id="eys-pdf-pages"></div>
+    </div>`;
+  }
+
   function eysPreviewHtml() {
     const item = EYS.selected;
     if (!item) return '<div class="empty">Önizlemek için bir dosyaya tıklayın</div>';
     const kind = eysPreviewKind(item.name);
     const inlineUrl = `/api/eys/file?inline=1&source=${eysSource}&path=` + encodeURIComponent(item.path);
     const dlUrl = `/api/eys/file?source=${eysSource}&path=` + encodeURIComponent(item.path);
-    const head = `<div class="eys-preview-head"><strong title="${esc(item.path)}">${esc(item.name)}</strong><a class="btn ghost" href="${dlUrl}" target="_blank" rel="noopener">⬇ İndir</a></div>`;
-    if (kind === 'pdf') return head + `<iframe class="eys-preview-frame" src="${inlineUrl}"></iframe>`;
+    const head = `<div class="eys-preview-head"><strong title="${esc(item.path)}">${esc(item.name)}</strong><div class="eys-preview-actions"><button type="button" class="btn ghost" id="eys-fs-btn" title="Tam ekran">⛶ Tam ekran</button><a class="btn ghost" href="${dlUrl}" target="_blank" rel="noopener">⬇ İndir</a></div></div>`;
+    if (kind === 'pdf') return head + eysPdfBodyHtml();
     if (kind === 'image') return head + `<div class="eys-preview-imgwrap"><img src="${inlineUrl}" alt="${esc(item.name)}"></div>`;
     if (kind === 'xlsx') return head + eysXlsxBodyHtml();
     if (kind === 'docx') return head + eysDocxBodyHtml();
     return head + '<div class="empty">Bu dosya türü tarayıcıda önizlenemiyor — indirip açın</div>';
   }
 
+  function eysDestroyPdf() {
+    const doc = EYS.pdf && EYS.pdf.doc;
+    EYS.pdf = null;
+    if (doc) doc.destroy().catch(() => {});
+  }
+
   function eysSelectFile(item) {
     EYS.selected = item;
     EYS.xlsx = null;
     EYS.docx = null;
+    eysDestroyPdf();
     eysPaintResults();
     const kind = item && eysPreviewKind(item.name);
     if (kind === 'xlsx') eysLoadXlsx(item.path, 0);
     else if (kind === 'docx') eysLoadDocx(item.path);
+    else if (kind === 'pdf') eysLoadPdf(item.path, `/api/eys/file?inline=1&source=${eysSource}&path=` + encodeURIComponent(item.path));
+  }
+
+  async function eysLoadPdf(filePath, url) {
+    EYS.pdf = { path: filePath, loading: true, error: null, doc: null, pages: 0, zoom: 1 };
+    eysRepaintPreviewOnly();
+    let doc;
+    try {
+      const pdfjsLib = await loadPdfjs();
+      doc = await pdfjsLib.getDocument({ url, withCredentials: true }).promise;
+    } catch (_) {
+      if (EYS.selected?.path !== filePath) return;
+      EYS.pdf = { path: filePath, loading: false, error: 'Bu dosya PDF görüntüleyici tarafından okunamadı', doc: null, pages: 0, zoom: 1 };
+      eysRepaintPreviewOnly();
+      return;
+    }
+    if (EYS.selected?.path !== filePath) { doc.destroy().catch(() => {}); return; }
+    EYS.pdf = { path: filePath, loading: false, error: null, doc, pages: doc.numPages, zoom: 1 };
+    eysRepaintPreviewOnly();
+    await eysRenderPdfPages(doc, filePath);
+  }
+
+  // Yakınlaştırma: her sayfa, alan genişliğine sığdırılmış temel ölçekle
+  // çarpılan bir kullanıcı çarpanıyla yeniden çizilir — tam ekranda da (konteyner
+  // genişliği değiştiğinde) aynı fonksiyon çağrılır, böylece sayfa büyür.
+  function eysZoomPdf(delta) {
+    if (!EYS.pdf || !EYS.pdf.doc) return;
+    EYS.pdf.zoom = Math.min(3, Math.max(0.4, +((EYS.pdf.zoom + delta).toFixed(2))));
+    const pct = document.querySelector('.eys-pdf-zoom-pct');
+    if (pct) pct.textContent = `%${Math.round(EYS.pdf.zoom * 100)}`;
+    eysRenderPdfPages(EYS.pdf.doc, EYS.pdf.path);
+  }
+
+  async function eysRenderPdfPages(doc, filePath) {
+    const host = document.getElementById('eys-pdf-pages');
+    if (!host) return;
+    const renderToken = (eysRenderPdfPages.token = (eysRenderPdfPages.token || 0) + 1);
+    host.innerHTML = '';
+    const containerWidth = host.clientWidth || 720;
+    for (let i = 1; i <= doc.numPages; i++) {
+      if (eysRenderPdfPages.token !== renderToken || EYS.selected?.path !== filePath || !EYS.pdf || EYS.pdf.doc !== doc) return;
+      let page;
+      try { page = await doc.getPage(i); } catch (_) { continue; }
+      if (eysRenderPdfPages.token !== renderToken || EYS.selected?.path !== filePath || !EYS.pdf || EYS.pdf.doc !== doc) return;
+      const baseViewport = page.getViewport({ scale: 1 });
+      const fitScale = (containerWidth - 4) / baseViewport.width;
+      const scale = Math.max(fitScale * (EYS.pdf.zoom || 1), 0.2);
+      const viewport = page.getViewport({ scale });
+      // Ekran çözünürlüğü (devicePixelRatio) hesaba katılmazsa yüksek DPI'lı
+      // tablet/telefon ekranlarında yazı bulanık çıkar: canvas'ın iç piksel
+      // sayısı CSS boyutundan (viewport) DPR kat fazla olmalı, render de
+      // transform ile aynı oranda ölçeklenmeli — CSS boyutu değişmez.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const canvas = document.createElement('canvas');
+      canvas.className = 'eys-pdf-page';
+      canvas.width = Math.ceil(viewport.width * dpr);
+      canvas.height = Math.ceil(viewport.height * dpr);
+      canvas.style.width = Math.ceil(viewport.width) + 'px';
+      canvas.style.height = Math.ceil(viewport.height) + 'px';
+      host.appendChild(canvas);
+      const renderParams = { canvasContext: canvas.getContext('2d'), viewport };
+      if (dpr !== 1) renderParams.transform = [dpr, 0, 0, dpr, 0, 0];
+      try { await page.render(renderParams).promise; } catch (_) { /* sayfa değişmiş olabilir */ }
+    }
   }
 
   async function eysLoadXlsx(filePath, idx) {
@@ -480,7 +583,82 @@
 
   function bindEysPreviewTabs() {
     document.querySelectorAll('#eys-preview [data-eys-sheet]').forEach(b => b.onclick = () => eysLoadXlsx(EYS.selected.path, Number(b.dataset.eysSheet)));
+    const fsBtn = document.getElementById('eys-fs-btn');
+    if (fsBtn) fsBtn.onclick = eysToggleFullscreen;
+    const zoomIn = document.getElementById('eys-pdf-zoom-in');
+    const zoomOut = document.getElementById('eys-pdf-zoom-out');
+    if (zoomIn) zoomIn.onclick = () => eysZoomPdf(0.2);
+    if (zoomOut) zoomOut.onclick = () => eysZoomPdf(-0.2);
+    eysBindPdfPinch();
   }
+
+  // Dokunmatik ekranda iki parmakla yakınlaştırma. Her touchmove'da tam
+  // çözünürlükte yeniden çizim yapmak takılır — parmak hareket ederken CSS
+  // transform ile anlık (ucuz) önizleme yapılır; parmaklar kalkınca gerçek
+  // çözünürlükte tek seferde net biçimde yeniden çizilir. Tek parmakla
+  // kaydırma tarayıcının kendi scroll'una bırakılır (touch-action:pan-x
+  // pan-y sadece yerleşik pinch-zoom'u devre dışı bırakır, kaydırmayı değil).
+  function eysBindPdfPinch() {
+    const host = document.getElementById('eys-pdf-pages');
+    if (!host || host.dataset.pinchBound) return;
+    host.dataset.pinchBound = '1';
+    const dist = (a, b) => Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+    let startDist = 0, startZoom = 1, liveZoom = null;
+    host.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        startDist = dist(e.touches[0], e.touches[1]);
+        startZoom = (EYS.pdf && EYS.pdf.zoom) || 1;
+      }
+    }, { passive: true });
+    host.addEventListener('touchmove', e => {
+      if (e.touches.length === 2 && startDist) {
+        e.preventDefault();
+        const factor = dist(e.touches[0], e.touches[1]) / startDist;
+        liveZoom = Math.min(3, Math.max(0.4, startZoom * factor));
+        host.style.transformOrigin = 'top center';
+        host.style.transform = `scale(${liveZoom / startZoom})`;
+      }
+    }, { passive: false });
+    const commitPinch = () => {
+      if (liveZoom == null) return;
+      const zoom = liveZoom;
+      liveZoom = null; startDist = 0;
+      host.style.transform = '';
+      if (EYS.pdf && EYS.pdf.doc) {
+        EYS.pdf.zoom = zoom;
+        const pct = document.querySelector('.eys-pdf-zoom-pct');
+        if (pct) pct.textContent = `%${Math.round(zoom * 100)}`;
+        eysRenderPdfPages(EYS.pdf.doc, EYS.pdf.path);
+      }
+    };
+    host.addEventListener('touchend', commitPinch);
+    host.addEventListener('touchcancel', commitPinch);
+  }
+
+  // Tam ekran: önizleme kartının kendisini (başlık + içerik) tarayıcının
+  // yerleşik Fullscreen API'siyle büyütür — vendor önekleri Safari/eski Edge içindir.
+  const eysFsEl = () => document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+  function eysToggleFullscreen() {
+    const el = document.getElementById('eys-preview');
+    if (!el) return;
+    if (eysFsEl()) (document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen).call(document);
+    else (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen).call(el);
+  }
+  function eysSyncFsBtn() {
+    const btn = document.getElementById('eys-fs-btn');
+    if (btn) {
+      const on = eysFsEl() === document.getElementById('eys-preview');
+      btn.textContent = on ? '✕ Tam ekrandan çık' : '⛶ Tam ekran';
+      btn.title = on ? 'Tam ekrandan çık' : 'Tam ekran';
+    }
+    // Tam ekrana girip çıkmak önizleme alanının genişliğini değiştirir — PDF
+    // sayfaları yeni genişliğe göre yeniden çizilmezse tam ekranda küçük kalır.
+    if (EYS.pdf && EYS.pdf.doc) {
+      const doc = EYS.pdf.doc, path = EYS.pdf.path;
+      setTimeout(() => { if (EYS.pdf && EYS.pdf.doc === doc) eysRenderPdfPages(doc, path); }, 80);
+    }
+  }
+  ['fullscreenchange', 'webkitfullscreenchange', 'MSFullscreenChange'].forEach(evt => document.addEventListener(evt, eysSyncFsBtn));
 
   function eysRepaintPreviewOnly() {
     const el = document.getElementById('eys-preview');
@@ -523,7 +701,7 @@
     document.querySelectorAll('#eys-tabs [data-eys-source]').forEach(b => b.onclick = () => {
       if (b.dataset.eysSource === eysSource) return;
       eysSetSource(b.dataset.eysSource);
-      EYS.selected = null; EYS.xlsx = null; EYS.docx = null; EYS.searching = false; EYS.searchTerm = '';
+      EYS.selected = null; EYS.xlsx = null; EYS.docx = null; eysDestroyPdf(); EYS.searching = false; EYS.searchTerm = '';
       document.querySelectorAll('#eys-tabs [data-eys-source]').forEach(x => x.classList.toggle('on', x.dataset.eysSource === eysSource));
       loadEysFolder();
     });
@@ -541,8 +719,8 @@
     bindEysPreviewTabs();
     const searchEl = document.getElementById('eys-search');
     if (searchEl && searchEl.value !== EYS.searchTerm) searchEl.value = EYS.searchTerm;
-    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; EYS.xlsx = null; EYS.docx = null; loadEysFolder(); });
-    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; EYS.xlsx = null; EYS.docx = null; loadEysFolder(); });
+    document.querySelectorAll('[data-eys-open]').forEach(tr => tr.onclick = () => { eysSetPath(tr.dataset.eysOpen); EYS.selected = null; EYS.xlsx = null; EYS.docx = null; eysDestroyPdf(); loadEysFolder(); });
+    document.querySelectorAll('[data-eys-go]').forEach(b => b.onclick = () => { eysSetPath(b.dataset.eysGo); EYS.searching = false; EYS.searchTerm = ''; EYS.selected = null; EYS.xlsx = null; EYS.docx = null; eysDestroyPdf(); loadEysFolder(); });
     document.querySelectorAll('[data-eys-file]').forEach(tr => tr.onclick = () => {
       eysSelectFile(EYS.items.find(it => it.path === tr.dataset.eysFile) || null);
     });
@@ -585,7 +763,7 @@
     document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === state.view));
     syncNavGroup();
     $('#page-title').textContent = 'Entegre Yönetim Sistemi';
-    if (!canSeeKys()) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
+    if (!window.__ikCan('kys-eys')) { $('#app').innerHTML = '<div class="card empty">Bu modüle erişim yetkiniz yok.</div>'; return; }
     if (document.querySelector('#eys-wrap')) { eysPaintResults(); return; }
     eysPaintShell();
     await loadEysFolder();
@@ -799,7 +977,9 @@
     if (active) group.classList.add('open');
   }
 
-  window.__ikToggleKysMenu = function () {
+  window.__ikToggleKysMenu = function (event) {
+    // Yalnızca alt menüyü aç/kapat — başka hiçbir şey yapma (gezinme yok).
+    event?.preventDefault();event?.stopPropagation();
     document.getElementById('kys-nav-group')?.classList.toggle('open');
   };
 

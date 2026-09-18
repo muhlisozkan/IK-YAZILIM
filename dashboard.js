@@ -5,6 +5,30 @@
   const isApproved=value=>value==='Onaylandı';
   const isCurrentLeave=leave=>isApproved(leave.status)&&String(leave.start||'')<=dateKey()&&String(leave.end||'')>=dateKey();
   const isSickType=type=>/hastalık|rapor/i.test(String(type||''));
+  // Bugünün Puantaj/Vardiya R-R./Y kodlarını çeker — kullanıcının kendi az önceki
+  // girişi, sunucu-genelinde canlı senkron döngüsünü (yalnızca BAŞKA istemcilerin
+  // değişikliğinde tetiklenir) beklemeden dashboard'a hemen yansısın diye burada da
+  // ayrıca, ilk ziyarette ve en fazla 15 sn'de bir yenilenir (kullanıcı isteği 2026-09).
+  let lastAttendanceFetch=0,attendanceFetching=false;
+  async function refreshTodayAttendanceStatus(){
+    if(attendanceFetching||Date.now()-lastAttendanceFetch<15000)return;
+    attendanceFetching=true;
+    try{
+      const response=await fetch('/api/attendance/today-status',{cache:'no-store'});
+      lastAttendanceFetch=Date.now();
+      if(!response.ok)return;
+      const statusData=await response.json();
+      const sick=new Set(),onLeave=new Set();
+      Object.entries(statusData||{}).forEach(([empId,value])=>{
+        const code=String(value||'').trim().toUpperCase();
+        if(code==='R'||code==='R.')sick.add(Number(empId));
+        else if(code==='Y')onLeave.add(Number(empId));
+      });
+      state.todaySickEmployeeIds=sick;state.todayLeaveEmployeeIds=onLeave;
+      if(state.view==='dashboard')dashboard();
+    }catch(_){}
+    finally{attendanceFetching=false}
+  }
   const dashboardDepartment=value=>{
     const department=String(value||'').trim();
     const normalized=department.toLocaleLowerCase('tr-TR');
@@ -38,9 +62,13 @@
     const scoped=employees.filter(employee=>!selectedDepartment||dashboardDepartment(employee.department)===selectedDepartment);
     const currentLeaves=(state.leaves||[]).filter(isCurrentLeave);
     const leaveByName=new Map(currentLeaves.map(leave=>[leave.employee,leave]));
-    const sick=scoped.filter(employee=>isSickType(employee.status)||isSickType(leaveByName.get(employee.name)?.type));
+    // Puantaj'a bugün için işlenen R/R. (rapor) ve Y (yıllık izin) kodları da bu
+    // özete dahil edilir — ayrı bir izin talebi girilmesi gerekmez (kullanıcı isteği 2026-09).
+    const todaySick=state.todaySickEmployeeIds||new Set();
+    const todayLeave=state.todayLeaveEmployeeIds||new Set();
+    const sick=scoped.filter(employee=>isSickType(employee.status)||isSickType(leaveByName.get(employee.name)?.type)||todaySick.has(Number(employee.id)));
     const sickNames=new Set(sick.map(employee=>employee.name));
-    const onLeave=scoped.filter(employee=>!sickNames.has(employee.name)&&(employee.status==='İzinli'||leaveByName.has(employee.name)));
+    const onLeave=scoped.filter(employee=>!sickNames.has(employee.name)&&(employee.status==='İzinli'||leaveByName.has(employee.name)||todayLeave.has(Number(employee.id))));
     const leaveNames=new Set(onLeave.map(employee=>employee.name));
     const working=scoped.filter(employee=>!sickNames.has(employee.name)&&!leaveNames.has(employee.name));
     const total=scoped.length;
@@ -74,11 +102,13 @@
           </div>
           <div class="card dashboard-absence"><div class="card-head"><div><h2>Bugün izinli ve raporlu çalışanlar</h2><span class="muted">${absent.length} çalışan · ${pending} bekleyen izin talebi</span></div><button class="btn ghost" data-go="leave">İzin yönetimine git →</button></div><div class="dashboard-table"><table><thead><tr><th>ÇALIŞAN</th><th>DEPARTMAN</th><th>DURUM</th><th>BİTİŞ</th></tr></thead><tbody>${absentRows||'<tr><td colspan="4" class="empty">Bugün izinli veya raporlu çalışan bulunmuyor.</td></tr>'}</tbody></table></div></div>
         </div>
-        <aside class="dashboard-rail" id="dashboard-notifications"></aside>
+        <aside class="dashboard-rail"><div id="dashboard-menu-mount"></div><div id="dashboard-notifications"></div></aside>
       </div>`;
     const departmentSelect=$('#dashboard-department');
     if(departmentSelect)departmentSelect.onchange=event=>{selectedDepartment=event.target.value;dashboard()};
     bindGo();
+    window.__ikRenderCafeteriaMenuCard?.();
+    refreshTodayAttendanceStatus();
   };
 
   if(state.view==='dashboard')dashboard();

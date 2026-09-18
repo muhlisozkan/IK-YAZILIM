@@ -23,11 +23,14 @@
 
   const GUV_TABS=['visitors','vehicles','fleet','staff_status'];
   const LOST_TABS=['lost_items','lost_approvals','lost_delivered'];
+  // Özel rol ("Yeni Rol") seviyesini (view/write/full) HMS'in kendi seviyelerine çevirir.
+  const hmsLevelFromCustom=lv=>lv==='full'?'full':lv==='write'?'operate':lv==='view'?'read':'none';
   function access(){
     const a=window.__ikSecurityAccess?.()||{};
-    const guv=a.admin?'full':(a.hr?'read':(a.security?'operate':'none'));
-    // Kayıp Eşya: sadece Sistem yöneticisi (tam) + ilgili departmanlar. İK dahil değil.
-    const lost=a.admin?'full':(a.lostDept?'operate':'none');
+    const customLevel=window.__ikCustomModuleLevel;
+    const guv=a.admin?'full':(a.hr?'read':(a.security?'operate':hmsLevelFromCustom(customLevel?.('security'))));
+    // Kayıp Eşya: sadece Sistem yöneticisi (tam) + ilgili departmanlar + özel rolde tanımlıysa. İK dahil değil.
+    const lost=a.admin?'full':(a.lostDept?'operate':hmsLevelFromCustom(customLevel?.('lostfound')));
     return {guv,lost,report:(guv!=='none'||lost!=='none')};
   }
   const permFor=module=>{const ac=access();if(module==='report')return 'read';return LOST_TABS.includes(module)?ac.lost:ac.guv;};
@@ -35,7 +38,7 @@
   const canDelete=module=>permFor(module)==='full';
 
   const TABDEFS={
-    security:[['visitors','Ziyaretçiler'],['vehicles','Araç Takipleri'],['fleet','Araçlar'],['staff_status','Çalışan Takipleri'],['report','Rapor']],
+    security:[['visitors','Ziyaretçiler'],['vehicles','Araç Takipleri'],['staff_status','Çalışan Takipleri'],['guest_tracking','Misafir Takip'],['report','Rapor']],
     lostfound:[['lost_items','Kayıp/Bulunan Eşyalar'],['lost_approvals','Onay Bekleyenler'],['lost_delivered','Teslim Edilenler'],['report','Rapor']]
   };
   const VIEW_META={
@@ -62,6 +65,7 @@
   };
 
   let tab='visitors';
+  let staffSelectedId=null;
   const cache={};
   const filters={};
   const tabKey=()=>'ik_hms_tab_'+currentView;
@@ -126,6 +130,7 @@
     const editModule=module==='lost_delivered'?'lost_items':module;
     let rows;
     try{rows=await load(dataModule);}catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    if(module==='staff_status')loadPeople().catch(()=>{});
     if(tab!==module)return;
     const cols=columns[module];
     const f=filters[module]||(filters[module]={q:'',cols:{}});
@@ -133,6 +138,7 @@
     const isApprovals=module==='lost_approvals';
     const isDelivered=module==='lost_delivered';
     const isLF=currentView==='lostfound';
+    const isStaff=module==='staff_status';
     const comboCols=COMBO_FILTER_COLS[module]||[];
     const dateCol=l=>/tarih/i.test(l);
     const optsFor=k=>[...new Set(rows.map(r=>String(r[k]??'').trim()).filter(Boolean))].sort(trSort);
@@ -147,18 +153,44 @@
       if(isApprovals)return shown.filter(r=>r.status==='Beklemede');
       if(isDelivered)return shown.filter(r=>r.status==='Teslim Edildi');
       if(module==='lost_items')return shown.filter(r=>r.status!=='Teslim Edildi');
+      // Çalışan Takip: isimler alfabetik sırada listelenir (kullanıcı isteği 2026-09).
+      if(isStaff)return shown.slice().sort((a,b)=>trSort(a.name,b.name));
+      // Araç Takipleri: ekranda her aracın yalnızca en son kaydı görünür (Çalışan Takip'teki
+      // gibi) — önceki geçmiş kayıtlar "Detay" penceresine taşınır (kullanıcı isteği 2026-09).
+      // /api/hms/vehicles zaten "id desc" (en yeni önce) döndüğü için ilk görülen kayıt en yenisidir.
+      if(module==='vehicles'){
+        const seen=new Set();
+        return shown.filter(row=>{
+          const key=String(row.plate||'').trim().toLocaleUpperCase('tr-TR');
+          if(seen.has(key))return false;
+          seen.add(key);
+          return true;
+        });
+      }
       return shown;
     };
     const rowClass=row=>{
       if((module==='visitors'||module==='staff_status')&&row.status==='İçeride')return ' class="hms-inside"';
+      // Araç içerideyken (döndüğünde) beyaz, dışarıdayken kırmızı gösterilir — Ziyaretçi/Çalışan
+      // Takip'in yeşil "içeride" rengiyle karışmasın diye ayrı bir sınıf (kullanıcı isteği 2026-09).
       if(module==='vehicles'&&['Dönüş Yaptı','Giriş Yaptı'].includes(String(row.status)))return ' class="hms-vehin"';
+      if(module==='vehicles'&&row.status==='Çıkış Yaptı')return ' class="hms-vehout"';
       return '';
     };
     const rowsHtml=list=>list.map(row=>`<tr data-id="${row.id}"${rowClass(row)}>
+        ${isStaff?`<td class="hms-selcell"><input type="checkbox" class="hms-rowsel" data-hms-sel="${row.id}"${String(row.id)===String(staffSelectedId)?' checked':''}></td>`:''}
         ${cols.map(([k,,fmt])=>`<td>${esc(fmt?fmt(row[k]):(row[k]??'—'))}</td>`).join('')}
         <td class="row-actions">${rowActions(module,row)}</td>
-      </tr>`).join('')||`<tr><td colspan="${cols.length+1}" class="empty">Kayıt bulunamadı</td></tr>`;
-    const toolbar=isLF
+      </tr>`).join('')||`<tr><td colspan="${cols.length+1+(isStaff?1:0)}" class="empty">Kayıt bulunamadı</td></tr>`;
+    const toolbar=isStaff
+      ? `<div class="toolbar">
+          <button class="btn secondary" type="button" id="staff-detail-btn">▤ Detaylar</button>
+          <div class="lf-search"><input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}"></div>
+          ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
+          <button class="btn lf-refresh" id="hms-refresh">↻ Yenile</button>
+          <span class="lf-count" id="hms-count"></span>
+        </div>`
+      : isLF
       ? `<div class="toolbar">
           <div class="lf-search"><input class="input" id="hms-q" placeholder="Listede ara…" value="${esc(f.q)}"></div>
           ${canAdd?`<button class="btn" id="hms-add">+ Yeni</button>`:''}
@@ -171,11 +203,12 @@
           <span class="muted" id="hms-count"></span>
         </div>`;
     const headCell=([k,l],i)=>`<th>${l}${isLF&&i===0?' <span class="lf-sort">↓</span>':''}</th>`;
-    const body=`<div class="card${isLF?' lf-list':''}">
+    const isVisitors=module==='visitors';
+    const body=`<div class="card${(isLF||isStaff)?' lf-list':''}${isStaff?' staff-list':''}${isVisitors?' visitors-list':''}">
       ${toolbar}
       <div style="overflow:auto"><table class="hms-table"><thead>
-        <tr>${cols.map(headCell).join('')}<th>Eylemler</th></tr>
-        <tr class="hms-filters">${cols.map(filterCell).join('')}<th></th></tr>
+        <tr>${isStaff?'<th></th>':''}${cols.map(headCell).join('')}<th>Eylemler</th></tr>
+        <tr class="hms-filters">${isStaff?'<th></th>':''}${cols.map(filterCell).join('')}<th></th></tr>
       </thead><tbody id="hms-tbody"></tbody></table></div>
     </div>`;
     mount(body);
@@ -184,12 +217,51 @@
       const list=filteredList();
       const tb=$('#hms-tbody');if(tb)tb.innerHTML=rowsHtml(list);
       const c=$('#hms-count');
-      if(c)c.innerHTML=isLF?`Kalıcı kayıt <b>${list.length} kayıt</b>`:`${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}`;
+      if(c)c.innerHTML=(isLF||isStaff)?`Kalıcı kayıt <b>${list.length} kayıt</b>`:`${list.length} kayıt${permFor(module)==='read'?' · salt görüntüleme':''}`;
       $('#hms-body').querySelectorAll('tbody tr[data-id]').forEach(tr=>{
-        tr.ondblclick=()=>{const row=list.find(r=>String(r.id)===tr.dataset.id);if(row&&fields[editModule]&&canWrite(editModule))openEditor(editModule,row);};
+        // Çalışan Takip: Sistem yöneticisi dışındaki kullanıcılar için çift tıklama
+        // hiçbir şey açmaz (kullanıcı isteği 2026-09).
+        tr.ondblclick=()=>{
+          if(isStaff&&permFor(editModule)!=='full')return;
+          const row=list.find(r=>String(r.id)===tr.dataset.id);
+          if(row&&fields[editModule]&&canWrite(editModule))openEditor(editModule,row);
+        };
+        if(isStaff&&String(tr.dataset.id)===String(staffSelectedId))tr.classList.add('lf-sel');
         if(isLF)tr.onclick=e=>{if(e.target.closest('.row-actions'))return;$('#hms-body').querySelectorAll('tbody tr.lf-sel').forEach(x=>x.classList.remove('lf-sel'));tr.classList.add('lf-sel');};
+        // Çalışan Takip: satıra tıklayınca değil, yalnızca baştaki tik kutucuğuyla
+        // seçim yapılır (kullanıcı isteği 2026-09).
+        if(isStaff){
+          const cb=tr.querySelector('.hms-rowsel');
+          if(cb)cb.onchange=()=>{
+            if(cb.checked){
+              staffSelectedId=tr.dataset.id;
+              $('#hms-body').querySelectorAll('.hms-rowsel').forEach(x=>{if(x!==cb)x.checked=false;});
+              $('#hms-body').querySelectorAll('tbody tr.lf-sel').forEach(x=>x.classList.remove('lf-sel'));
+              tr.classList.add('lf-sel');
+            }else{
+              if(String(staffSelectedId)===String(tr.dataset.id))staffSelectedId=null;
+              tr.classList.remove('lf-sel');
+            }
+          };
+        }
+        // Araç Takipleri: kayda tıklanınca doğrudan düzenleme penceresi açılır (kullanıcı isteği 2026-09).
+        if(module==='vehicles')tr.onclick=e=>{
+          if(e.target.closest('.row-actions'))return;
+          const row=list.find(r=>String(r.id)===tr.dataset.id);
+          if(row&&fields[editModule]&&canWrite(editModule))openEditor(editModule,row);
+        };
       });
       $('#hms-body').querySelectorAll('[data-hms-toggle]').forEach(b=>b.onclick=()=>toggleStatus(module,b.dataset.hmsToggle));
+      $('#hms-body').querySelectorAll('[data-hms-vehaction]').forEach(b=>b.onclick=()=>{
+        const row=(cache.vehicles||[]).find(r=>String(r.id)===String(b.dataset.hmsVehaction));
+        if(!row)return;
+        if(row.status==='Çıkış Yaptı')openVehicleReturnEditor(row);
+        else openEditor('vehicles',null,{plate:row.plate,status:'Çıkış Yaptı'});
+      });
+      $('#hms-body').querySelectorAll('[data-hms-vehdetail]').forEach(b=>b.onclick=()=>{
+        const row=(cache.vehicles||[]).find(r=>String(r.id)===String(b.dataset.hmsVehdetail));
+        if(row)openVehicleHistoryModal(row);
+      });
       $('#hms-body').querySelectorAll('[data-hms-del]').forEach(b=>b.onclick=()=>del(module,b.dataset.hmsDel));
       $('#hms-body').querySelectorAll('[data-hms-approve]').forEach(b=>b.onclick=()=>decideApproval(b.dataset.hmsApprove,'Onaylandı'));
       $('#hms-body').querySelectorAll('[data-hms-reject]').forEach(b=>b.onclick=()=>decideApproval(b.dataset.hmsReject,'Reddedildi'));
@@ -200,6 +272,12 @@
     document.querySelectorAll('[data-hms-fclear]').forEach(b=>b.onclick=()=>{f.cols[b.dataset.hmsFclear]='';const el=document.querySelector(`[data-hms-fcol="${b.dataset.hmsFclear}"]`);if(el)el.value='';paint();});
     if($('#hms-add'))$('#hms-add').onclick=()=>openEditor(module,null);
     if($('#hms-refresh'))$('#hms-refresh').onclick=()=>{delete cache[dataModule];renderTable(module);};
+    if($('#staff-detail-btn'))$('#staff-detail-btn').onclick=async()=>{
+      const row=(cache.staff_status||[]).find(r=>String(r.id)===String(staffSelectedId));
+      if(!row)return toast('Önce listeden bir çalışan seçin');
+      await loadPeople();
+      openStaffHistoryModal(row);
+    };
     paint();
   }
 
@@ -208,9 +286,28 @@
     if(module==='lost_approvals')
       return canWrite(module)?`<button class="btn ghost" data-hms-approve="${row.id}">Onayla</button><button class="btn ghost danger-text" data-hms-reject="${row.id}">Reddet</button>`:'';
     let html='';
-    if((module==='visitors'||module==='staff_status')&&canWrite(module))
-      html+=`<button class="btn ghost" data-hms-toggle="${row.id}">${row.status==='İçeride'?'Çıkış':'Giriş'}</button>`;
-    if(canDelete(module))
+    // Ziyaretçi çıkış yaptıktan sonra buton pasif "Çıkış Yaptı" etiketine döner — tekrar
+    // "İçeride"ye alınamaz; yeni bir ziyaret "+ Yeni" ile ayrı kayıt olarak açılır
+    // (kullanıcı isteği 2026-09).
+    if(module==='visitors'&&canWrite(module))
+      html+=row.status==='Çıkış Yaptı'
+        ?`<button class="btn ghost" disabled title="Bu ziyaretçi çıkış yaptı">Çıkış Yaptı</button>`
+        :`<button class="btn ghost" data-hms-toggle="${row.id}">Çıkış</button>`;
+    // Mavi zemin/beyaz yazı (kullanıcı isteği 2026-09) için ayrı sınıf.
+    if(module==='staff_status'&&canWrite(module))
+      html+=`<button class="btn ghost hms-staff-toggle" data-hms-toggle="${row.id}">${row.status==='İçeride'?'Çıkış':'Giriş'}</button>`;
+    // Araç Takipleri: araç dışarıdaysa (Çıkış Yaptı) "Giriş Yap" — küçük, yalnız dönüş km/tarih
+    // formu açar; içerideyse "Çıkış Yap" — Yeni Kayıt formunu bu aracın plakası önceden seçili
+    // olarak açar (kullanıcı isteği 2026-09).
+    if(module==='vehicles'&&canWrite(module))
+      html+=`<button class="btn ghost" data-hms-vehaction="${row.id}">${row.status==='Çıkış Yaptı'?'Giriş Yap':'Çıkış Yap'}</button>`;
+    // Araç Takipleri: tabloda yalnızca en son kayıt göründüğünden, önceki tüm çıkış/dönüş
+    // kayıtları "Detay" penceresinde listelenir (Çalışan Takip'teki gibi, kullanıcı isteği 2026-09).
+    if(module==='vehicles')
+      html+=`<button class="btn ghost" data-hms-vehdetail="${row.id}">▤ Detay</button>`;
+    // Araç Takipleri: silme yalnızca Sistem yöneticisinde (canDelete zaten 'full' seviyeyi
+    // gerektirir); diğer Güvenlik sekmelerinde (Ziyaretçiler/Çalışan Takip/Filo) değişmedi.
+    if(canDelete(module)&&(!GUV_TABS.includes(module)||module==='vehicles'))
       html+=(module==='lost_items'||module==='lost_delivered')
         ? `<button class="lf-trash" data-hms-del="${row.id}" title="Sil" aria-label="Sil">${TRASH_SVG}</button>`
         : `<button class="btn ghost danger-text" data-hms-del="${row.id}">Sil</button>`;
@@ -219,11 +316,147 @@
 
   async function toggleStatus(module,id){
     const row=(cache[module]||[]).find(r=>String(r.id)===String(id));if(!row)return;
-    const status=row.status==='İçeride'?'Çıkış Yaptı':'İçeride';
-    const exit=status==='Çıkış Yaptı'?new Date().toLocaleString('tr-TR'):'—';
-    try{await api(`/api/hms/${module}/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,exit})});
-      Object.assign(row,{status,exit});renderTable(module);toast('Durum güncellendi');
+    // Çalışan Takip: sunucu tarafında saat + geçmiş (history) ile birlikte işlenen ayrı
+    // bir uç kullanılır — her giriş/çıkış loglarda tutulsun diye (kullanıcı isteği 2026-09).
+    if(module==='staff_status'){
+      try{
+        const updated=await api(`/api/hms/staff_status/${id}/toggle`,{method:'POST'});
+        Object.assign(row,updated);renderTable(module);toast('Durum güncellendi');
+      }catch(err){toast(err.message)}
+      return;
+    }
+    const entering=row.status!=='İçeride';
+    const status=entering?'İçeride':'Çıkış Yaptı';
+    const now=new Date().toLocaleString('tr-TR');
+    const exit=entering?'—':now;
+    const patch={status,exit};
+    try{await api(`/api/hms/${module}/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+      Object.assign(row,patch);renderTable(module);toast('Durum güncellendi');
     }catch(err){toast(err.message)}
+  }
+  function staffHistory(row){
+    if(Array.isArray(row.history)&&row.history.length)return row.history;
+    const h=[];
+    if(row.entry&&row.entry!=='—')h.push({type:'Giriş',time:row.entry});
+    if(row.exit&&row.exit!=='—')h.push({type:'Çıkış',time:row.exit});
+    return h;
+  }
+  // "DD.MM.YYYY HH:MM:SS" metnini Date'e çevirir (süre hesabı için)
+  function parseTRDateTime(str){
+    const m=String(str||'').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if(!m)return null;
+    const [,d,mo,y,h,mi,s]=m;
+    return new Date(Number(y),Number(mo)-1,Number(d),Number(h),Number(mi),Number(s||0));
+  }
+  const trDateKey=d=>`${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
+  const hmOf=str=>{const t=String(str||'').split(' ')[1]||'';return t.slice(0,5)||'—';};
+  function staffDuration(inStr,outStr){
+    const a=parseTRDateTime(inStr),b=parseTRDateTime(outStr);
+    if(!a||!b)return '—';
+    let mins=Math.round((b-a)/60000);if(mins<0)mins+=24*60;
+    return `${Math.floor(mins/60)} sa ${mins%60} dk`;
+  }
+  // Giriş/Çıkış olaylarını ardışık oturumlara (bir günlük mesai) ayırır
+  function staffSessions(row){
+    const hist=staffHistory(row);
+    const sessions=[];
+    for(let i=0;i<hist.length;i++){
+      const ev=hist[i];if(ev.type!=='Giriş')continue;
+      const next=hist[i+1];
+      if(next&&next.type==='Çıkış'){sessions.push({dateKey:String(ev.time).split(' ')[0],inTime:ev.time,outTime:next.time});i++;}
+      else sessions.push({dateKey:String(ev.time).split(' ')[0],inTime:ev.time,outTime:null});
+    }
+    return sessions;
+  }
+  const STAFF_HISTORY_DAYS=30;
+  // Son N takvim gününü (bugün dahil) döndürür. Bir günde birden fazla giriş/çıkış
+  // oturumu varsa (aynı gün birkaç kez giriş-çıkış yapılmışsa) hepsi ayrı satır olarak
+  // gösterilir — tek oturuma indirgenip kaybolmasın diye (kullanıcı isteği 2026-09:
+  // her giriş/çıkış kaydı görünsün). Kayıt yoksa tek "Gelmedi" satırı.
+  function staffDailyRows(row,days){
+    const byDate=new Map();
+    staffSessions(row).forEach(s=>{
+      const list=byDate.get(s.dateKey)||[];
+      list.push(s);
+      byDate.set(s.dateKey,list);
+    });
+    const today=new Date();
+    const out=[];
+    for(let i=0;i<days;i++){
+      const d=new Date(today.getFullYear(),today.getMonth(),today.getDate()-i);
+      const key=trDateKey(d);
+      const sessions=byDate.get(key);
+      if(sessions&&sessions.length)sessions.forEach(session=>out.push({dateKey:key,session}));
+      else out.push({dateKey:key,session:null});
+    }
+    return out;
+  }
+  function staffHistoryRowHtml(r){
+    let giris='—',cikis='—',sure,badgeText,badgeClass;
+    if(!r.session){sure='Gelmedi';badgeText='Gelmedi';badgeClass='red';}
+    else{
+      giris=hmOf(r.session.inTime);
+      if(r.session.outTime){cikis=hmOf(r.session.outTime);sure=staffDuration(r.session.inTime,r.session.outTime);badgeText='Çıkış Yaptı';badgeClass='green';}
+      else{cikis='Henüz çıkış yapmadı';sure='Devam ediyor';badgeText='İçeride';badgeClass='orange';}
+    }
+    return `<tr><td>${esc(r.dateKey)}</td><td>${esc(giris)}</td><td>${esc(cikis)}</td><td>${esc(sure)}</td><td><span class="badge ${badgeClass}">${esc(badgeText)}</span></td></tr>`;
+  }
+  function staffInitials(name){
+    const parts=String(name||'').trim().split(/\s+/).filter(Boolean);
+    if(!parts.length)return '—';
+    return (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toLocaleUpperCase('tr-TR');
+  }
+  // Çalışan Takip satırına tıklayınca kişinin özlük kayıt detayları da görünsün
+  // (kullanıcı isteği 2026-09) — employeeId ile state.employees'teki tam kayıt eşlenir.
+  function staffEmployeeRecord(row){
+    if(!row)return null;
+    const list=peopleSrc();
+    if(row.employeeId){
+      const byId=list.find(e=>e.id!=null&&String(e.id)===String(row.employeeId));
+      if(byId)return byId;
+    }
+    if(row.name){
+      const target=String(row.name).trim().toLocaleLowerCase('tr-TR');
+      const byName=list.find(e=>String(e.name||'').trim().toLocaleLowerCase('tr-TR')===target);
+      if(byName)return byName;
+    }
+    return null;
+  }
+  function staffDetailField(label,value){
+    return value?`<div><span class="muted" style="display:block;font-size:11px">${esc(label)}</span><strong style="font-size:13px">${esc(value)}</strong></div>`:'';
+  }
+  function openStaffHistoryModal(row){
+    if(!row)return;
+    const rows=staffDailyRows(row,STAFF_HISTORY_DAYS);
+    const emp=staffEmployeeRecord(row);
+    const detailBlock=emp?`<div class="formula" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:14px 0">
+        ${staffDetailField('Sicil',emp.payroll_sicil)}
+        ${staffDetailField('Departman',emp.department)}
+        ${staffDetailField('Görev',emp.title)}
+        ${staffDetailField('Telefon',emp.phone)}
+        ${staffDetailField('E-posta',emp.email)}
+        ${staffDetailField('İşe Giriş',emp.start_date?new Date(emp.start_date).toLocaleDateString('tr-TR'):'')}
+        ${staffDetailField('Durum',emp.status)}
+      </div>`:'';
+    const body=`<div class="lf-body">
+      <div class="staff-hist-head">
+        <span class="staff-hist-avatar">${esc(staffInitials(row.name))}</span>
+        <div class="staff-hist-who"><strong>${esc(row.name||'—')}</strong><span class="muted">${esc(row.title||'—')}${row.department?' · '+esc(row.department):''}</span></div>
+        <span class="staff-hist-days muted">${STAFF_HISTORY_DAYS} günlük kayıt</span>
+      </div>
+      ${detailBlock}
+      <div style="overflow:auto"><table class="hms-table staff-hist-table"><thead><tr><th>Tarih</th><th>Giriş Saati</th><th>Çıkış Saati</th><th>Çalışma Süresi</th><th>Durum</th></tr></thead><tbody>
+        ${rows.map(staffHistoryRowHtml).join('')}
+      </tbody></table></div>
+    </div>`;
+    modal('Çalışan Giriş/Çıkış Geçmişi',body,()=>closeModal());
+    const mdl=document.querySelector('.modal');
+    if(mdl){
+      mdl.classList.add('lf-modal');
+      const actions=mdl.querySelector('.modal-actions');if(actions)actions.style.justifyContent='flex-end';
+      const sub=mdl.querySelector('.modal-actions .submit');if(sub)sub.style.display='none';
+      const ccl=mdl.querySelector('.modal-actions .close-action');if(ccl)ccl.textContent='× Kapat';
+    }
   }
   async function del(module,id){
     if(!confirm('Bu kaydı silmek istediğinize emin misiniz?'))return;
@@ -242,8 +475,11 @@
 
   // --- Kayıt ekle/düzenle modalı -------------------------------------
   const empNames=()=>[...new Set(peopleSrc().map(e=>e.name).filter(Boolean))].sort(trSort);
-  async function openEditor(module,row){
+  // Yalnızca Çalışanlar ekranında "Şoför" işaretlenmiş personel (Sürücü önerisi için)
+  const driverNames=()=>[...new Set(peopleSrc().filter(e=>e.is_driver).map(e=>e.name).filter(Boolean))].sort(trSort);
+  async function openEditor(module,row,preset){
     const editing=Boolean(row);
+    const pre=preset||{};
     const isLost=module==='lost_items';
     await loadPeople();
     // Araç/ziyaretçi formu için yardımcı listeler (HMS ile aynı davranış)
@@ -251,16 +487,28 @@
     if(module==='visitors'){try{await load('visitors');}catch(_){}}
     const fleetRows=(cache.fleet||[]).filter(v=>v.disabled!=='Evet');
     const visitorRows=cache.visitors||[];
-    // Yeni kayıp eşya kaydında "Onay Durumu" alanı gizli (HMS ile aynı) — onay yalnızca transferde
-    const cfg=fields[module]().filter(([k])=>!(isLost&&!editing&&k==='approval'));
+    // Yeni kayıp eşya kaydında "Onay Durumu" alanı gizli (HMS ile aynı) — onay yalnızca transferde.
+    // Yeni araç çıkışında Dönüş Tarihi/Dönüş Km/Durum alanları da gizli — araç henüz dönmedi,
+    // durum zaten "Çıkış Yaptı" olarak sabit; dönüş bilgisi "Giriş Yap" ile ayrıca girilir
+    // (kullanıcı isteği 2026-09).
+    const cfg=fields[module]().filter(([k])=>!(isLost&&!editing&&k==='approval')&&!(module==='vehicles'&&!editing&&(k==='returnDate'||k==='returnKm'||k==='status')));
     const myDept=normDept((window.__ikCurrentUser&&window.__ikCurrentUser()?.department)||window.__ikAuthUser?.department||'');
+    // Çalışan Takip'te var olan bir kaydı düzenlerken, Sistem yöneticisi dışındaki
+    // kullanıcılar (Güvenlik vb.) yalnızca Giriş/Çıkış saatini değiştirebilir — diğer
+    // özlük alanları salt okunur gösterilir (kullanıcı isteği 2026-09). Sunucu tarafında
+    // da aynı kısıt uygulanır; burası yalnızca arayüzü buna göre gösterir.
+    const staffTimeOnly=editing&&module==='staff_status'&&permFor(module)!=='full';
     const inputFor=([key,label,type,opts])=>{
-      let val=row?row[key]:'';
+      let val=row?row[key]:(pre[key]??'');
       if(!editing&&(key==='date'||key==='departure'||key==='foundDate'||key==='entry'))val=nowInput();
       if(isLost&&!editing&&key==='storage')val=myDept||'';
       const wideKey=(key==='notes'||key==='destination'||key==='fault');
       const wide=isLost?(key==='notes'?' class="field lf-wide"':' class="field"'):(wideKey?' class="field" style="grid-column:1/-1"':' class="field"');
       const lockFound=isLost&&key==='foundDate';
+      if(staffTimeOnly&&key!=='entry'&&key!=='exit'){
+        const shown=type==='datetime-local'?(toInput(val)?new Date(toInput(val)).toLocaleString('tr-TR'):val):val;
+        return `<div${wide}><label>${label}</label><input class="input lf-ro" name="${key}" value="${esc(shown)}" readonly title="Yalnızca Sistem yöneticisi düzenleyebilir"></div>`;
+      }
       let ctrl;
       // --- HMS'e özel alanlar ---
       if(module==='vehicles'&&key==='plate'){
@@ -270,14 +518,31 @@
       else if(module==='vehicles'&&key==='km'){
         ctrl=`<input class="input" type="number" name="km" id="veh-km" value="${esc(val)}" readonly title="Son dönüş kilometresinden otomatik alınır"><small class="muted" id="veh-km-hint" style="display:block;font-size:11px"></small>`;
       }
-      else if(module==='vehicles'&&(key==='driver'||key==='requester')){
-        ctrl=`<input class="input" name="${key}" list="veh-people" value="${esc(val)}" placeholder="Kişi seçin veya yazın">`;
+      else if(module==='vehicles'&&key==='driver'){
+        ctrl=`<input class="input" name="driver" list="veh-drivers" value="${esc(val)}" placeholder="Şoför seçin veya yazın">`;
+      }
+      else if(module==='vehicles'&&key==='requester'){
+        ctrl=`<input class="input" name="requester" list="veh-people" value="${esc(val)}" placeholder="Kişi seçin veya yazın">`;
+      }
+      else if(module==='vehicles'&&key==='departure'){
+        const dv=editing?toInput(val):nowInput();
+        ctrl=`<input class="input" type="datetime-local" name="departure" value="${esc(dv)}" readonly title="Sistem tarafından otomatik belirlenir; değiştirilemez">`;
+      }
+      else if(module==='visitors'&&key==='date'){
+        const dv=editing?toInput(val):nowInput();
+        ctrl=`<input class="input" type="datetime-local" name="date" value="${esc(dv)}" readonly title="Sistem tarafından otomatik belirlenir; değiştirilemez">`;
+      }
+      else if(module==='visitors'&&key==='exit'){
+        ctrl=`<input class="input" type="datetime-local" name="exit" value="${esc(toInput(val))}" readonly title="Çıkış yapıldığında sistem tarafından otomatik belirlenir; değiştirilemez">`;
       }
       else if(module==='visitors'&&key==='name'){
-        ctrl=`<input class="input" name="name" id="vis-name" list="vis-names" value="${esc(val)}" autocomplete="off"><small class="muted" style="display:block;font-size:11px">Yazdıkça önceki ziyaretçiler listelenir.</small>`;
+        // Aşağı açılır bir "liste" değil — yazarken eşleşen önceki ziyaretçi adları anlık
+        // filtrelenip küçük bir öneri kutusunda gösterilir (bindVisitorEditor). Personel
+        // kaydından bağımsız, tamamen elle girilip serbestçe kaydedilir (kullanıcı isteği 2026-09).
+        ctrl=`<div class="cb-wrap"><input class="input" name="name" id="vis-name" value="${esc(val)}" autocomplete="off"></div><small class="muted" style="display:block;font-size:11px">Yazdıkça eşleşen önceki ziyaretçiler altta önerilir.</small>`;
       }
       else if(module==='visitors'&&key==='company'){
-        ctrl=`<input class="input" name="company" id="vis-company" list="vis-companies" value="${esc(val)}" autocomplete="off">`;
+        ctrl=`<div class="cb-wrap"><input class="input" name="company" id="vis-company" value="${esc(val)}" autocomplete="off"></div>`;
       }
       else if(isLost&&key==='status'&&!editing){
         // Yeni kayıtta durum otomatik "Beklemede" ve değiştirilemez
@@ -297,7 +562,10 @@
       else ctrl=`<input class="input" name="${key}" value="${esc(val)}">`;
       return `<div${wide}><label>${label}</label>${ctrl}</div>`;
     };
-    const dataLists=`${module==='vehicles'?`<datalist id="veh-people">${empNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}${module==='visitors'?`<datalist id="vis-names">${[...new Set(visitorRows.map(v=>String(v.name||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist><datalist id="vis-companies">${[...new Set(visitorRows.map(v=>String(v.company||'').trim()).filter(Boolean))].sort(trSort).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:''}`;
+    // Ziyaretçi İsim/Firma artık native <datalist> (tıklayınca tüm liste açılan) yerine
+    // bindVisitorEditor'daki özel, yazarken filtrelenen küçük öneri kutusunu kullanıyor
+    // (kullanıcı isteği 2026-09) — burada yalnızca Araç Takipleri'nin datalist'leri kalır.
+    const dataLists=module==='vehicles'?`<datalist id="veh-people">${empNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist><datalist id="veh-drivers">${driverNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`:'';
     const imageCol=`<div class="lf-image"><span>Resim</span><label class="lf-drop" id="lf-drop">${row?.image?`<img src="${esc(row.image)}" alt="">`:`<span class="lf-hatch"></span>Fotoğraf seç`}<input type="file" accept="image/*" id="hms-image"></label></div>`;
     const transferBlock=(isLost&&editing)?transferPanel(row):'';
     const formInner=cfg.map(inputFor).join('');
@@ -318,8 +586,21 @@
           payload.brand=box.querySelector('#veh-brand')?.value||'';
           payload.model=box.querySelector('#veh-model')?.value||'';
           payload.km=box.querySelector('#veh-km')?.value||'';
+          // Durum alanı yeni kayıtta forma hiç konmuyor — yeni bir çıkış her zaman
+          // "Çıkış Yaptı" olarak başlar (kullanıcı isteği 2026-09).
+          if(!editing)payload.status='Çıkış Yaptı';
+          const missing=[];
+          if(!String(payload.driver||'').trim())missing.push('Sürücü');
+          if(!String(payload.requester||'').trim())missing.push('Talep Eden');
+          if(!String(payload.destination||'').trim())missing.push('Gideceği Yer');
+          if(!String(payload.km||'').trim())missing.push('Km');
+          if(missing.length)return toast(`Eksik alanlar: ${missing.join(', ')} — kayıt yapılamaz.`);
         }
         if(isLost&&!editing)delete payload.storage;
+        if(module==='staff_status'&&!editing){
+          if(payload.status==='İçeride')payload.history=[{type:'Giriş',time:payload.entry||new Date().toLocaleString('tr-TR')}];
+          else if(payload.status==='Çıkış Yaptı')payload.history=[{type:'Çıkış',time:payload.exit||new Date().toLocaleString('tr-TR')}];
+        }
         const img=box.querySelector('#hms-image')?.files?.[0];
         const send=async(extra)=>{
           const finalPayload={...payload,...extra};
@@ -340,7 +621,7 @@
       });
     if(isLost&&editing&&canWrite('lost_items'))bindTransfer(row);
     if(module==='vehicles')bindVehicleEditor(row,fleetRows,editing);
-    if(module==='visitors')bindVisitorEditor(visitorRows);
+    if(module==='visitors')bindVisitorEditor(visitorRows,editing);
     if(isLost){
       const mdl=document.querySelector('.modal');
       if(mdl){
@@ -388,28 +669,152 @@
       const trips=(cache.vehicles||[]).filter(v=>norm(v.plate)===norm(plate&&plate.value))
         .sort((a,b)=>Number(b.id)-Number(a.id))
         .find(v=>v.returnKm&&v.returnKm!=='—'&&Number.isFinite(Number(v.returnKm))&&Number(v.returnKm)>0);
-      if(trips){if(km)km.value=trips.returnKm;if(hint)hint.textContent=`Son dönüş kilometresi: ${trips.returnKm}`;}
-      else if(f&&(f.lastKm||f.startKm)&&String(f.lastKm||f.startKm)!=='—'){if(km)km.value=f.lastKm||f.startKm;if(hint)hint.textContent=`Kayıtlı son kilometre: ${f.lastKm||f.startKm}`;}
-      else{if(km)km.value='';if(hint)hint.textContent='Bu araç için kayıtlı kilometre bulunamadı.';}
+      if(trips){if(km){km.value=trips.returnKm;km.readOnly=true;}if(hint)hint.textContent=`Son dönüş kilometresi: ${trips.returnKm}`;}
+      else if(f&&(f.lastKm||f.startKm)&&String(f.lastKm||f.startKm)!=='—'){if(km){km.value=f.lastKm||f.startKm;km.readOnly=true;}if(hint)hint.textContent=`Kayıtlı son kilometre: ${f.lastKm||f.startKm}`;}
+      else{if(km){km.value='';km.readOnly=false;}if(hint)hint.textContent='Bu araç için kayıtlı kilometre bulunamadı; başlangıç km değerini elle girin.';}
     };
     if(plate){plate.onchange=applyPlate;if(plate.value)applyPlate();}
     if(status)status.onchange=()=>{
       if(!editing||status.value!=='Çıkış Yaptı')return;
       const last=String((retKm&&retKm.value)||row?.returnKm||'');
       if(last&&last!=='—'&&Number.isFinite(Number(last))){
-        if(km)km.value=last;if(retKm)retKm.value='';
+        if(km){km.value=last;km.readOnly=true;}if(retKm)retKm.value='';
         const rd=box.querySelector('[name="returnDate"]');if(rd)rd.value='';
+        const dep=box.querySelector('[name="departure"]');if(dep)dep.value=nowInput();
         if(hint)hint.textContent=`Son dönüş kilometresi ${last}, yeni çıkış kilometresine aktarıldı.`;
       }
     };
   }
-  function bindVisitorEditor(visitorRows){
+  // Araç dışarıdayken "Giriş Yap": tam düzenleme formu yerine yalnızca dönüş km'si ve
+  // (otomatik, değiştirilemez) dönüş tarihi/saati olan küçük bir form açar (kullanıcı isteği
+  // 2026-09). Kaydedince durum "Dönüş Yaptı"ya döner — satırda tekrar "Çıkış Yap" görünür.
+  function openVehicleReturnEditor(row){
+    const dv=nowInput();
+    const body=`<div class="form-grid">
+      <div class="field"><label>Dönüş Km</label><input class="input" type="number" id="veh-ret-km" placeholder="Dönüş km" autofocus></div>
+      <div class="field"><label>Dönüş Tarihi</label><input class="input" type="datetime-local" value="${esc(dv)}" readonly title="Sistem tarafından otomatik belirlenir; değiştirilemez"></div>
+    </div>`;
+    modal(`Araç Dönüşü — ${esc(row.plate)}`,body,async()=>{
+      const box=document.querySelector('.modal');
+      const returnKm=box.querySelector('#veh-ret-km')?.value||'';
+      if(!String(returnKm).trim())return toast('Dönüş km girin');
+      const patch={returnKm,returnDate:fromInput(dv),status:'Dönüş Yaptı'};
+      try{
+        const saved=await api(`/api/hms/vehicles/${row.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+        const list=cache.vehicles||(cache.vehicles=[]);
+        const idx=list.findIndex(r=>String(r.id)===String(saved.id));
+        if(idx>=0)list[idx]=saved;
+        closeModal();renderTable(tab);toast('Araç dönüşü kaydedildi');
+      }catch(err){toast(err.message)}
+    });
+  }
+  // Bir plakanın tüm çıkış/dönüş kayıtları (en yeni önce) — "Detay" penceresinde gösterilir.
+  function vehicleTrips(plate){
+    const key=String(plate||'').trim().toLocaleUpperCase('tr-TR');
+    return (cache.vehicles||[]).filter(v=>String(v.plate||'').trim().toLocaleUpperCase('tr-TR')===key)
+      .sort((a,b)=>Number(b.id)-Number(a.id));
+  }
+  function vehicleTripStatusBadge(status){
+    if(status==='Çıkış Yaptı')return '<span class="badge orange">Dışarıda</span>';
+    if(status==='Dönüş Yaptı')return '<span class="badge green">Döndü</span>';
+    return `<span class="badge">${esc(status||'—')}</span>`;
+  }
+  function vehicleTripRowHtml(r){
+    return `<tr>
+      <td>${esc(r.departure&&r.departure!=='—'?r.departure:'—')}</td>
+      <td>${esc(r.km??'—')}</td>
+      <td>${esc(r.returnDate&&r.returnDate!=='—'?r.returnDate:'—')}</td>
+      <td>${esc(r.returnKm??'—')}</td>
+      <td>${esc(r.driver||'—')}</td>
+      <td>${esc(r.requester||'—')}</td>
+      <td>${esc(r.destination||'—')}</td>
+      <td>${esc(r.fault==='Var'?'Var':'—')}</td>
+      <td>${vehicleTripStatusBadge(r.status)}</td>
+    </tr>`;
+  }
+  // Araç çıkış/giriş yaptıkça (yeni kayıt veya dönüş) her araç kendi geçmişini burada biriktirir
+  // (Çalışan Takip'teki gibi, kullanıcı isteği 2026-09) — ayrı bir tablo/alan gerekmez, çünkü her
+  // çıkış zaten kendi kaydını oluşturuyor; bu pencere o kayıtları plakaya göre listeler.
+  function openVehicleHistoryModal(row){
+    if(!row)return;
+    const trips=vehicleTrips(row.plate);
+    const body=`<div class="lf-body">
+      <div class="staff-hist-head">
+        <span class="staff-hist-avatar">${esc(String(row.plate||'—').replace(/\s+/g,'').slice(0,3))}</span>
+        <div class="staff-hist-who"><strong>${esc(row.plate||'—')}</strong><span class="muted">${esc(row.brand||'')} ${esc(row.model||'')}</span></div>
+        <span class="staff-hist-days muted">${trips.length} kayıt</span>
+      </div>
+      <div style="overflow:auto"><table class="hms-table staff-hist-table"><thead><tr>
+        <th>Çıkış Tarihi</th><th>Çıkış Km</th><th>Dönüş Tarihi</th><th>Dönüş Km</th><th>Şoför</th><th>Talep Eden</th><th>Gideceği Yer</th><th>Hata</th><th>Durum</th>
+      </tr></thead><tbody>
+        ${trips.map(vehicleTripRowHtml).join('')||'<tr><td colspan="9" class="empty">Kayıt bulunamadı</td></tr>'}
+      </tbody></table></div>
+    </div>`;
+    modal(`Araç Geçmişi — ${esc(row.plate||'')}`,body,()=>closeModal());
+    const mdl=document.querySelector('.modal');
+    if(mdl){
+      mdl.classList.add('lf-modal');
+      const actions=mdl.querySelector('.modal-actions');if(actions)actions.style.justifyContent='flex-end';
+      const sub=mdl.querySelector('.modal-actions .submit');if(sub)sub.style.display='none';
+      const ccl=mdl.querySelector('.modal-actions .close-action');if(ccl)ccl.textContent='× Kapat';
+    }
+  }
+  // Native <datalist>, alan tıklanır tıklanmaz (yazmadan) TÜM listeyi açan bir açılır pencere
+  // gibi görünüyordu — bunun yerine hiçbir şey yazılmadığında tamamen gizli kalan, yazarken
+  // eşleşenleri filtreleyip altta küçük bir kutuda gösteren kendi öneri bileşenimiz. Seçim
+  // yapmak zorunlu değil — serbest metin olarak da kaydedilebilir (kullanıcı isteği 2026-09).
+  function bindSuggest(input,options){
+    if(!input)return;
+    const wrap=input.closest('.cb-wrap')||input.parentNode;
+    const norm=s=>String(s||'').toLocaleLowerCase('tr-TR');
+    const menu=document.createElement('div');
+    menu.className='cb-menu';menu.hidden=true;
+    wrap.appendChild(menu);
+    const render=()=>{
+      const q=norm(input.value.trim());
+      if(!q){menu.hidden=true;menu.innerHTML='';return;}
+      const matches=options.filter(o=>norm(o).includes(q)&&norm(o)!==q).slice(0,8);
+      if(!matches.length){menu.hidden=true;menu.innerHTML='';return;}
+      menu.innerHTML=matches.map(m=>`<div class="cb-opt">${esc(m)}</div>`).join('');
+      menu.hidden=false;
+    };
+    input.addEventListener('input',render);
+    input.addEventListener('blur',()=>setTimeout(()=>{menu.hidden=true;},150));
+    menu.addEventListener('mousedown',e=>{
+      const opt=e.target.closest('.cb-opt');if(!opt)return;
+      e.preventDefault();
+      input.value=opt.textContent;
+      menu.hidden=true;
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+  }
+  function bindVisitorEditor(visitorRows,editing){
     const box=document.querySelector('.modal');if(!box)return;
     const name=box.querySelector('#vis-name'),company=box.querySelector('#vis-company');
-    if(name)name.oninput=()=>{
+    bindSuggest(name,[...new Set(visitorRows.map(v=>String(v.name||'').trim()).filter(Boolean))].sort(trSort));
+    bindSuggest(company,[...new Set(visitorRows.map(v=>String(v.company||'').trim()).filter(Boolean))].sort(trSort));
+    if(name)name.addEventListener('input',()=>{
       const key=name.value.trim().toLocaleLowerCase('tr-TR');if(!key)return;
       const prev=[...visitorRows].sort((a,b)=>Number(b.id)-Number(a.id)).find(v=>String(v.name||'').toLocaleLowerCase('tr-TR')===key);
       if(prev&&prev.company&&company)company.value=prev.company;
+    });
+    // Yeni kayıtta plaka girilince önceki kayıtlarla eşleşen bilgiler (isim, firma, kimlik
+    // tipi) otomatik doldurulur; alanlar kilitlenmez, elle değiştirilebilir (kullanıcı isteği 2026-09).
+    const plate=box.querySelector('[name="plate"]'),identity=box.querySelector('[name="identity"]');
+    const normPlate=p=>String(p||'').trim().toLocaleUpperCase('tr-TR').replace(/\s+/g,'');
+    if(plate&&!editing)plate.addEventListener('input',()=>{
+      const key=normPlate(plate.value);if(!key)return;
+      const prev=[...visitorRows].sort((a,b)=>Number(b.id)-Number(a.id)).find(v=>normPlate(v.plate)===key);
+      if(!prev)return;
+      if(prev.name&&name)name.value=prev.name;
+      if(prev.company&&company)company.value=prev.company;
+      if(prev.identity&&identity)identity.value=prev.identity;
+    });
+    // Çıkış tarihi: durum "Çıkış Yaptı"ya çevrildiğinde otomatik ve değiştirilemez olarak şimdi atanır;
+    // "İçeride"ye geri alınırsa temizlenir (kullanıcı isteği 2026-09).
+    const status=box.querySelector('[name="status"]'),exit=box.querySelector('[name="exit"]');
+    if(status&&exit)status.onchange=()=>{
+      exit.value=status.value==='Çıkış Yaptı'?nowInput():'';
     };
   }
 
@@ -420,10 +825,10 @@
       :[{processDate:row.processDate,transferStatus:row.transferStatus||row.status,transferSender:row.transferSender,transferReceiver:row.transferReceiver,targetDepartment:row.targetDepartment,storage:row.storage}];
     // Sil yalnızca Sistem yöneticisinde, yalnız son harekette, ilk kayıt hariç
     const canDelLast=canDelete('lost_items')&&Array.isArray(row.history)&&row.history.length>1;
-    return `<table class="lf-mov"><thead><tr><th>İşlem Tarihi</th><th>Durum</th><th>Teslim Eden</th><th>Teslim Alan</th><th>Saklandığı Yer</th><th>Eylem</th></tr></thead><tbody>
+    return `<div style="overflow:auto"><table class="lf-mov"><thead><tr><th>İşlem Tarihi</th><th>Durum</th><th>Teslim Eden</th><th>Teslim Alan</th><th>Saklandığı Yer</th><th>Eylem</th></tr></thead><tbody>
       ${hist.map((m,i)=>`<tr><td>${esc(m.processDate||'—')}</td><td>${esc(m.transferStatus||m.status||'—')}</td><td>${esc(m.transferSender||'—')}</td><td>${esc(m.transferReceiver||m.receiver||'—')}</td><td>${esc(m.targetDepartment||m.storage||'—')}</td>
         <td>${canDelLast&&i===hist.length-1?`<button class="lf-mov-del" type="button" id="mov-del">Sil</button>`:'—'}</td></tr>`).join('')}
-      </tbody></table>`;
+      </tbody></table></div>`;
   }
   function transferPanel(row){
     const canEdit=canWrite('lost_items');
@@ -586,6 +991,92 @@
     printHtml(`<!doctype html><meta charset="utf-8"><title>Araç Kullanım Raporu</title><style>@page{size:A4 landscape;margin:14mm}body{font-family:Arial;color:#172b4d;padding:24px}h1{margin:0 0 6px}h2{font-size:15px;margin:22px 0 8px}p{color:#64748b}table{width:100%;border-collapse:collapse;margin-top:16px;font-size:12px}th,td{border:1px solid #334155;padding:8px}th{background:#dbe5f1}</style><h1>Araç Kullanım Raporu</h1><p>Dönem: ${esc(month||'Tüm dönem')} · Araç: ${esc(plate||'Tümü')} · ${new Date().toLocaleString('tr-TR')}</p><table><thead><tr><th>Araç</th><th>Çıkış Sayısı</th><th>Ay Toplamı</th></tr></thead><tbody>${body}</tbody></table><h2>Araçların Aylık Kilometre Grafiği</h2>${chart||'<p>Kayıt yok</p>'}`);
   }
 
+  // --- Misafir Takip: Lapis (PMS) Excel içe aktarımı, salt-okunur liste ----
+  // Yükleme her seferinde tabloyu tamamen değiştirir; yeni dosyada olmayan
+  // misafirler ekrandan (ve veritabanından) kalkar (kullanıcı isteği 2026-09).
+  const fromDateOnly=v=>{const m=String(v||'').match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}.${m[2]}.${m[1]}`:(v||'—');};
+  const guestCols=[['ad','Ad'],['soyad','Soyad'],['oda_no','Oda No'],['checkin','Giriş',fromDateOnly],['checkout','Çıkış',fromDateOnly],['uyruk','Uyruğu'],['email','E-posta'],['telefon','Telefon'],['firma_kodu','Firma Kodu']];
+  const GUEST_SORTABLE=new Set(['ad','soyad','oda_no','checkin','checkout']);
+  const guestSortVal=(row,key)=>{
+    if(key==='oda_no'){const n=Number(row.oda_no);return Number.isFinite(n)?n:row.oda_no;}
+    return row[key];
+  };
+  async function renderGuestTracking(){
+    mount('<div class="card empty">Yükleniyor…</div>');
+    let rows,meta;
+    try{[rows,meta]=await Promise.all([api('/api/guest-tracking'),api('/api/guest-tracking/meta')]);}
+    catch(err){mount(`<div class="card empty">${esc(err.message)}</div>`);return;}
+    if(tab!=='guest_tracking')return;
+    const f=filters.guest_tracking||(filters.guest_tracking={q:'',sortKey:null,sortDir:'asc'});
+    const canUpload=canWrite('guest_tracking');
+    const filteredList=()=>{
+      const q=f.q.toLocaleLowerCase('tr-TR');
+      let list=!q?rows:rows.filter(row=>Object.values(row).join(' ').toLocaleLowerCase('tr-TR').includes(q));
+      if(f.sortKey){
+        list=list.slice().sort((a,b)=>{
+          const va=guestSortVal(a,f.sortKey),vb=guestSortVal(b,f.sortKey);
+          const cmp=typeof va==='number'&&typeof vb==='number'?va-vb:trSort(va,vb);
+          return f.sortDir==='desc'?-cmp:cmp;
+        });
+      }
+      return list;
+    };
+    const metaLine=meta
+      ? `Son yüklenen: <b>${esc(meta.original_name||'Lapis.xlsx')}</b> · ${esc(new Date(meta.uploaded_at).toLocaleString('tr-TR'))} · ${esc(meta.uploaded_by||'')} · ${meta.row_count} kayıt`
+      : 'Henüz Excel yüklenmedi';
+    const headCell=([k,l])=>{
+      if(!GUEST_SORTABLE.has(k))return `<th>${l}</th>`;
+      const active=f.sortKey===k;
+      const arrow=active?(f.sortDir==='desc'?' ↓':' ↑'):'';
+      return `<th class="hms-sortable" data-hms-sort="${k}" style="cursor:pointer;user-select:none">${l}${arrow}</th>`;
+    };
+    const body=`<div class="card">
+      <div class="toolbar">
+        <input class="input" id="hms-q" placeholder="Ada, odaya, telefona göre ara…" value="${esc(f.q)}">
+        ${canUpload?`<label class="btn secondary" style="cursor:pointer">Excel yükle<input type="file" id="gt-file" accept=".xlsx" hidden></label>`:''}
+        <span class="muted" id="hms-count"></span>
+      </div>
+      <div class="muted" style="margin:-6px 0 10px;font-size:12.5px">${metaLine}</div>
+      <div style="overflow:auto"><table class="hms-table"><thead><tr id="hms-ghead">${guestCols.map(headCell).join('')}</tr></thead><tbody id="hms-tbody"></tbody></table></div>
+    </div>`;
+    mount(body);
+    const paint=()=>{
+      const list=filteredList();
+      const tb=$('#hms-tbody');
+      if(tb)tb.innerHTML=list.map(row=>`<tr>${guestCols.map(([k,,fmt])=>`<td>${esc(fmt?fmt(row[k]):(row[k]||'—'))}</td>`).join('')}</tr>`).join('')
+        ||`<tr><td colspan="${guestCols.length}" class="empty">Kayıt bulunamadı</td></tr>`;
+      const c=$('#hms-count');if(c)c.textContent=`${list.length} kayıt`;
+    };
+    const bindSortHeaders=()=>{
+      const head=$('#hms-ghead');if(!head)return;
+      head.querySelectorAll('[data-hms-sort]').forEach(th=>th.onclick=()=>{
+        const key=th.dataset.hmsSort;
+        f.sortDir=(f.sortKey===key&&f.sortDir==='asc')?'desc':'asc';
+        f.sortKey=key;
+        head.innerHTML=guestCols.map(headCell).join('');
+        bindSortHeaders();
+        paint();
+      });
+    };
+    paint();
+    bindSortHeaders();
+    const q=$('#hms-q');if(q)q.oninput=()=>{f.q=q.value;paint();};
+    const file=$('#gt-file');
+    if(file)file.onchange=async()=>{
+      const f0=file.files&&file.files[0];
+      if(!f0)return;
+      if(!/\.xlsx$/i.test(f0.name))return toast('Yalnızca .xlsx dosyası yükleyebilirsiniz');
+      if(f0.size>20*1024*1024)return toast('Dosya çok büyük (en fazla 20 MB)');
+      if(!confirm('Yeni Lapis Excel dosyası yüklenecek. Bu dosyada bulunmayan mevcut misafirler sistemden silinecek ve ekran yalnızca bu yeni dosyanın verilerini gösterecek. Devam edilsin mi?'))return;
+      toast('Excel yükleniyor ve işleniyor…');
+      try{
+        const r=await api('/api/guest-tracking/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f0.name)},body:f0});
+        toast(`Yüklendi: ${r.count} kayıt`);
+        renderGuestTracking();
+      }catch(err){toast('Yükleme başarısız: '+err.message);}
+    };
+  }
+
   function render(){
     document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===currentView));
     $('#page-title').textContent=VIEW_META[currentView].title;
@@ -593,6 +1084,7 @@
     if(!vt.length){mount('<div class="card empty">Bu modüle erişim yetkiniz yok.</div>');return;}
     if(!vt.includes(tab)){tab=vt[0];sessionStorage.setItem(tabKey(),tab);}
     if(tab==='report')renderReport();
+    else if(tab==='guest_tracking')renderGuestTracking();
     else renderTable(tab);
   }
 

@@ -3,6 +3,8 @@ services:
     image: postgres:16-alpine
     container_name: ik-db
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       POSTGRES_DB: ik
       POSTGRES_USER: ik
@@ -14,10 +16,14 @@ services:
     build: ./api
     container_name: ik-api
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       DATABASE_URL: postgres://ik:ik@db:5432/ik
       SMTP_SETTINGS_KEY: ${SMTP_SETTINGS_KEY}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://hr.adminpanel.space}
+      MOBILE_PUSH_VAPID_PUBLIC_KEY: ${MOBILE_PUSH_VAPID_PUBLIC_KEY:-}
+      MOBILE_PUSH_VAPID_PRIVATE_KEY: ${MOBILE_PUSH_VAPID_PRIVATE_KEY:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://hms.hmspanel.com}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
@@ -33,11 +39,18 @@ services:
     build: .
     container_name: ik-web
     restart: unless-stopped
-    # GÜVENLİK: bu portu yalnızca yerele bağlayın. Cloudflare Tunnel ingress
-    # kuralını "http://127.0.0.1:8080" yapıp aşağıyı "127.0.0.1:8080:80" olarak
-    # değiştirin; böylece uygulama LAN'dan (10.48.x:8080) doğrudan erişilemez,
-    # yalnızca Cloudflare üzerinden gelir. (Tünel şu an 10.48.1.60:8080'e
-    # baktığı için geçici olarak 0.0.0.0 bırakıldı.)
+    security_opt:
+      - no-new-privileges:true
+    # GÜVENLİK (HÂLÂ AÇIK MADDE): bu portu yalnızca yerele bağlayın. Cloudflare
+    # Tunnel ingress kuralını "http://127.0.0.1:8080" yapıp aşağıyı
+    # "127.0.0.1:8080:80" olarak değiştirin; böylece uygulama LAN'dan
+    # (10.48.x:8080) doğrudan erişilemez, yalnızca Cloudflare üzerinden gelir.
+    # cloudflared artık host ağında çalışıyor ve 127.0.0.1:8080'e erişebiliyor
+    # (doğrulandı), yani engel artık teknik değil — yalnızca Cloudflare Zero
+    # Trust panelindeki tünel ingress hostname'inin 10.48.1.60:8080'den
+    # 127.0.0.1:8080'e güncellenmesi gerekiyor. Bu panele bu oturumdan erişim
+    # yok; panel güncellenmeden bu satır değiştirilirse site tamamen erişilemez
+    # hale gelir — ÖNCE panel, SONRA bu satır.
     ports:
       - "0.0.0.0:8080:80"
     read_only: true
