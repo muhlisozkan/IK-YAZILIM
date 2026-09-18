@@ -491,7 +491,7 @@
     // Yeni araç çıkışında Dönüş Tarihi/Dönüş Km/Durum alanları da gizli — araç henüz dönmedi,
     // durum zaten "Çıkış Yaptı" olarak sabit; dönüş bilgisi "Giriş Yap" ile ayrıca girilir
     // (kullanıcı isteği 2026-09).
-    const cfg=fields[module]().filter(([k])=>!(isLost&&!editing&&k==='approval')&&!(module==='vehicles'&&!editing&&(k==='returnDate'||k==='returnKm'||k==='status')));
+    const cfg=fields[module]().filter(([k])=>!(isLost&&!editing&&k==='approval')&&!(module==='vehicles'&&!editing&&(k==='returnDate'||k==='returnKm'||k==='status'))&&!(module==='visitors'&&!editing&&k==='status'));
     const myDept=normDept((window.__ikCurrentUser&&window.__ikCurrentUser()?.department)||window.__ikAuthUser?.department||'');
     // Çalışan Takip'te var olan bir kaydı düzenlerken, Sistem yöneticisi dışındaki
     // kullanıcılar (Güvenlik vb.) yalnızca Giriş/Çıkış saatini değiştirebilir — diğer
